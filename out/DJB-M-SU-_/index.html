@@ -313,8 +313,8 @@
         </label>
         <label class="render-scale-control">
           <span>畫質</span>
-          <input id="renderScaleSlider" type="range" min="0.5" max="1" value="0.5" step="0.05">
-          <span id="renderScaleValue" class="render-scale-value">50%</span>
+          <input id="renderScaleSlider" type="range" min="0.5" max="1" value="1" step="0.05">
+          <span id="renderScaleValue" class="render-scale-value">100%</span>
         </label>
         <label class="auto-render-control">
           <input id="autoRenderScaleToggle" type="checkbox" checked>
@@ -378,6 +378,8 @@
         { mode: "smooth90", label: "90°", url: smooth90TilesetUrl },
         { mode: "smooth", label: "全平滑", url: smoothTilesetUrl }
       ];
+      const AUTO_RENDER_SCALE_MOVING = 0.5;
+      const AUTO_RENDER_SCALE_RESTORED = 1.0;
       const moveDirections = {
         n: { x: 0, y: 1, label: "北" },
         ne: { x: 1, y: 1, label: "東北" },
@@ -391,8 +393,8 @@
       const appState = {
         mode: "select",
         shadingMode: "flat",
-        renderScale: 0.5,
-        renderScaleTarget: 0.5,
+        renderScale: AUTO_RENDER_SCALE_RESTORED,
+        renderScaleTarget: AUTO_RENDER_SCALE_RESTORED,
         debugRenderScale: query.get("debugScale") === "1",
         autoRenderScaleEnabled: true,
         cameraMoving: false,
@@ -447,7 +449,7 @@
       });
 
       window.viewer = viewer;
-      applyRenderScale(0.5);
+      applyRenderScale(AUTO_RENDER_SCALE_RESTORED);
       setBasemap("emap5", { silent: true });
       configureArcgisLikeNavigation(viewer);
       configureAutoRenderScale(viewer);
@@ -699,7 +701,9 @@
         appState.renderScaleTarget = scale;
         renderScaleSlider.value = scale.toFixed(2);
         if (appState.autoRenderScaleEnabled && appState.cameraMoving) {
-          setActiveRenderScale(0.5);
+          setActiveRenderScale(AUTO_RENDER_SCALE_MOVING);
+        } else if (appState.autoRenderScaleEnabled) {
+          setActiveRenderScale(AUTO_RENDER_SCALE_RESTORED);
         } else {
           setActiveRenderScale(scale);
         }
@@ -709,6 +713,7 @@
         const nextScale = Math.min(1, Math.max(0.5, Number(scale) || 0.5));
         appState.renderScale = nextScale;
         viewer.resolutionScale = nextScale;
+        renderScaleSlider.value = nextScale.toFixed(2);
         renderScaleValue.textContent = Math.round(nextScale * 100) + "%";
         if (appState.debugRenderScale) {
           console.log("Cesium resolutionScale", viewer.resolutionScale);
@@ -719,7 +724,10 @@
       function setAutoRenderScaleEnabled(enabled) {
         appState.autoRenderScaleEnabled = enabled;
         autoRenderScaleToggle.checked = enabled;
-        if (enabled && appState.cameraMoving) {
+        if (!enabled) {
+          window.clearTimeout(appState.renderScaleRestoreTimer);
+          setActiveRenderScale(appState.renderScaleTarget);
+        } else if (appState.cameraMoving) {
           lowerRenderScaleDuringMove();
         } else {
           restoreRenderScaleAfterMove();
@@ -729,22 +737,46 @@
       function configureAutoRenderScale(viewer) {
         viewer.camera.moveStart.addEventListener(lowerRenderScaleDuringMove);
         viewer.camera.moveEnd.addEventListener(restoreRenderScaleAfterMove);
+        bindAutoRenderScaleInteractionFallback(viewer.scene.canvas);
+      }
+
+      function bindAutoRenderScaleInteractionFallback(canvas) {
+        canvas.addEventListener("pointermove", function (event) {
+          if (event.buttons !== 0) {
+            lowerRenderScaleDuringMove();
+          }
+        }, { passive: true });
+        window.addEventListener("pointerup", restoreRenderScaleAfterMove, { passive: true });
+        canvas.addEventListener("mousemove", function (event) {
+          if (event.buttons !== 0) {
+            lowerRenderScaleDuringMove();
+          }
+        }, { passive: true });
+        window.addEventListener("mouseup", restoreRenderScaleAfterMove, { passive: true });
+        canvas.addEventListener("wheel", function () {
+          lowerRenderScaleDuringMove();
+          restoreRenderScaleAfterMove();
+        }, { passive: true });
       }
 
       function lowerRenderScaleDuringMove() {
         appState.cameraMoving = true;
         window.clearTimeout(appState.renderScaleRestoreTimer);
         if (appState.autoRenderScaleEnabled) {
-          setActiveRenderScale(0.5);
+          setActiveRenderScale(AUTO_RENDER_SCALE_MOVING);
         }
       }
 
       function restoreRenderScaleAfterMove() {
         appState.cameraMoving = false;
         window.clearTimeout(appState.renderScaleRestoreTimer);
+        if (!appState.autoRenderScaleEnabled) {
+          setActiveRenderScale(appState.renderScaleTarget);
+          return;
+        }
         appState.renderScaleRestoreTimer = window.setTimeout(function () {
           if (!appState.cameraMoving) {
-            setActiveRenderScale(appState.renderScaleTarget);
+            setActiveRenderScale(AUTO_RENDER_SCALE_RESTORED);
           }
         }, 160);
       }
