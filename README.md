@@ -14,6 +14,9 @@ Rust CLI for converting AECOsim / IFC2X3 `IfcBuildingElementProxy` + `FacetedBre
 - Spatial tiling with configurable feature / triangle limits.
 - Flat and smooth normal output modes.
 - Cesium demo viewer: select, focus display, explode, move-out pad, measurement, basemap switching, render scale control.
+- Three.js comparison viewers:
+  - pure Three.js + `3d-tiles-renderer`
+  - MapLibre GL JS + Three.js custom layer + `3d-tiles-renderer`
 
 ## Repository Policy
 
@@ -25,6 +28,9 @@ Git 只收可維護的 source / test / tool / doc：
 - `Cargo.toml`
 - `Cargo.lock`
 - `out/DJB-M-SU-_/index.html`
+- `out/DJB-M-SU-_/index_three.html`
+- `out/DJB-M-SU-_/index_maplibre_three.html`
+- `out/DJB-M-SU-_/three_viewer_common.js`
 - docs and license
 
 不收大型或可再生資料：
@@ -33,6 +39,7 @@ Git 只收可維護的 source / test / tool / doc：
 - `target/`
 - `out/**` generated tiles, tilesets, reports
 - local `Cesium-1.141` distribution
+- local Three / MapLibre / 3d-tiles-renderer `vendor/`
 
 `DJB-M-SU-_.ifc` 目前約 117MB，且可能含專案資料，不進 git。需要轉檔時放在專案根目錄或另外指定路徑即可。
 
@@ -82,6 +89,28 @@ python -m http.server 8098
 http://127.0.0.1:8098/index.html
 ```
 
+## Three.js Comparison Viewers
+
+先準備本機 vendor，不把第三方大檔提交進 git：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\prepare_three_vendor.ps1
+```
+
+開純 Three.js 版：
+
+```text
+http://127.0.0.1:8098/index_three.html
+```
+
+開 MapLibre + Three.js 版：
+
+```text
+http://127.0.0.1:8098/index_maplibre_three.html
+```
+
+這兩頁用來比較 renderer / 圖台整合效能，讀同一份 `tileset.json`、`tileset_smooth_90.json`、`tileset_smooth.json`。
+
 ## Verification
 
 ```powershell
@@ -99,4 +128,3 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\verify_index_page.ps1
   - `tileset.json`
   - `tileset_smooth_90.json`
   - `tileset_smooth.json`
-

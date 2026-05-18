@@ -19,6 +19,10 @@
 !/out/DJB-M-SU-_/
 /out/DJB-M-SU-_/*
 !/out/DJB-M-SU-_/index.html
+!/out/DJB-M-SU-_/index_three.html
+!/out/DJB-M-SU-_/index_maplibre_three.html
+!/out/DJB-M-SU-_/three_viewer_common.js
+/out/DJB-M-SU-_/vendor/
 
 # Temporary retile / conversion folders
 /out_*/

@@ -1,5 +1,31 @@
 # history.md
 
+## 2026-05-19
+
+### Three.js 比較 viewer
+
+- 新增 `out/DJB-M-SU-_/index_three.html`。
+  - 純 Three.js + `3d-tiles-renderer`。
+  - 用地面 / 水面 / 格網替代底圖，排除圖台變因。
+- 新增 `out/DJB-M-SU-_/index_maplibre_three.html`。
+  - MapLibre GL JS + Three.js custom layer + `3d-tiles-renderer`。
+  - 支援 EMAP5、Google 航照圖、Google 電子地圖、OSM。
+- 新增 `out/DJB-M-SU-_/three_viewer_common.js` 共用互動邏輯。
+  - 選取黃色高亮。
+  - 焦點顯示。
+  - 爆炸。
+  - 8 向移出方向盤。
+  - 量距 / 量面。
+  - 法線切換：平面、90°、全平滑。
+  - 自動畫質：操作中 50%，停止後 100%。
+  - 效能面板：FPS、frame time、tile stats、triangle estimate、memory / bytes estimate。
+- 新增 `tools/prepare_three_vendor.ps1`。
+  - 固定 Three.js `0.183.0`。
+  - 固定 `3d-tiles-renderer` `0.4.21`。
+  - 固定 MapLibre GL JS `5.24.0`。
+  - vendor 放在 viewer 同層 `vendor/`，不進 git。
+- 擴充 `tools/verify_index_page.ps1`，同時檢查 Cesium viewer、Three viewer、MapLibre+Three viewer 與 vendor 準備腳本。
+
 ## 2026-05-18
 
 ### 專案建立
