@@ -1,0 +1,39 @@
+# Rust build output
+/target/
+
+# Local IFC / BIM source files are large and often project-confidential.
+*.ifc
+*.ifczip
+*.ifcZIP
+
+# Generated 3D Tiles / glTF assets
+*.b3dm
+*.i3dm
+*.pnts
+*.cmpt
+*.glb
+*.gltf
+
+# Conversion output: keep the hand-maintained demo viewer, ignore generated data.
+/out/*
+!/out/DJB-M-SU-_/
+/out/DJB-M-SU-_/*
+!/out/DJB-M-SU-_/index.html
+
+# Temporary retile / conversion folders
+/out_*/
+/*_tmp/
+
+# Local Cesium distributions copied beside generated viewers
+**/Cesium-*/
+
+# Logs, caches, and local editor/OS noise
+*.log
+*.tmp
+*.bak
+.env
+.env.*
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
