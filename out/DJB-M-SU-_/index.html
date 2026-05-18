@@ -973,21 +973,22 @@
         const selectedTileset = await ensureSelectedTileset();
         if (selectedTileset) {
           selectedTileset.show = true;
-          const selectedStyle = {
-            show: {
-              conditions: [
-                [condition, "true"],
-                ["true", "false"]
-              ]
-            }
-          };
-          if (appState.focusEnabled) {
-            selectedStyle.color = "color('#fef08a', 1.0)";
-          }
-          selectedTileset.style = new Cesium.Cesium3DTileStyle(selectedStyle);
+          selectedTileset.style = new Cesium.Cesium3DTileStyle(buildSelectedOverlayStyle(condition));
           applySelectedExplosion(Number(explodeSlider.value) / 100);
           applySelectedMoveOut(Number(moveOutSlider.value) / 100);
         }
+      }
+
+      function buildSelectedOverlayStyle(condition) {
+        return {
+          show: {
+            conditions: [
+              [condition, "true"],
+              ["true", "false"]
+            ]
+          },
+          color: "color('#fef08a', 1.0)"
+        };
       }
 
       function buildBaseSelectionStyle(condition) {

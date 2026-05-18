@@ -45,6 +45,7 @@ $checks = @(
   @{ Name = "ArcGIS 操作手感"; Pattern = 'configureArcgisLikeNavigation' },
   @{ Name = "透地邏輯"; Pattern = 'setUndergroundEnabled' },
   @{ Name = "選取淡化"; Pattern = 'applySelectionStyle' },
+  @{ Name = "選取黃色高亮"; Pattern = 'buildSelectedOverlayStyle' },
   @{ Name = "焦點 OFF 選取仍可用"; Pattern = 'buildBaseSelectionStyle' },
   @{ Name = "焦點 OFF 爆炸仍可用"; Pattern = 'applySelectedExplosion(value)' },
   @{ Name = "焦點 OFF 移出仍可用"; Pattern = 'applySelectedMoveOut(value)' },
