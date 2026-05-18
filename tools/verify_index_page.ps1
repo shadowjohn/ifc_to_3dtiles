@@ -36,6 +36,7 @@ $checks = @(
   @{ Name = "Render scale 預設 0.5"; Pattern = 'value="0.5"' },
   @{ Name = "Render scale 滑桿"; Pattern = 'id="renderScaleSlider"' },
   @{ Name = "Render scale 自動"; Pattern = 'id="autoRenderScaleToggle"' },
+  @{ Name = "Render scale debug log gated"; Pattern = 'debugRenderScale' },
   @{ Name = "Render scale 邏輯"; Pattern = 'applyRenderScale' },
   @{ Name = "移動中降畫質"; Pattern = 'configureAutoRenderScale' },
   @{ Name = "停止後回升畫質"; Pattern = 'restoreRenderScaleAfterMove' },

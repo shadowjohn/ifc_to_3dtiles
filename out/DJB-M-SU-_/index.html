@@ -368,7 +368,8 @@
       const focusToggle = document.getElementById("focusToggle");
       const undergroundToggle = document.getElementById("undergroundToggle");
       const basemapSelect = document.getElementById("basemapSelect");
-      const tilesetName = new URLSearchParams(location.search).get("tileset") || "tileset.json";
+      const query = new URLSearchParams(location.search);
+      const tilesetName = query.get("tileset") || "tileset.json";
       const tilesetUrl = "./" + tilesetName.replace(/^\/+/, "");
       const smooth90TilesetUrl = "./tileset_smooth_90.json";
       const smoothTilesetUrl = "./tileset_smooth.json";
@@ -392,6 +393,7 @@
         shadingMode: "flat",
         renderScale: 0.5,
         renderScaleTarget: 0.5,
+        debugRenderScale: query.get("debugScale") === "1",
         autoRenderScaleEnabled: true,
         cameraMoving: false,
         renderScaleRestoreTimer: null,
@@ -708,7 +710,9 @@
         appState.renderScale = nextScale;
         viewer.resolutionScale = nextScale;
         renderScaleValue.textContent = Math.round(nextScale * 100) + "%";
-        console.log("Cesium resolutionScale", viewer.resolutionScale);
+        if (appState.debugRenderScale) {
+          console.log("Cesium resolutionScale", viewer.resolutionScale);
+        }
         viewer.scene.requestRender();
       }
 
