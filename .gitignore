@@ -13,6 +13,10 @@
 *.rvt
 *.rfa
 *.rte
+*.dgn
+*.dwg
+*.dxf
+/sample_files/
 *.rvt-export-job.json
 *.rvt-export-result.json
 

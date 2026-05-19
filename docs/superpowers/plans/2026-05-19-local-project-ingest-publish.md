@@ -4,9 +4,9 @@
 
 **Goal:** Build a local-first project workspace that can inspect many IFC/DGN/DWG/RVT sources, detect CRS/scale problems, quarantine suspicious files, dump CAD hierarchy metadata, enrich metadata/group candidates, and publish one easy-to-load 3D Tiles package with flat / 90 / 180 normal modes.
 
-**Architecture:** Keep the existing Rust IFC/RVT converter as the geometry core, then add an ingest layer before conversion and a publish layer after conversion. The ingest layer writes deterministic manifests and reports; each approved source is converted into its own normalized tileset folder first, and the publish layer only creates root tilesets that reference those per-source tilesets. Do not merge source geometry at the start; source separation is required for large-project debugging, duplicate detection, quarantine, filtering, and group explosion. Every approved source is normalized into one canonical world space: `EPSG:3826` meters, local project ENU, Z-up.
+**Architecture:** This is a Local Web Platform / BIM-GIS workstation, not a Rust GUI app. Rust is the trusted controller and pipeline orchestrator, not a full CAD kernel. External tools handle DGN/DWG conversion and probing, SQLite stores the durable property/index database, and Cesium is the core GIS/BIM viewer. Keep the existing Rust IFC/RVT converter as the geometry core, then add an ingest layer before conversion and a publish layer after conversion. The ingest layer writes deterministic manifests and reports; each approved source is converted into its own normalized tileset folder first, and the publish layer only creates root tilesets that reference those per-source tilesets. Do not merge source geometry at the start; source separation is required for large-project debugging, duplicate detection, quarantine, filtering, and group explosion. Every approved source is normalized into one canonical world space: `EPSG:3826` meters, local project ENU, Z-up.
 
-**Tech Stack:** Rust CLI, serde JSON manifests, existing IFC STEP parser, optional GDAL/OGR CLI probes for DGN/DWG inspection, PowerShell helper scripts, Cesium / Three viewer metadata integration.
+**Tech Stack:** Rust CLI/core worker, optional Rust Axum local API, optional PHP dashboard adapter for existing 3wa-style deployment, serde JSON manifests, SQLite property/index database, existing IFC STEP parser, optional GDAL/OGR/ODA CLI probes for DGN/DWG inspection and conversion, PowerShell helper scripts, Bootstrap 5 + jQuery + GoldenLayout + Tabulator + jsTree, Cesium production viewer, Three.js debug GLB viewer.
 
 ---
 
@@ -28,6 +28,9 @@ Out of scope for this phase:
 - Cloud job queue or multi-user database.
 - Draco / meshopt compression.
 - Replacing Cesium production viewer.
+- Rust GUI, Qt Desktop, or Electron all-in-one app packaging for the first platform.
+
+The intended operator experience is a browser-based dockable workstation, closer to QGIS / Navisworks / VS Code than a normal website. Cesium must keep the largest screen area. Panels are for source tree, group tree, metadata, warnings, quarantine queue, SQL, logs/progress, and CRS/AOI debug overlays.
 
 ## File Structure
 
@@ -37,14 +40,211 @@ Out of scope for this phase:
 - Create `src/georef.rs`: canonical CRS normalization, source transform, scale detection, centroid/percentile AOI validation logic for EPSG:3826, `scale=1000.0/1.0/0.1/0.01/0.001`.
 - Create `src/fingerprint.rs`: geometry fingerprint and duplicate candidate detection by vertex count, triangle count, bbox, and surface area.
 - Create `src/grouping.rs`: derive group candidates from IFC metadata and future DGN/DWG dumps.
+- Create `src/properties_db.rs`: SQLite schema and writers for source, feature, group, material, transform, warning, and duplicate records.
 - Create `src/publish.rs`: wrap approved per-source normalized tilesets into one root publish folder with three normal-mode root tilesets plus `sources_manifest.json`, `groups.json`, and warnings.
 - Modify `src/main.rs`: add subcommands `inspect`, `convert-source`, `publish`, keep current direct conversion behavior.
+- Future create `src/server.rs`: Axum local API for project/source/feature/group/quarantine operations after inspect reports are trustworthy.
 - Modify `src/lib.rs`: export new modules.
 - Modify `src/convert.rs`: expose per-source conversion hooks and include new source/group fields in metadata.
 - Create `tests/project_pipeline.rs`: manifest/georef/group/publish tests.
 - Create `tools/inspect_cad_sources.ps1`: optional local helper that checks availability of `ogrinfo`, `ogr2ogr`, ODA/other CLI tools without requiring them.
 - Create `docs/local_project_workflow.md`: operator workflow and failure handling.
+- Future create `docs/local_web_workstation.md`: Cesium-first workstation UI layout and API/PHP dashboard contract.
 - Modify `.gitignore`: ignore `sample_files/`, `*.dgn`, `*.dwg`, and generated project workspaces.
+
+---
+
+### Task 0: Site Inventory And Freeze Baseline
+
+**Files:**
+- Create: `tools/inspect_cad_sources.ps1`
+- Modify: `.gitignore`
+- Modify: `history.md`
+
+This task freezes the current machine and sample-file state before implementation. Do not start geometry conversion or publish work until this baseline is recorded.
+
+- [ ] **Step 1: Ignore local CAD/BIM source drops**
+
+Modify `.gitignore` so project delivery files stay local:
+
+```gitignore
+*.dgn
+*.dwg
+*.dxf
+/sample_files/
+```
+
+- [ ] **Step 2: Create baseline CAD probe script**
+
+Create `tools/inspect_cad_sources.ps1`:
+
+```powershell
+param(
+  [Alias("Input")]
+  [string]$InputPath = "C:\Users\stw_s\Desktop\ifc_to_3dtiles\sample_files\淡江大橋移交模型",
+  [string]$Output = "C:\Users\stw_s\Desktop\ifc_to_3dtiles\out\cad_probe"
+)
+
+$ErrorActionPreference = "Stop"
+New-Item -ItemType Directory -Force -Path $Output | Out-Null
+
+function Get-ToolInfo {
+  param([string[]]$Names)
+
+  foreach ($name in $Names) {
+    $cmd = Get-Command $name -ErrorAction SilentlyContinue
+    if ($cmd) {
+      $version = $null
+      try {
+        $version = (Get-Item -LiteralPath $cmd.Source).VersionInfo.FileVersion
+      } catch {
+        $version = $null
+      }
+
+      return [ordered]@{
+        found = $true
+        name = $cmd.Name
+        source = $cmd.Source
+        version = $version
+      }
+    }
+  }
+
+  return [ordered]@{
+    found = $false
+    name = $Names[0]
+    source = $null
+    version = $null
+  }
+}
+
+function Get-OdaVersionRisk {
+  param([string]$Version)
+
+  if (-not $Version) {
+    return "unknown_version"
+  }
+
+  try {
+    $parsed = [version]$Version
+    if ($parsed.Major -lt 26) {
+      return "too_old_for_2026_cad_delivery"
+    }
+    return "acceptable_baseline"
+  } catch {
+    return "unparseable_version"
+  }
+}
+
+if (-not (Test-Path -LiteralPath $InputPath)) {
+  throw "輸入目錄不存在：$InputPath"
+}
+
+$files = Get-ChildItem -LiteralPath $InputPath -Recurse -File |
+  Sort-Object FullName |
+  Select-Object FullName, Extension, Length
+
+$extensionDistribution = $files |
+  Group-Object { if ($_.Extension) { $_.Extension.ToLowerInvariant() } else { "[no_extension]" } } |
+  Sort-Object -Property @{ Expression = "Count"; Descending = $true }, @{ Expression = "Name"; Ascending = $true } |
+  ForEach-Object {
+    [ordered]@{
+      extension = $_.Name
+      count = $_.Count
+      total_bytes = ($_.Group | Measure-Object -Property Length -Sum).Sum
+    }
+  }
+
+$cadFiles = $files | Where-Object { $_.Extension -match '^\.(dgn|dwg|dxf)$' }
+$tools = [ordered]@{
+  ogrinfo = Get-ToolInfo @("ogrinfo", "ogrinfo.exe")
+  ogr2ogr = Get-ToolInfo @("ogr2ogr", "ogr2ogr.exe")
+  oda_file_converter = Get-ToolInfo @("ODAFileConverter", "ODAFileConverter.exe")
+}
+$tools.oda_file_converter["version_risk"] = Get-OdaVersionRisk $tools.oda_file_converter.version
+
+$report = [ordered]@{
+  input = $InputPath
+  output = $Output
+  generated_at = (Get-Date).ToString("o")
+  tools = $tools
+  file_count = $files.Count
+  cad_file_count = $cadFiles.Count
+  extension_distribution = @($extensionDistribution)
+  cad_files = @($cadFiles)
+  note = "這支 probe 只盤點本機工具與檔案分布，不執行轉檔，也不需要 Bentley 付費工具。"
+}
+
+$reportPath = Join-Path $Output "cad_probe_report.json"
+$report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $reportPath -Encoding UTF8
+
+Write-Host "CAD probe report: $reportPath"
+Write-Host "Tools:"
+foreach ($toolName in $report.tools.Keys) {
+  $tool = $report.tools[$toolName]
+  if ($tool.found) {
+    Write-Host ("  {0}: FOUND - {1}" -f $toolName, $tool.source)
+  } else {
+    Write-Host ("  {0}: MISSING" -f $toolName)
+  }
+}
+
+Write-Host ("Sample files: {0}, CAD files: {1}" -f $report.file_count, $report.cad_file_count)
+Write-Host "Extension distribution:"
+foreach ($item in $report.extension_distribution) {
+  Write-Host ("  {0}: {1} files, {2} bytes" -f $item.extension, $item.count, $item.total_bytes)
+}
+```
+
+- [ ] **Step 3: Freeze git baseline**
+
+Run:
+
+```powershell
+git status --short --branch
+git log --oneline -5
+```
+
+Expected:
+
+- Branch is `main`.
+- The newest commit is recorded in `history.md`.
+- `sample_files/` must not appear as a tracked change after `.gitignore` is updated.
+
+- [ ] **Step 4: Freeze Rust test baseline**
+
+Run exactly:
+
+```powershell
+cargo test
+```
+
+Expected:
+
+- If `cargo` is available, tests pass before Task 1 starts.
+- If `cargo` is missing, record this as a Task 0 blocker in `history.md`; install or repair Rust before implementing Task 1.
+
+- [ ] **Step 5: Freeze CAD tool and sample-file baseline**
+
+Run:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\inspect_cad_sources.ps1
+```
+
+Expected:
+
+- `out\cad_probe\cad_probe_report.json` exists.
+- Report includes `ogrinfo`, `ogr2ogr`, and `oda_file_converter` availability.
+- Report includes `file_count`, `cad_file_count`, and extension distribution.
+- ODA File Converter versions below major `26` are marked `too_old_for_2026_cad_delivery`.
+
+- [ ] **Step 6: Commit**
+
+```powershell
+git add .gitignore tools/inspect_cad_sources.ps1 history.md docs/superpowers/plans/2026-05-19-local-project-ingest-publish.md
+git commit -m "Add baseline inventory task"
+```
 
 ---
 
@@ -1143,73 +1343,118 @@ git commit -m "Add source quarantine decision rules"
 
 ---
 
-### Task 6: CAD Tool Probe Script
+### Task 6: CAD Probe Report Integration
 
 **Files:**
-- Create: `tools/inspect_cad_sources.ps1`
+- Modify: `tools/inspect_cad_sources.ps1`
+- Modify: `src/inspect.rs`
 - Modify: `docs/local_project_workflow.md`
+- Test: `tests/project_pipeline.rs`
 
-- [ ] **Step 1: Create tool probe script**
+- [ ] **Step 1: Write failing test for importing CAD probe summary**
 
-Create `tools/inspect_cad_sources.ps1`:
+Add to `tests/project_pipeline.rs`:
 
-```powershell
-param(
-  [string]$Input = "C:\Users\stw_s\Desktop\ifc_to_3dtiles\sample_files\淡江大橋移交模型",
-  [string]$Output = "C:\Users\stw_s\Desktop\ifc_to_3dtiles\out\cad_probe"
-)
+```rust
+use ifc_to_3dtiles::inspect::CadProbeSummary;
 
-$ErrorActionPreference = "Stop"
-New-Item -ItemType Directory -Force -Path $Output | Out-Null
+#[test]
+fn cad_probe_summary_marks_old_oda_converter() {
+    let json = r#"{
+      "tools": {
+        "ogrinfo": {"found": true, "source": "C:\\ms4w_MSSQL\\GDAL\\ogrinfo.exe"},
+        "ogr2ogr": {"found": true, "source": "C:\\ms4w_MSSQL\\GDAL\\ogr2ogr.exe"},
+        "oda_file_converter": {
+          "found": true,
+          "source": "C:\\bin\\ODAFileConverter\\ODAFileConverter.exe",
+          "version": "20.12.0.0",
+          "version_risk": "too_old_for_2026_cad_delivery"
+        }
+      },
+      "file_count": 8,
+      "cad_file_count": 7,
+      "extension_distribution": [
+        {"extension": ".dwg", "count": 4, "total_bytes": 149951738},
+        {"extension": ".dgn", "count": 3, "total_bytes": 240211456},
+        {"extension": ".ifc", "count": 1, "total_bytes": 117439099}
+      ]
+    }"#;
 
-function Find-CommandPath {
-  param([string]$Name)
-  $cmd = Get-Command $Name -ErrorAction SilentlyContinue
-  if ($cmd) { return $cmd.Source }
-  return $null
+    let summary: CadProbeSummary = serde_json::from_str(json).expect("parse probe summary");
+    assert_eq!(summary.cad_file_count, 7);
+    assert_eq!(summary.tools.oda_file_converter.version_risk.as_deref(), Some("too_old_for_2026_cad_delivery"));
 }
-
-$tools = [ordered]@{
-  ogrinfo = Find-CommandPath "ogrinfo"
-  ogr2ogr = Find-CommandPath "ogr2ogr"
-  odaconvert = Find-CommandPath "ODAFileConverter"
-}
-
-$files = Get-ChildItem -LiteralPath $Input -Recurse -File |
-  Where-Object { $_.Extension -match '^\.(dgn|dwg)$' } |
-  Select-Object FullName, Extension, Length
-
-$report = [ordered]@{
-  input = $Input
-  output = $Output
-  tools = $tools
-  files = $files
-  note = "No paid Bentley tools are required by this probe. Missing tools are reported, not installed."
-}
-
-$reportPath = Join-Path $Output "cad_probe_report.json"
-$report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $reportPath -Encoding UTF8
-Write-Host $reportPath
 ```
 
-- [ ] **Step 2: Run script**
+- [ ] **Step 2: Run test and verify it fails**
+
+Run:
+
+```powershell
+cargo test cad_probe_summary_marks_old_oda_converter
+```
+
+Expected: fail because `CadProbeSummary` does not exist.
+
+- [ ] **Step 3: Implement probe summary structs**
+
+Add to `src/inspect.rs`:
+
+```rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CadProbeSummary {
+    pub tools: CadProbeTools,
+    pub file_count: usize,
+    pub cad_file_count: usize,
+    pub extension_distribution: Vec<CadExtensionSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CadProbeTools {
+    pub ogrinfo: CadToolSummary,
+    pub ogr2ogr: CadToolSummary,
+    pub oda_file_converter: CadToolSummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CadToolSummary {
+    pub found: bool,
+    pub source: Option<String>,
+    pub version: Option<String>,
+    pub version_risk: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CadExtensionSummary {
+    pub extension: String,
+    pub count: usize,
+    pub total_bytes: f64,
+}
+```
+
+- [ ] **Step 4: Run CAD probe and test**
 
 Run:
 
 ```powershell
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\inspect_cad_sources.ps1
+cargo test cad_probe_summary_marks_old_oda_converter
 ```
 
 Expected:
 
 - `out\cad_probe\cad_probe_report.json` exists.
-- Missing GDAL/ODA tools are recorded as `null` instead of failing.
+- Missing GDAL/ODA tools are recorded as `found=false` instead of failing.
+- ODA File Converter `20.12.0.0` is marked `too_old_for_2026_cad_delivery`.
+- Sample extension distribution is visible before conversion.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 5: Commit**
 
 ```powershell
-git add tools/inspect_cad_sources.ps1
-git commit -m "Add CAD source probe script"
+git add tools/inspect_cad_sources.ps1 src/inspect.rs tests/project_pipeline.rs docs/local_project_workflow.md
+git commit -m "Integrate CAD probe report into inspect workflow"
 ```
 
 ---
@@ -1758,6 +2003,248 @@ git commit -m "Add source and explode group metadata"
 
 ---
 
+### Task 8B: SQLite Property Database
+
+**Files:**
+- Modify: `Cargo.toml`
+- Create: `src/properties_db.rs`
+- Modify: `src/lib.rs`
+- Modify: `src/publish.rs`
+- Test: `tests/project_pipeline.rs`
+
+SQLite is the canonical property store. Batch Table metadata should keep lightweight lookup keys only; full source, group, material, transform, warning, duplicate, and property data belongs in `properties.sqlite`. Static viewers may receive a small derived JSON index, but the trusted source remains SQLite.
+
+- [ ] **Step 1: Add SQLite dependency**
+
+Modify `Cargo.toml`:
+
+```toml
+rusqlite = { version = "0.32", features = ["bundled"] }
+```
+
+- [ ] **Step 2: Write failing test for property DB schema**
+
+Add to `tests/project_pipeline.rs`:
+
+```rust
+use ifc_to_3dtiles::properties_db::{
+    FeaturePropertyRecord, SourcePropertyRecord, init_property_db, insert_feature_property,
+    insert_source_property,
+};
+
+#[test]
+fn property_db_preserves_source_and_feature_lookup_data() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let db_path = tmp.path().join("properties.sqlite");
+    let conn = init_property_db(&db_path).expect("init db");
+
+    insert_source_property(&conn, &SourcePropertyRecord {
+        source_id: "main-dgn".to_string(),
+        format: "dgn".to_string(),
+        status: "approved".to_string(),
+        crs: "EPSG:3826".to_string(),
+        scale_candidate: 1.0,
+        transform_json: r#"{"translation":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]}"#.to_string(),
+        warnings_json: "[]".to_string(),
+    }).expect("insert source");
+
+    insert_feature_property(&conn, &FeaturePropertyRecord {
+        source_id: "main-dgn".to_string(),
+        feature_key: "main-dgn:42".to_string(),
+        batch_id: 42,
+        global_id: "".to_string(),
+        ifc_step_id: None,
+        ifc_type: "".to_string(),
+        name: "Cable member".to_string(),
+        explode_group_key: "level:Cable".to_string(),
+        properties_json: r#"{"level":"Cable","material":"steel"}"#.to_string(),
+    }).expect("insert feature");
+
+    let count: i64 = conn
+        .query_row("select count(*) from feature_properties where explode_group_key = 'level:Cable'", [], |row| row.get(0))
+        .expect("query feature count");
+    assert_eq!(count, 1);
+}
+```
+
+- [ ] **Step 3: Run test and verify it fails**
+
+Run:
+
+```powershell
+cargo test property_db_preserves_source_and_feature_lookup_data
+```
+
+Expected: fail because `properties_db` module does not exist.
+
+- [ ] **Step 4: Implement schema and writers**
+
+Create `src/properties_db.rs`:
+
+```rust
+use anyhow::Result;
+use rusqlite::{Connection, params};
+use std::path::Path;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourcePropertyRecord {
+    pub source_id: String,
+    pub format: String,
+    pub status: String,
+    pub crs: String,
+    pub scale_candidate: f64,
+    pub transform_json: String,
+    pub warnings_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FeaturePropertyRecord {
+    pub source_id: String,
+    pub feature_key: String,
+    pub batch_id: i64,
+    pub global_id: String,
+    pub ifc_step_id: Option<i64>,
+    pub ifc_type: String,
+    pub name: String,
+    pub explode_group_key: String,
+    pub properties_json: String,
+}
+
+pub fn init_property_db(path: &Path) -> Result<Connection> {
+    let conn = Connection::open(path)?;
+    conn.execute_batch(
+        r#"
+        pragma journal_mode = wal;
+        create table if not exists source_properties (
+            source_id text primary key,
+            format text not null,
+            status text not null,
+            crs text not null,
+            scale_candidate real not null,
+            transform_json text not null,
+            warnings_json text not null
+        );
+        create table if not exists feature_properties (
+            feature_key text primary key,
+            source_id text not null,
+            batch_id integer not null,
+            global_id text not null,
+            ifc_step_id integer,
+            ifc_type text not null,
+            name text not null,
+            explode_group_key text not null,
+            properties_json text not null
+        );
+        create index if not exists idx_feature_source on feature_properties(source_id);
+        create index if not exists idx_feature_group on feature_properties(explode_group_key);
+        create index if not exists idx_feature_global_id on feature_properties(global_id);
+        "#,
+    )?;
+    Ok(conn)
+}
+
+pub fn insert_source_property(conn: &Connection, source: &SourcePropertyRecord) -> Result<()> {
+    conn.execute(
+        r#"
+        insert into source_properties (
+            source_id, format, status, crs, scale_candidate, transform_json, warnings_json
+        ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        on conflict(source_id) do update set
+            format = excluded.format,
+            status = excluded.status,
+            crs = excluded.crs,
+            scale_candidate = excluded.scale_candidate,
+            transform_json = excluded.transform_json,
+            warnings_json = excluded.warnings_json
+        "#,
+        params![
+            source.source_id,
+            source.format,
+            source.status,
+            source.crs,
+            source.scale_candidate,
+            source.transform_json,
+            source.warnings_json
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn insert_feature_property(conn: &Connection, feature: &FeaturePropertyRecord) -> Result<()> {
+    conn.execute(
+        r#"
+        insert into feature_properties (
+            feature_key, source_id, batch_id, global_id, ifc_step_id, ifc_type,
+            name, explode_group_key, properties_json
+        ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        on conflict(feature_key) do update set
+            source_id = excluded.source_id,
+            batch_id = excluded.batch_id,
+            global_id = excluded.global_id,
+            ifc_step_id = excluded.ifc_step_id,
+            ifc_type = excluded.ifc_type,
+            name = excluded.name,
+            explode_group_key = excluded.explode_group_key,
+            properties_json = excluded.properties_json
+        "#,
+        params![
+            feature.feature_key,
+            feature.source_id,
+            feature.batch_id,
+            feature.global_id,
+            feature.ifc_step_id,
+            feature.ifc_type,
+            feature.name,
+            feature.explode_group_key,
+            feature.properties_json
+        ],
+    )?;
+    Ok(())
+}
+```
+
+Modify `src/lib.rs`:
+
+```rust
+pub mod properties_db;
+```
+
+- [ ] **Step 5: Publish DB contract**
+
+During publish, write:
+
+```text
+publish/
+  properties.sqlite
+  properties_lookup.json
+```
+
+Rules:
+
+- `properties.sqlite` is canonical.
+- `properties_lookup.json` is a small static-viewer index with `feature_key -> source_id / batch_id / explode_group_key / display_name`.
+- Do not store large raw STEP or full CAD dumps inside Batch Table.
+- Keep `feature_key` stable across flat / smooth 90 / smooth 180 normal tilesets.
+
+- [ ] **Step 6: Run tests**
+
+Run:
+
+```powershell
+cargo test property_db_preserves_source_and_feature_lookup_data
+```
+
+Expected: pass.
+
+- [ ] **Step 7: Commit**
+
+```powershell
+git add Cargo.toml Cargo.lock src/properties_db.rs src/lib.rs src/publish.rs tests/project_pipeline.rs
+git commit -m "Add SQLite property database"
+```
+
+---
+
 ### Task 8A: Viewer Debug Contract And Shader Explode
 
 **Files:**
@@ -1873,6 +2360,8 @@ publish/
   tileset_smooth.json
   sources_manifest.json
   groups.json
+  properties.sqlite
+  properties_lookup.json
   warnings.json
 ```
 
@@ -1885,7 +2374,7 @@ publish/
    - `tileset.json`
    - `tileset_smooth_90.json`
    - `tileset_smooth.json`
-5. `viewer`: viewer reads one root tileset and can filter/explode by `source_id` and `explode_group_key`.
+5. `viewer`: viewer reads one root tileset and can filter/explode by `source_id` and `explode_group_key`; property search reads `properties_lookup.json` for static demo mode or `properties.sqlite` through a local/API adapter in managed mode.
 
 ## Scale Rules
 
@@ -1964,7 +2453,8 @@ Create `tools/verify_project_workflow.ps1`:
 
 ```powershell
 param(
-  [string]$Input = "C:\Users\stw_s\Desktop\ifc_to_3dtiles\sample_files\淡江大橋移交模型",
+  [Alias("Input")]
+  [string]$InputPath = "C:\Users\stw_s\Desktop\ifc_to_3dtiles\sample_files\淡江大橋移交模型",
   [string]$Output = "C:\Users\stw_s\Desktop\ifc_to_3dtiles\out\inspect_tamkang"
 )
 
@@ -1984,7 +2474,7 @@ if ($LASTEXITCODE -ne 0) {
   throw "cargo test failed"
 }
 
-& $cargo run -- inspect --input $Input --output $Output --source-epsg 3826
+& $cargo run -- inspect --input $InputPath --output $Output --source-epsg 3826
 if ($LASTEXITCODE -ne 0) {
   throw "inspect command failed"
 }
@@ -2026,6 +2516,171 @@ git commit -m "Add project workflow verification script"
 
 ---
 
+### Task 11: Local Web Workstation Direction
+
+**Files:**
+- Create: `docs/local_web_workstation.md`
+- Modify: `README.md`
+- Modify: `history.md`
+
+This task documents the product direction after inspect reports become trustworthy. It prevents the project from drifting into Rust GUI, Qt Desktop, Electron, or a generic single-page viewer. The target is a browser-based local workstation.
+
+- [ ] **Step 1: Create workstation architecture doc**
+
+Create `docs/local_web_workstation.md`:
+
+```markdown
+# Local Web Workstation
+
+## Positioning
+
+This project is a local web platform for BIM/GIS ingest, inspection, debugging, and publishing.
+
+It is not:
+
+- Rust GUI app
+- Qt desktop app
+- Electron all-in-one app
+- React-heavy SaaS dashboard
+
+## Responsibility Split
+
+| Layer | Responsibility |
+| --- | --- |
+| Rust core | inspect, manifest, quarantine, geometry pipeline, publish, SQLite access, CLI, background worker |
+| External tools | CAD/DGN/DWG conversion and probing |
+| SQLite | durable source, feature, group, material, warning, transform, duplicate, and property records |
+| Cesium | production GIS/BIM 3D Tiles viewer |
+| Three.js | GLB/small-model debug viewer only |
+| PHP dashboard or Axum API | local management UI/API over the same SQLite and manifest outputs |
+
+## Backend Direction
+
+First implementation target remains Rust CLI and worker. After inspect reports are trustworthy, expose the same project workspace through either:
+
+- Rust + Axum local API for standalone local web mode.
+- PHP dashboard adapter for existing 3wa-style deployment.
+
+Preferred API shape:
+
+```text
+GET  /api/projects
+GET  /api/sources
+GET  /api/source/:id
+GET  /api/features/:id
+GET  /api/groups
+POST /api/quarantine/approve
+POST /api/quarantine/reject
+POST /api/publish
+```
+
+## Frontend Direction
+
+Use stable low-friction libraries:
+
+| Function | Library |
+| --- | --- |
+| Layout | Bootstrap 5 |
+| DOM/events | jQuery |
+| Dock panels | GoldenLayout |
+| Tables | Tabulator |
+| Trees | jsTree |
+| Viewer | Cesium |
+| Charts | Chart.js |
+
+Do not use React, Vue, Angular, Tailwind, MUI, or a large state-management stack for the first workstation.
+
+## Workstation Layout
+
+```text
++------------------------------------------------+
+| toolbar                                        |
++---------+----------------------+---------------+
+| source  |                      | metadata      |
+| tree    |      Cesium          | properties    |
+| group   |                      | warnings      |
++---------+----------------------+---------------+
+| console / sql / progress / timeline            |
++------------------------------------------------+
+```
+
+Cesium must keep the largest screen area. Everything else supports inspection and debugging.
+
+## Required Panels
+
+- Source Tree
+- Group Tree
+- Feature Inspector
+- Quarantine Queue
+- AOI / CRS Debug Overlay
+- SQL Panel
+- Conversion Timeline
+- Warnings / Console
+
+## SQL Panel Contract
+
+The SQL panel queries `properties.sqlite`.
+
+Example:
+
+```sql
+SELECT feature_key, source_id, name, explode_group_key
+FROM feature_properties
+WHERE ifc_type = 'IfcCableSegment';
+```
+
+Query results must be highlightable in Cesium by `feature_key`.
+
+## Product Priority
+
+The first web workstation goal is inspect/debug, not visual polish.
+
+The workflows that matter most:
+
+- Which source has wrong scale.
+- Which source bbox or percentile bounds are suspicious.
+- Which source is duplicated.
+- Which DGN/DWG hierarchy bucket should drive explode/filter/search.
+- Which source is quarantined and why.
+```
+
+- [ ] **Step 2: Update README**
+
+Add:
+
+```markdown
+## Local Web Workstation Direction
+
+The preferred product shape is a local web platform: Rust core/worker, external CAD conversion tools, SQLite property database, and Cesium as the production viewer. Avoid Rust GUI, Qt Desktop, and Electron packaging for the first version.
+
+See `docs/local_web_workstation.md`.
+```
+
+- [ ] **Step 3: Update history**
+
+Add:
+
+```markdown
+### Local Web Workstation Direction
+
+- Direction set to Local Web Platform / BIM-GIS workstation.
+- Rust remains the trusted pipeline core.
+- External tools handle DGN/DWG conversion/probing.
+- SQLite stores durable property data.
+- Cesium remains the core production viewer.
+- Bootstrap + jQuery + GoldenLayout + Tabulator + jsTree are preferred for UI.
+- Rust GUI, Qt Desktop, and Electron all-in-one packaging are explicitly deferred.
+```
+
+- [ ] **Step 4: Commit**
+
+```powershell
+git add docs/local_web_workstation.md README.md history.md docs/superpowers/plans/2026-05-19-local-project-ingest-publish.md
+git commit -m "Document local web workstation direction"
+```
+
+---
+
 ## Final Verification
 
 Run:
@@ -2047,6 +2702,7 @@ Expected:
   - duplicate candidate hints.
   - centroid/percentile bounds and quarantine/approval hints for mixed CRS/scale source handling.
   - publish debug manifests: `sources_manifest.json`, `groups.json`, `warnings.json`.
+  - property database: `properties.sqlite` plus static viewer lookup `properties_lookup.json`.
 
 ## Rollout
 
@@ -2058,11 +2714,11 @@ Expected:
 6. Confirm IFC group candidates are too coarse and DGN/DWG dump is needed for reference/model/level/cell/material grouping.
 7. Convert only approved sources into separate `normalized/<source-id>/` tilesets.
 8. Publish root tilesets after source review; root tilesets reference child tilesets and do not merge geometry buffers.
-9. Treat Level 1 correctness as the acceptance gate: CRS, scale, canonical transform, centroid/percentile bounds, source identity, CAD hierarchy, group keys, group centers, material/color metadata, property metadata, duplicate suppression, and quarantine decisions.
+9. Treat Level 1 correctness as the acceptance gate: CRS, scale, canonical transform, centroid/percentile bounds, source identity, CAD hierarchy, group keys, group centers, material/color metadata, SQLite-backed property metadata, duplicate suppression, and quarantine decisions.
 10. Track Level 2 fidelity separately: perfect geometry, perfect hierarchy, parametric solids, smart objects, civil alignment, terrain, and OpenRoads metadata.
 
 ## Self-Review
 
-- Spec coverage: plan covers local workspace, DGN/DWG hierarchy inspect dump, scale normalization, canonical CRS/source transform, centroid/percentile AOI validation, duplicate fingerprinting, quarantine, group candidates, group spatial centers, shader explode contract, per-source normalized tilesets, publish root wrapping, viewer debug metadata, docs, and verification.
+- Spec coverage: plan covers local workspace, DGN/DWG hierarchy inspect dump, scale normalization, canonical CRS/source transform, centroid/percentile AOI validation, duplicate fingerprinting, quarantine, group candidates, group spatial centers, SQLite property database, shader explode contract, per-source normalized tilesets, publish root wrapping, viewer debug metadata, docs, and verification.
 - Placeholder scan: no placeholder tokens remain.
-- Type consistency: `SourceFormat`, `SourceStatus`, `WorkspaceLayout`, `ProjectManifest`, `CadHierarchyDump`, `Bounds2`, `BoundsSummary`, `Aoi`, `SourceTransform`, `GeometryFingerprint`, `PublishSource`, `SourceManifestEntry`, `GroupManifestEntry`, and metadata fields are introduced before later tasks use them.
+- Type consistency: `SourceFormat`, `SourceStatus`, `WorkspaceLayout`, `ProjectManifest`, `CadHierarchyDump`, `Bounds2`, `BoundsSummary`, `Aoi`, `SourceTransform`, `GeometryFingerprint`, `SourcePropertyRecord`, `FeaturePropertyRecord`, `PublishSource`, `SourceManifestEntry`, `GroupManifestEntry`, and metadata fields are introduced before later tasks use them.

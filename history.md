@@ -164,3 +164,36 @@
   - `cargo test` 通過。
   - `cargo build` 通過。
   - 直接轉 `out/阻泥器/阻尼器(比例需調整).ifc` 到 `out/阻泥器_ifc_verify/阻尼器(比例需調整)` 成功，產出 flat/smooth GLB、metadata、tiles、unsupported report。
+
+### Local Project Baseline Freeze
+
+- 新增 Task 0：先做現場盤點 / Freeze Baseline，再開始 project ingest 實作。
+- `git status --short --branch`：`main...origin/main`，原本只剩 `sample_files/` 未追蹤；已補 `.gitignore` 忽略 `sample_files/`、`*.dgn`、`*.dwg`、`*.dxf`。
+- `git log --oneline -5` 最新為：
+  - `f01bcb5 Add CAD inspect metadata priorities to ingest plan`
+  - `678ae86 Clarify per-source tileset publish plan`
+  - `536c0fa Plan local project ingest workflow`
+  - `c923d19 擴充 rvt`
+  - `986cb16 擴充 rvt`
+- `cargo test`：目前 shell PATH 找不到 `cargo`，Task 1 前需先修 Rust toolchain / PATH。
+- 新增 `tools/inspect_cad_sources.ps1`，用於盤點 CAD 工具與樣本檔案分布，不執行轉檔。
+- CAD probe 結果：
+  - `ogrinfo`: `C:\ms4w_MSSQL\GDAL\ogrinfo.exe`
+  - `ogr2ogr`: `C:\ms4w_MSSQL\GDAL\ogr2ogr.exe`
+  - `ODAFileConverter`: `C:\bin\ODAFileConverter\ODAFileConverter.exe`
+  - ODA File Converter 版本：`20.12.0.0`，標記為 `too_old_for_2026_cad_delivery`
+  - sample files：8 檔，CAD 7 檔
+  - `.dwg`: 4 檔，149,951,738 bytes
+  - `.dgn`: 3 檔，240,211,456 bytes
+  - `.ifc`: 1 檔，117,439,099 bytes
+- 架構分層確認：
+  - Rust = 主控與可信 pipeline
+  - 外部工具 = CAD/DGN/DWG 轉換
+  - SQLiteDB = 屬性資料
+  - Cesium/JS = 顯示與互動
+- 產品方向確認為 Local Web Platform / BIM-GIS workstation：
+  - 後端核心優先 Rust CLI / worker，後續可加 Axum local API。
+  - 可銜接既有 3wa 風格 PHP Dashboard 讀 SQLite / manifest。
+  - 前端優先 Bootstrap + jQuery + GoldenLayout + Tabulator + jsTree + Cesium。
+  - Cesium 是正式 GIS/BIM viewer；Three.js 只作 GLB / small model debug viewer。
+  - 第一版不做 Rust GUI、Qt Desktop、Electron 全包。
