@@ -12,6 +12,7 @@ use crate::{
     crs::project_to_wgs84,
     inspect_drilldown::{ApprovalManifests, ApprovalSourceDecision},
     project::{ProjectManifest, SourceFormat, SourceRecord},
+    spatial_qa::{SpatialQaManifest, render_spatial_qa_review_summary, write_spatial_qa_manifest},
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -172,6 +173,8 @@ pub fn write_publish_skeleton_outputs(input: &Path, output: &Path) -> Result<()>
         .with_context(|| format!("寫入 normalized manifest 失敗：{}", source_dir.display()))?;
     }
 
+    let spatial_qa = write_spatial_qa_manifest(input, output)?;
+
     fs::write(
         output.join("sources_manifest.json"),
         serde_json::to_vec_pretty(&skeleton.sources_manifest)?,
@@ -184,10 +187,10 @@ pub fn write_publish_skeleton_outputs(input: &Path, output: &Path) -> Result<()>
     .with_context(|| format!("寫入 debug_overlays 失敗：{}", output.display()))?;
     fs::write(
         output.join("index.html"),
-        render_publish_viewer_html_with_data(Some(&skeleton)),
+        render_publish_viewer_html_with_data_and_spatial(Some(&skeleton), Some(&spatial_qa)),
     )
     .with_context(|| format!("寫入 publish viewer 失敗：{}", output.display()))?;
-    update_review_report(input, output, &skeleton)?;
+    update_review_report(input, output, &skeleton, &spatial_qa)?;
     Ok(())
 }
 
@@ -196,17 +199,29 @@ pub fn render_publish_viewer_html() -> String {
 }
 
 pub fn render_publish_viewer_html_with_data(skeleton: Option<&PublishSkeleton>) -> String {
+    render_publish_viewer_html_with_data_and_spatial(skeleton, None)
+}
+
+pub fn render_publish_viewer_html_with_data_and_spatial(
+    skeleton: Option<&PublishSkeleton>,
+    spatial_qa: Option<&SpatialQaManifest>,
+) -> String {
     let embedded_sources = skeleton
         .and_then(|skeleton| serde_json::to_string(&skeleton.sources_manifest).ok())
         .unwrap_or_else(|| "null".to_string());
     let embedded_overlays = skeleton
         .and_then(|skeleton| serde_json::to_string(&skeleton.debug_overlays).ok())
         .unwrap_or_else(|| "null".to_string());
+    let embedded_spatial_qa = spatial_qa
+        .and_then(|spatial_qa| serde_json::to_string(spatial_qa).ok())
+        .unwrap_or_else(|| "null".to_string());
     let embedded = format!(
         r#"<script type="application/json" id="embeddedSourcesManifest">{}</script>
-  <script type="application/json" id="embeddedDebugOverlays">{}</script>"#,
+  <script type="application/json" id="embeddedDebugOverlays">{}</script>
+  <script type="application/json" id="embeddedSpatialQaManifest">{}</script>"#,
         script_safe_json(&embedded_sources),
-        script_safe_json(&embedded_overlays)
+        script_safe_json(&embedded_overlays),
+        script_safe_json(&embedded_spatial_qa)
     );
     r##"<!doctype html>
 <html lang="zh-Hant">
@@ -220,6 +235,15 @@ pub fn render_publish_viewer_html_with_data(skeleton: Option<&PublishSkeleton>) 
     #toolbar { position:absolute; z-index:2; top:12px; left:12px; background:rgba(16,20,24,.92); border:1px solid #2b3642; border-radius:8px; padding:10px 12px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
     #toolbar label { display:flex; gap:6px; align-items:center; white-space:nowrap; }
     #status { position:absolute; z-index:2; right:12px; bottom:12px; max-width:520px; max-height:40vh; overflow:auto; background:rgba(16,20,24,.92); border:1px solid #2b3642; border-radius:8px; padding:10px 12px; white-space:pre-wrap; }
+    #detailPanel { position:absolute; z-index:2; top:12px; right:12px; width:min(390px, calc(100vw - 24px)); max-height:calc(100vh - 96px); overflow:auto; background:rgba(16,20,24,.94); border:1px solid #2b3642; border-radius:8px; padding:12px; box-shadow:0 16px 40px rgba(0,0,0,.38); }
+    #detailPanel h2 { margin:0 0 8px; font-size:16px; }
+    #detailPanel h3 { margin:12px 0 6px; font-size:13px; color:#dce8f3; }
+    #detailPanel p { margin:4px 0; }
+    #detailPanel ul { margin:4px 0 0 18px; padding:0; }
+    #detailPanel li { margin:2px 0; }
+    .muted { color:#91a0ad; }
+    .mono { font-family:Consolas, "Cascadia Mono", monospace; font-size:12px; }
+    .pill { display:inline-block; margin:0 4px 4px 0; padding:2px 7px; border:1px solid #3c4a57; border-radius:999px; background:#121a22; font-size:12px; }
     #missingCesium { display:none; position:absolute; inset:0; z-index:5; align-items:center; justify-content:center; padding:24px; text-align:center; background:#101418; color:#ffd2d2; }
     .btn { border:1px solid #3c4a57; background:#18222b; color:#e8eef5; border-radius:6px; padding:6px 10px; cursor:pointer; }
   </style>
@@ -232,16 +256,33 @@ pub fn render_publish_viewer_html_with_data(skeleton: Option<&PublishSkeleton>) 
     <label><input id="approvedToggle" type="checkbox" checked> approved only</label>
     <label><input id="rejectedToggle" type="checkbox"> rejected bbox</label>
     <label><input id="needsReviewToggle" type="checkbox"> needs review bbox</label>
+    <label><input id="percentileBboxToggle" type="checkbox" checked> percentile bbox</label>
+    <label><input id="rawBboxToggle" type="checkbox"> raw bbox</label>
+    <label><input id="aoiToggle" type="checkbox" checked> AOI</label>
+    <label><input id="outlierToggle" type="checkbox"> outliers</label>
+    <label><input id="duplicateCompareToggle" type="checkbox"> duplicate compare</label>
     <button id="flyBtn" class="btn">Zoom</button>
   </div>
+  <aside id="detailPanel">
+    <h2>Spatial QA</h2>
+    <p class="muted">點 bbox / outlier marker 查看來源、狀態、scale、warnings、duplicate、top layers。</p>
+  </aside>
   <pre id="status">sources_manifest.json / debug_overlays.json</pre>
   <!--EMBEDDED_MANIFESTS-->
   <script>
     const DATA_FILES = {
       approved: "sources_manifest.json",
-      overlays: "debug_overlays.json"
+      overlays: "debug_overlays.json",
+      spatialQa: "spatial_qa_manifest.json"
     };
-    const state = { approved: [], rejected: [], needs_review: [], entities: [] };
+    const state = {
+      approved: [],
+      rejected: [],
+      needs_review: [],
+      spatialQa: null,
+      sourceDetails: new Map(),
+      entities: []
+    };
     function status(text) {
       document.getElementById("status").textContent = text;
     }
@@ -265,21 +306,55 @@ pub fn render_publish_viewer_html_with_data(skeleton: Option<&PublishSkeleton>) 
       if (decision === "rejected") return Cesium.Color.RED;
       return Cesium.Color.YELLOW;
     }
-    function bboxToRectangleEntity(item, decision) {
-      if (!item.bbox_wgs84) return null;
-      const b = item.bbox_wgs84;
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+    function formatNumber(value) {
+      if (value === null || value === undefined || !Number.isFinite(Number(value))) return "-";
+      return Number(value).toLocaleString(undefined, { maximumFractionDigits: 3 });
+    }
+    function formatList(items, emptyText) {
+      if (!items || !items.length) return `<p class="muted">${escapeHtml(emptyText || "none")}</p>`;
+      return "<ul>" + items.map(item => `<li>${escapeHtml(item)}</li>`).join("") + "</ul>";
+    }
+    function formatCounts(items) {
+      if (!items || !items.length) return `<p class="muted">none</p>`;
+      return items.map(item => `<span class="pill">${escapeHtml(item.name)} ${formatNumber(item.count)}</span>`).join("");
+    }
+    function propValue(entity, key) {
+      const value = entity && entity.properties && entity.properties[key];
+      if (!value) return undefined;
+      return typeof value.getValue === "function" ? value.getValue(Cesium.JulianDate.now()) : value;
+    }
+    function bboxForKind(source, kind) {
+      if (!source) return null;
+      if (kind === "raw") return source.raw_bbox_wgs84;
+      return source.percentile_bbox_wgs84 || source.raw_bbox_wgs84;
+    }
+    function bboxToRectangleEntity(item, decision, kind) {
+      const detail = state.sourceDetails.get(item.source_id) || item;
+      const b = bboxForKind(detail, kind || "percentile") || item.bbox_wgs84;
+      if (!b) return null;
+      const isRaw = kind === "raw";
       return {
-        name: item.original_file_name,
+        name: `${item.original_file_name} ${isRaw ? "raw" : "percentile"} bbox`,
         rectangle: {
           coordinates: Cesium.Rectangle.fromDegrees(b[0], b[1], b[3], b[4]),
           height: b[2],
           extrudedHeight: Math.max(b[5], b[2] + 1),
-          material: fillColor(decision),
+          material: (isRaw ? outlineColor(decision).withAlpha(0.08) : fillColor(decision)),
           outline: true,
           outlineColor: outlineColor(decision)
         },
         properties: {
+          qa_kind: "source",
           source_id: item.source_id,
+          bbox_kind: isRaw ? "raw" : "percentile",
           original_file_name: item.original_file_name,
           approval_decision: item.approval_decision,
           reason: item.reason,
@@ -288,11 +363,134 @@ pub fn render_publish_viewer_html_with_data(skeleton: Option<&PublishSkeleton>) 
         }
       };
     }
+    function aoiEntity() {
+      const aoi = state.spatialQa && state.spatialQa.aoi;
+      if (!aoi || !aoi.wgs84_bbox) return null;
+      const b = aoi.wgs84_bbox;
+      return {
+        name: "EPSG:3826 AOI",
+        rectangle: {
+          coordinates: Cesium.Rectangle.fromDegrees(b[0], b[1], b[2], b[3]),
+          material: Cesium.Color.CYAN.withAlpha(0.06),
+          outline: true,
+          outlineColor: Cesium.Color.CYAN
+        },
+        properties: { qa_kind: "aoi" }
+      };
+    }
+    function duplicateCompareEntities() {
+      const entities = [];
+      const pairs = state.spatialQa?.duplicate_pairs || [];
+      for (const pair of pairs) {
+        const a = pair.source_a_percentile_bbox_wgs84;
+        const b = pair.source_b_percentile_bbox_wgs84;
+        if (a) {
+          entities.push({
+            name: `${pair.source_a_name} duplicate compare`,
+            rectangle: {
+              coordinates: Cesium.Rectangle.fromDegrees(a[0], a[1], a[3], a[4]),
+              height: a[2],
+              extrudedHeight: Math.max(a[5], a[2] + 1),
+              material: Cesium.Color.LIME.withAlpha(0.12),
+              outline: true,
+              outlineColor: Cesium.Color.LIME
+            },
+            properties: { qa_kind: "duplicate", source_id: pair.source_a_id, pair_source_id: pair.source_b_id }
+          });
+        }
+        if (b) {
+          entities.push({
+            name: `${pair.source_b_name} duplicate compare`,
+            rectangle: {
+              coordinates: Cesium.Rectangle.fromDegrees(b[0], b[1], b[3], b[4]),
+              height: b[2],
+              extrudedHeight: Math.max(b[5], b[2] + 1),
+              material: Cesium.Color.RED.withAlpha(0.12),
+              outline: true,
+              outlineColor: Cesium.Color.RED
+            },
+            properties: { qa_kind: "duplicate", source_id: pair.source_b_id, pair_source_id: pair.source_a_id }
+          });
+        }
+      }
+      return entities;
+    }
+    function outlierEntity(outlier) {
+      if (!outlier.center_wgs84) return null;
+      const c = outlier.center_wgs84;
+      return {
+        name: `${outlier.original_file_name} FID ${outlier.fid}`,
+        position: Cesium.Cartesian3.fromDegrees(c[0], c[1], c[2] || 0),
+        point: {
+          pixelSize: 10,
+          color: Cesium.Color.MAGENTA.withAlpha(0.92),
+          outlineColor: Cesium.Color.WHITE,
+          outlineWidth: 1
+        },
+        properties: {
+          qa_kind: "outlier",
+          source_id: outlier.source_id,
+          fid: outlier.fid,
+          outlier_index: outlier._index
+        }
+      };
+    }
     function readEmbeddedJson(id) {
       const node = document.getElementById(id);
       const text = node && node.textContent ? node.textContent.trim() : "";
       if (!text || text === "null") return null;
       return JSON.parse(text);
+    }
+    function showSourceDetail(sourceId, titleSuffix) {
+      const source = state.sourceDetails.get(sourceId);
+      const panel = document.getElementById("detailPanel");
+      if (!source) {
+        panel.innerHTML = `<h2>Spatial QA</h2><p class="muted">找不到 source detail：${escapeHtml(sourceId)}</p>`;
+        return;
+      }
+      const duplicateItems = (source.duplicate_candidates || [])
+        .map(candidate => `${candidate.original_file_name} ${(candidate.score * 100).toFixed(1)}%`);
+      panel.innerHTML = `
+        <h2>${escapeHtml(source.original_file_name)} ${escapeHtml(titleSuffix || "")}</h2>
+        <p><b>source</b> <span class="mono">${escapeHtml(source.source_id)}</span></p>
+        <p><b>status</b> ${escapeHtml(source.inspect_status)} / ${escapeHtml(source.approval_decision)}</p>
+        <p><b>scale</b> ${source.selected_scale ?? "-"}</p>
+        <p><b>entities</b> ${formatNumber(source.entity_count)} · <b>vertices</b> ${formatNumber(source.vertex_count)}</p>
+        <p><b>duplicate_of</b> <span class="mono">${escapeHtml(source.duplicate_of || "-")}</span></p>
+        <h3>Warnings</h3>${formatList(source.warnings, "none")}
+        <h3>Quarantine</h3>${formatList(source.quarantine_reasons, "none")}
+        <h3>Duplicate</h3>${formatList(duplicateItems, "none")}
+        <h3>Top Layers</h3>${formatCounts(source.top_layers)}
+        <h3>Geometry Types</h3>${formatCounts(source.geometry_types)}
+        <h3>BBox</h3>
+        <p class="mono">raw: ${escapeHtml(JSON.stringify(source.raw_bbox || null))}</p>
+        <p class="mono">P0.5/P99.5: ${escapeHtml(JSON.stringify(source.percentile_bbox || null))}</p>
+      `;
+    }
+    function showOutlierDetail(outlier) {
+      const panel = document.getElementById("detailPanel");
+      panel.innerHTML = `
+        <h2>Outlier FID ${escapeHtml(outlier.fid)}</h2>
+        <p><b>source</b> ${escapeHtml(outlier.original_file_name)} <span class="mono">${escapeHtml(outlier.source_id)}</span></p>
+        <p><b>layer</b> ${escapeHtml(outlier.layer)}</p>
+        <p><b>handle</b> <span class="mono">${escapeHtml(outlier.entity_handle || "-")}</span></p>
+        <p><b>type</b> ${escapeHtml(outlier.geometry_type || "-")}</p>
+        <p><b>reason</b> ${escapeHtml(outlier.reason)}</p>
+        <p><b>score</b> ${formatNumber(outlier.score)}</p>
+        <p><b>distance AOI</b> ${formatNumber(outlier.distance_from_aoi)} m</p>
+        <p><b>distance source center</b> ${formatNumber(outlier.distance_from_source_center)} m</p>
+        <p class="mono">bbox: ${escapeHtml(JSON.stringify(outlier.bbox))}</p>
+      `;
+    }
+    function showAoiDetail() {
+      const aoi = state.spatialQa?.aoi;
+      if (!aoi) return;
+      document.getElementById("detailPanel").innerHTML = `
+        <h2>AOI</h2>
+        <p><b>EPSG</b> ${aoi.epsg}</p>
+        <p class="mono">EPSG:3826 ${escapeHtml(JSON.stringify(aoi.epsg3826_bbox))}</p>
+        <p class="mono">WGS84 ${escapeHtml(JSON.stringify(aoi.wgs84_bbox))}</p>
+      `;
     }
     function createEmap5WmtsProvider() {
       const provider = new Cesium.UrlTemplateImageryProvider({
@@ -319,20 +517,41 @@ pub fn render_publish_viewer_html_with_data(skeleton: Option<&PublishSkeleton>) 
     }
     function addGroup(viewer, items, decision) {
       for (const item of items) {
-        const entityDef = bboxToRectangleEntity(item, decision);
-        if (entityDef) state.entities.push(viewer.entities.add(entityDef));
+        if (document.getElementById("percentileBboxToggle").checked) {
+          const entityDef = bboxToRectangleEntity(item, decision, "percentile");
+          if (entityDef) state.entities.push(viewer.entities.add(entityDef));
+        }
+        if (document.getElementById("rawBboxToggle").checked) {
+          const entityDef = bboxToRectangleEntity(item, decision, "raw");
+          if (entityDef) state.entities.push(viewer.entities.add(entityDef));
+        }
       }
     }
     function refresh(viewer) {
       clearEntities(viewer);
+      if (document.getElementById("aoiToggle").checked) {
+        const entityDef = aoiEntity();
+        if (entityDef) state.entities.push(viewer.entities.add(entityDef));
+      }
       if (document.getElementById("approvedToggle").checked) addGroup(viewer, state.approved, "approved");
       if (document.getElementById("rejectedToggle").checked) addGroup(viewer, state.rejected, "rejected");
       if (document.getElementById("needsReviewToggle").checked) addGroup(viewer, state.needs_review, "needs_review");
+      if (document.getElementById("duplicateCompareToggle").checked) {
+        for (const entityDef of duplicateCompareEntities()) state.entities.push(viewer.entities.add(entityDef));
+      }
+      if (document.getElementById("outlierToggle").checked) {
+        (state.spatialQa?.outliers || []).forEach((outlier, index) => {
+          outlier._index = index;
+          const entityDef = outlierEntity(outlier);
+          if (entityDef) state.entities.push(viewer.entities.add(entityDef));
+        });
+      }
       status([
         "basemap: EMAP5 WMTS",
         `approved only: ${state.approved.length}`,
         `rejected bbox: ${state.rejected.length}`,
         `needs review bbox: ${state.needs_review.length}`,
+        `outlier marker: ${(state.spatialQa?.outliers || []).length}`,
         "metadata: source_id, original_file_name, approval_decision, reason, duplicate_of"
       ].join("\n"));
     }
@@ -343,6 +562,25 @@ pub fn render_publish_viewer_html_with_data(skeleton: Option<&PublishSkeleton>) 
         throw new Error(`${url} 沒有內嵌資料；請重新執行 Phase 1F publish skeleton，或改用本機 HTTP server 開啟。`);
       }
       return Cesium.Resource.fetchJson({ url });
+    }
+    function setupPickHandler(viewer) {
+      const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+      handler.setInputAction((movement) => {
+        const picked = viewer.scene.pick(movement.position);
+        const entity = picked && picked.id;
+        if (!entity) return;
+        const kind = propValue(entity, "qa_kind");
+        if (kind === "source" || kind === "duplicate") {
+          showSourceDetail(propValue(entity, "source_id"), propValue(entity, "bbox_kind"));
+        } else if (kind === "outlier") {
+          const index = Number(propValue(entity, "outlier_index"));
+          const outlier = state.spatialQa?.outliers?.[index];
+          if (outlier) showOutlierDetail(outlier);
+        } else if (kind === "aoi") {
+          showAoiDetail();
+        }
+      }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+      return handler;
     }
     async function main() {
       if (!window.Cesium) { cesiumMissing(); return; }
@@ -369,14 +607,25 @@ pub fn render_publish_viewer_html_with_data(skeleton: Option<&PublishSkeleton>) 
       setupWmtsBasemap(viewer);
       const approved = await loadJson(DATA_FILES.approved, "embeddedSourcesManifest");
       const overlays = await loadJson(DATA_FILES.overlays, "embeddedDebugOverlays");
+      state.spatialQa = await loadJson(DATA_FILES.spatialQa, "embeddedSpatialQaManifest");
+      for (const source of (state.spatialQa?.sources || [])) {
+        state.sourceDetails.set(source.source_id, source);
+      }
       state.approved = approved.sources || [];
       state.rejected = (overlays.sources || []).filter(s => s.approval_decision === "rejected");
       state.needs_review = (overlays.sources || []).filter(s => s.approval_decision === "needs_review");
       document.getElementById("approvedToggle").addEventListener("change", () => refresh(viewer));
       document.getElementById("rejectedToggle").addEventListener("change", () => refresh(viewer));
       document.getElementById("needsReviewToggle").addEventListener("change", () => refresh(viewer));
+      document.getElementById("percentileBboxToggle").addEventListener("change", () => refresh(viewer));
+      document.getElementById("rawBboxToggle").addEventListener("change", () => refresh(viewer));
+      document.getElementById("aoiToggle").addEventListener("change", () => refresh(viewer));
+      document.getElementById("outlierToggle").addEventListener("change", () => refresh(viewer));
+      document.getElementById("duplicateCompareToggle").addEventListener("change", () => refresh(viewer));
       document.getElementById("flyBtn").addEventListener("click", () => viewer.zoomTo(viewer.entities));
+      setupPickHandler(viewer);
       refresh(viewer);
+      if (state.approved[0]) showSourceDetail(state.approved[0].source_id, "approved");
       if (state.entities.length) viewer.zoomTo(viewer.entities);
     }
     main().catch(err => status(String(err && err.stack || err)));
@@ -513,7 +762,12 @@ fn bbox_to_wgs84(bbox: [f64; 6]) -> Result<[f64; 6]> {
     ])
 }
 
-fn update_review_report(input: &Path, output: &Path, skeleton: &PublishSkeleton) -> Result<()> {
+fn update_review_report(
+    input: &Path,
+    output: &Path,
+    skeleton: &PublishSkeleton,
+    spatial_qa: &SpatialQaManifest,
+) -> Result<()> {
     let path = input.join("review_report.html");
     if !path.exists() {
         return Ok(());
@@ -527,7 +781,17 @@ fn update_review_report(input: &Path, output: &Path, skeleton: &PublishSkeleton)
         .unwrap_or(&html)
         .trim_end_matches("</main></body></html>")
         .to_string();
-    let section = render_phase1f_review_section(output, skeleton);
+    let section = format!(
+        "{}{}",
+        render_phase1f_review_section(output, skeleton),
+        render_spatial_qa_review_summary(
+            "publish/spatial_qa_manifest.json",
+            &spatial_qa.aoi,
+            spatial_qa.sources.len(),
+            spatial_qa.duplicate_pairs.len(),
+            spatial_qa.outliers.len(),
+        )
+    );
     fs::write(path, format!("{clean}{section}</main></body></html>"))
         .with_context(|| "寫入 Phase 1F review_report summary 失敗".to_string())?;
     Ok(())

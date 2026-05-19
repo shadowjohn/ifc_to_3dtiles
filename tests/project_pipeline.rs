@@ -14,17 +14,20 @@ use ifc_to_3dtiles::{
     inspect::{CadProbeSummary, read_cad_probe_summary},
     inspect::{discover_sources, source_format_from_path, write_empty_cad_metadata_dumps},
     inspect_drilldown::{
-        ApprovalSourceDecision, EntityBboxRecord, classify_approval_manifests,
-        compare_duplicate_pair, detect_entity_outliers, render_phase1e_html_section,
+        ApprovalSourceDecision, CountDiff, DuplicatePairCompare, EntityBboxRecord, EntityOutlier,
+        EntityOutlierReport, classify_approval_manifests, compare_duplicate_pair,
+        detect_entity_outliers, render_phase1e_html_section,
     },
     inspect_review::{
-        InspectReviewReport, InspectReviewSource, build_review_report_from_db,
-        duplicate_review_score, render_review_html,
+        InspectDuplicateCandidate, InspectReviewReport, InspectReviewSource,
+        build_review_report_from_db, duplicate_review_score, render_review_html,
     },
     project::{ProjectManifest, SourceFormat, SourceRecord, SourceStatus, WorkspaceLayout},
     publish_skeleton::{
         build_publish_skeleton, render_publish_viewer_html, render_publish_viewer_html_with_data,
+        render_publish_viewer_html_with_data_and_spatial,
     },
+    spatial_qa::{SpatialQaAoi, build_spatial_qa_manifest, render_spatial_qa_review_summary},
 };
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
@@ -1365,6 +1368,127 @@ fn phase1f_publish_viewer_adds_emap5_wmts_context_layer() {
     assert!(html.contains("provider.errorEvent.addEventListener"));
 }
 
+#[test]
+fn phase1g_spatial_qa_manifest_keeps_runtime_gate_and_debug_layers_separate() {
+    let manifest = phase1f_project_manifest();
+    let approvals = phase1f_approval_manifests();
+    let review = phase1g_review_report();
+    let duplicate_pair = phase1g_duplicate_pair();
+    let outliers = vec![phase1g_outlier_report()];
+
+    let qa =
+        build_spatial_qa_manifest(&manifest, &review, &approvals, &[duplicate_pair], &outliers);
+
+    assert_eq!(qa.publish_runtime_source_ids, vec!["dwg-12d5f1b6"]);
+    assert!(
+        qa.debug_overlay_source_ids
+            .contains(&"dwg-850173d8".to_string())
+    );
+    assert!(
+        qa.debug_overlay_source_ids
+            .contains(&"dwg-dd37eec7".to_string())
+    );
+    assert!(
+        !qa.publish_runtime_source_ids
+            .contains(&"dwg-850173d8".to_string())
+    );
+
+    let rejected = qa
+        .sources
+        .iter()
+        .find(|source| source.source_id == "dwg-850173d8")
+        .expect("rejected source in spatial QA");
+    assert_eq!(rejected.approval_decision, "rejected");
+    assert_eq!(
+        rejected.duplicate_of.as_deref(),
+        Some("djb-m-su-dwg-0c82de78")
+    );
+    assert_eq!(rejected.top_layers[0].name, "_CIVIL_CONSTRUCTION");
+    assert_eq!(rejected.geometry_types[0].name, "LINESTRING");
+}
+
+#[test]
+fn phase1g_spatial_qa_manifest_includes_aoi_duplicate_and_outlier_locations() {
+    let manifest = phase1f_project_manifest();
+    let approvals = phase1f_approval_manifests();
+    let review = phase1g_review_report();
+    let qa = build_spatial_qa_manifest(
+        &manifest,
+        &review,
+        &approvals,
+        &[phase1g_duplicate_pair()],
+        &[phase1g_outlier_report()],
+    );
+
+    assert_eq!(qa.aoi.epsg, 3826);
+    assert_eq!(
+        qa.aoi.epsg3826_bbox,
+        [120_000.0, 2_400_000.0, 360_000.0, 2_800_000.0]
+    );
+    assert_eq!(qa.aoi.wgs84_polygon.len(), 5);
+    assert!(qa.aoi.wgs84_bbox[0] > 119.0);
+    assert!(qa.aoi.wgs84_bbox[2] < 123.0);
+
+    let pair = &qa.duplicate_pairs[0];
+    assert_eq!(pair.retain_source_id, "djb-m-su-dwg-0c82de78");
+    assert_eq!(pair.reject_source_id, "dwg-850173d8");
+    assert!(pair.source_a_percentile_bbox_wgs84.is_some());
+    assert!(pair.source_b_percentile_bbox_wgs84.is_some());
+
+    let outlier = &qa.outliers[0];
+    assert_eq!(outlier.source_id, "dwg-dd37eec7");
+    assert_eq!(outlier.fid, 81);
+    assert_eq!(outlier.layer, "A-WALL-CONC");
+    assert!(outlier.center_wgs84.is_some());
+}
+
+#[test]
+fn phase1g_publish_viewer_has_spatial_qa_interaction_hooks() {
+    let skeleton = build_publish_skeleton(
+        &phase1f_project_manifest(),
+        &phase1f_approval_manifests(),
+        &BTreeMap::new(),
+    );
+    let qa = build_spatial_qa_manifest(
+        &phase1f_project_manifest(),
+        &phase1g_review_report(),
+        &phase1f_approval_manifests(),
+        &[phase1g_duplicate_pair()],
+        &[phase1g_outlier_report()],
+    );
+
+    let html = render_publish_viewer_html_with_data_and_spatial(Some(&skeleton), Some(&qa));
+
+    assert!(html.contains("spatial_qa_manifest.json"));
+    assert!(html.contains("embeddedSpatialQaManifest"));
+    assert!(html.contains("detailPanel"));
+    assert!(html.contains("rawBboxToggle"));
+    assert!(html.contains("percentileBboxToggle"));
+    assert!(html.contains("aoiToggle"));
+    assert!(html.contains("outlierToggle"));
+    assert!(html.contains("duplicateCompareToggle"));
+    assert!(html.contains("showSourceDetail"));
+    assert!(html.contains("showOutlierDetail"));
+    assert!(html.contains("Cesium.ScreenSpaceEventHandler"));
+}
+
+#[test]
+fn phase1g_review_report_links_spatial_qa_manifest() {
+    let summary = render_spatial_qa_review_summary(
+        "publish/spatial_qa_manifest.json",
+        &SpatialQaAoi::epsg3826_default().expect("aoi"),
+        8,
+        1,
+        20,
+    );
+
+    assert!(summary.contains("Phase 1G Spatial QA"));
+    assert!(summary.contains("publish/spatial_qa_manifest.json"));
+    assert!(summary.contains("AOI"));
+    assert!(summary.contains("duplicate pair"));
+    assert!(summary.contains("outlier marker"));
+}
+
 fn review_stats<const N: usize>(
     source_id: &str,
     percentile_bbox: [f64; 6],
@@ -1591,6 +1715,185 @@ fn phase1f_approval_manifests() -> ifc_to_3dtiles::inspect_drilldown::ApprovalMa
                 ),
             ],
         },
+    }
+}
+
+fn phase1g_review_report() -> InspectReviewReport {
+    InspectReviewReport {
+        project_id: "淡江大橋移交模型".to_string(),
+        generated_at: "test".to_string(),
+        source_count: 3,
+        sources: vec![
+            phase1g_review_source(
+                "dwg-12d5f1b6",
+                "主橋塔.dwg",
+                "approved",
+                Some(1.0),
+                Some([292040.0, 2784831.0, -28.8, 292192.0, 2785526.0, 199.8]),
+                Some([292106.8, 2785254.6, -4.8, 292180.2, 2785518.2, 186.0]),
+                vec![("電梯軌道", 854), ("預埋件", 192)],
+                vec![("POLYHEDRALSURFACE", 941), ("LINESTRING", 35)],
+            ),
+            phase1g_review_source(
+                "dwg-850173d8",
+                "主橋.dwg",
+                "quarantined",
+                None,
+                Some([-2344516.9, 0.0, -40.2, 296864.8, 3730959.0, 185.0]),
+                Some([-2344516.9, 2784696.2, -16.4, 292398.9, 3730959.0, 166.3]),
+                vec![("_CIVIL_CONSTRUCTION", 18439), ("鋼板", 2160)],
+                vec![("LINESTRING", 18436), ("POLYHEDRALSURFACE", 3987)],
+            )
+            .with_duplicate("djb-m-su-dwg-0c82de78", "DJB-M-SU-監測.dwg", 0.98),
+            phase1g_review_source(
+                "dwg-dd37eec7",
+                "管理中心_全.dwg",
+                "quarantined",
+                None,
+                Some([0.0, 0.0, 0.0, 292402184.5, 2785751464.7, 18859.5]),
+                Some([0.0, 0.0, 0.0, 292365795.4, 2785739723.5, 18109.8]),
+                vec![("S-BEAM-CONC", 445), ("A-WALL-CONC", 295)],
+                vec![("GEOMETRYCOLLECTION", 1234), ("POLYHEDRALSURFACE", 1080)],
+            ),
+        ],
+    }
+}
+
+trait Phase1gReviewSourceExt {
+    fn with_duplicate(
+        self,
+        source_id: &str,
+        original_file_name: &str,
+        score: f64,
+    ) -> InspectReviewSource;
+}
+
+impl Phase1gReviewSourceExt for InspectReviewSource {
+    fn with_duplicate(
+        mut self,
+        source_id: &str,
+        original_file_name: &str,
+        score: f64,
+    ) -> InspectReviewSource {
+        self.duplicate_candidates.push(InspectDuplicateCandidate {
+            source_id: source_id.to_string(),
+            original_file_name: original_file_name.to_string(),
+            score,
+        });
+        self
+    }
+}
+
+fn phase1g_review_source(
+    source_id: &str,
+    original_file_name: &str,
+    inspect_status: &str,
+    selected_scale: Option<f64>,
+    raw_bbox: Option<[f64; 6]>,
+    percentile_bbox: Option<[f64; 6]>,
+    layers: Vec<(&str, u64)>,
+    geometry_types: Vec<(&str, u64)>,
+) -> InspectReviewSource {
+    InspectReviewSource {
+        source_id: source_id.to_string(),
+        display_name: original_file_name.trim_end_matches(".dwg").to_string(),
+        original_file_name: original_file_name.to_string(),
+        format: "dwg".to_string(),
+        inspect_status: inspect_status.to_string(),
+        selected_scale,
+        entity_count: layers.iter().map(|(_, count)| count).sum(),
+        parsed_entity_count: layers.iter().map(|(_, count)| count).sum(),
+        skipped_entity_count: 0,
+        vertex_count: 1234,
+        raw_bbox,
+        percentile_bbox,
+        z_range: percentile_bbox.map(|bbox| bbox[5] - bbox[2]),
+        fingerprint_hash: Some(format!("{source_id}-hash")),
+        layer_histogram: layers
+            .into_iter()
+            .map(|(name, count)| (name.to_string(), count))
+            .collect(),
+        geometry_type_histogram: geometry_types
+            .into_iter()
+            .map(|(name, count)| (name.to_string(), count))
+            .collect(),
+        warnings: if inspect_status == "quarantined" {
+            vec!["source bounds outside AOI for all allowed scales".to_string()]
+        } else {
+            vec![]
+        },
+        quarantine_reasons: if inspect_status == "quarantined" {
+            vec!["超出 AOI：P0.5/P99.5 bbox 在所有 allowed scales 下仍不可信".to_string()]
+        } else {
+            vec![]
+        },
+        duplicate_candidates: vec![],
+    }
+}
+
+fn phase1g_duplicate_pair() -> DuplicatePairCompare {
+    DuplicatePairCompare {
+        source_a_id: "djb-m-su-dwg-0c82de78".to_string(),
+        source_a_name: "DJB-M-SU-監測.dwg".to_string(),
+        source_b_id: "dwg-850173d8".to_string(),
+        source_b_name: "主橋.dwg".to_string(),
+        score: 0.98,
+        retain_source_id: "djb-m-su-dwg-0c82de78".to_string(),
+        retain_source_name: "DJB-M-SU-監測.dwg".to_string(),
+        reject_source_id: "dwg-850173d8".to_string(),
+        reject_source_name: "主橋.dwg".to_string(),
+        recommendation_reason: "高度重疊，保留監測主檔".to_string(),
+        raw_bbox_a: [-2344516.9, 0.0, -40.2, 296864.8, 3730959.0, 199.9],
+        raw_bbox_b: [-2344516.9, 0.0, -40.2, 296864.8, 3730959.0, 185.0],
+        percentile_bbox_a: [-2344516.9, 2784696.2, -40.2, 292398.9, 3730959.0, 169.7],
+        percentile_bbox_b: [-2344516.9, 2784696.2, -16.4, 292398.9, 3730959.0, 166.3],
+        entity_count_a: 24640,
+        entity_count_b: 24077,
+        vertex_count_a: 2696555,
+        vertex_count_b: 2677659,
+        fingerprint_a: "2fd96381330ce9d8".to_string(),
+        fingerprint_b: "72abdc4d59b61647".to_string(),
+        layer_count_diff: BTreeMap::from([(
+            "_CIVIL_CONSTRUCTION".to_string(),
+            CountDiff {
+                left: 18439,
+                right: 18439,
+                diff: 0,
+            },
+        )]),
+        geometry_type_count_diff: BTreeMap::from([(
+            "LINESTRING".to_string(),
+            CountDiff {
+                left: 18697,
+                right: 18436,
+                diff: 261,
+            },
+        )]),
+    }
+}
+
+fn phase1g_outlier_report() -> EntityOutlierReport {
+    EntityOutlierReport {
+        source_id: "dwg-dd37eec7".to_string(),
+        original_file_name: "管理中心_全.dwg".to_string(),
+        entity_count: 2499,
+        source_center: [292339665.0, 2785716887.0, 11285.0],
+        outliers: vec![EntityOutlier {
+            source_id: "dwg-dd37eec7".to_string(),
+            fid: 81,
+            layer: "A-WALL-CONC".to_string(),
+            entity_handle: Some("2C955".to_string()),
+            geometry_type: Some("POINT".to_string()),
+            vertex_count: 1,
+            bbox: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            reason: "far_from_source_center".to_string(),
+            score: 2801014290.3,
+            bbox_diagonal: 0.0,
+            z_range: 0.0,
+            distance_from_source_center: 2801014290.3,
+            distance_from_aoi: 2402998.1,
+        }],
+        layer_outliers: vec![],
     }
 }
 

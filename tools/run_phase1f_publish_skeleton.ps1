@@ -51,6 +51,7 @@ try {
 $expectedFiles = @(
     "sources_manifest.json",
     "debug_overlays.json",
+    "spatial_qa_manifest.json",
     "index.html"
 )
 foreach ($name in $expectedFiles) {

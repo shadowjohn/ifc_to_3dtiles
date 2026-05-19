@@ -26,6 +26,7 @@ Rust CLI for converting IFC2X3 models into standalone GLB plus Cesium 3D Tiles 1
   - OGR entity-level geometry inspect
   - JSON reports plus SQLite inspect DB
   - Static Phase 1D review report for quarantine / duplicate QA
+  - Phase 1G spatial QA manifest and Cesium interaction overlay for AOI、duplicate、outlier review
 
 ## Repository Policy
 
@@ -219,6 +220,23 @@ out\inspect_tamkang\publish\index.html
 `publish\index.html` 會內嵌這兩份 manifest，直接用 `file://` 開也不需要再 request JSON；Viewer 預設停用 Cesium ion 底圖，避免 QA skeleton 因外部底圖 request failed 中斷。
 Phase 1F QA viewer 會套用 NLSC `EMAP5` WMTS 作地理參考底圖；若 WMTS 載入失敗，bbox overlay 仍可顯示。
 若透過 IIS 看到 `401.3`，代表 IIS AppPool 沒有讀取 `publish` 目錄 ACL；Phase 1F QA viewer 建議直接用 `run_phase1f_viewer.ps1` 啟動 `http://127.0.0.1:8120/index.html`。
+
+Phase 1G 在 Phase 1F publish skeleton 上加入 Spatial QA overlay，不做 geometry publish，也不做 layer isolate：
+
+```text
+out\inspect_tamkang\publish\spatial_qa_manifest.json
+out\inspect_tamkang\publish\index.html
+```
+
+`spatial_qa_manifest.json` 是 browser-facing QA evidence；瀏覽器不直讀 SQLite。正式 runtime 仍只吃 `publish\sources_manifest.json` 的 approved source，rejected / needs_review / duplicate / outlier 只走 QA overlay。
+
+Phase 1G viewer 支援：
+
+- 點 bbox 顯示 source detail：approval、scale、bbox、warning、top layers、geometry types。
+- AOI overlay：用 EPSG:3826 台灣工程 AOI 轉 WGS84 畫框。
+- raw bbox / percentile bbox 切換：判讀 stray point 造成的 bbox 放大。
+- duplicate compare overlay：顯示 `DJB-M-SU-監測.dwg` vs `主橋.dwg` 的重疊證據。
+- outlier marker：顯示 `管理中心_全.dwg` 可疑 entity 位置，點 marker 看 FID、layer、score、reason。
 
 ## Verification
 

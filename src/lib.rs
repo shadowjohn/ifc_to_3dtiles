@@ -17,6 +17,7 @@ pub mod publish_skeleton;
 pub mod revit;
 pub mod rvt;
 pub mod rvt_job;
+pub mod spatial_qa;
 pub mod step;
 pub mod tiles;
 

@@ -439,3 +439,24 @@
   - 用 Python 本機 server 開 `publish/index.html`。
   - 避免 IIS / ASP.NET 因 AppPool ACL 造成 `401.3`。
 - Phase 1F QA viewer 加入 NLSC `EMAP5` WMTS 作地理參考底圖，讓 bbox overlay 可直接對台灣地圖位置。
+
+### Phase 1G Spatial QA Interaction
+
+- 新增 Rust `spatial_qa` core：
+  - 產生 browser-facing `publish/spatial_qa_manifest.json`。
+  - 來源是 `source_manifest.json`、`project_inspect.db`、Phase 1E QA manifests、duplicate pairs 與 outlier report。
+  - browser 不直讀 SQLite，正式 runtime 仍只吃 approved `sources_manifest.json`。
+- Phase 1G-A：
+  - `spatial_qa_manifest.json` 現在保留 approved / debug source 分流、AOI、duplicate compare、outlier marker、bbox、warnings、top layers、geometry type stats。
+  - rejected / needs_review / duplicate / outlier 全部只走 Spatial QA overlay，不會進正式 publish runtime。
+- Phase 1G-B：
+  - `publish/index.html` 加入右側 source detail panel。
+  - 支援點 bbox 顯示 approval reason、selected scale、raw / percentile bbox、warnings、top layers、geometry types。
+  - 支援 AOI overlay、raw bbox / percentile bbox 切換、duplicate compare overlay、outlier marker。
+  - 點 outlier marker 可看到 FID、layer、handle、geometry type、score、reason、bbox。
+- 目前 QA manifest 統計：
+  - approved runtime source：1
+  - debug source：7
+  - duplicate pair：1
+  - outlier marker：40
+- 本階段仍不做 geometry publish，也不做 layer isolate。
