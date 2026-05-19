@@ -16,6 +16,7 @@ use ifc_to_3dtiles::{
     },
     convert_path,
     inspect::discover_sources,
+    inspect_review::write_review_report_html,
     project::{ProjectManifest, SourceFormat, SourceStatus},
     revit::RevitVersion,
     rvt::{RvtToIfcOptions, export_rvt_to_ifc},
@@ -156,6 +157,19 @@ enum Command {
         #[arg(long)]
         ogrinfo: Option<PathBuf>,
     },
+    InspectReview {
+        #[arg(long)]
+        input: PathBuf,
+
+        #[arg(long)]
+        output: Option<PathBuf>,
+
+        #[arg(long)]
+        db: Option<PathBuf>,
+
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -249,6 +263,12 @@ fn run_command(command: &Command) -> Result<()> {
             batch_size,
             ogrinfo,
         } => run_entity_inspect_dxf(conversion_report, manifest, output, *batch_size, ogrinfo),
+        Command::InspectReview {
+            input,
+            output,
+            db,
+            manifest,
+        } => run_inspect_review(input, output, db, manifest),
     }
 }
 
@@ -376,6 +396,26 @@ fn run_entity_inspect_dxf(
         .with_context(|| format!("回填 manifest 失敗：{}", manifest_path.display()))?;
     println!("{}", report_path.display());
     println!("{}", db_path.display());
+    Ok(())
+}
+
+fn run_inspect_review(
+    input: &Path,
+    output: &Option<PathBuf>,
+    db: &Option<PathBuf>,
+    manifest: &Option<PathBuf>,
+) -> Result<()> {
+    let db_path = db
+        .clone()
+        .unwrap_or_else(|| input.join("project_inspect.db"));
+    let manifest_path = manifest
+        .clone()
+        .unwrap_or_else(|| input.join("source_manifest.json"));
+    let output_path = output
+        .clone()
+        .unwrap_or_else(|| input.join("review_report.html"));
+    write_review_report_html(&db_path, &manifest_path, &output_path)?;
+    println!("{}", output_path.display());
     Ok(())
 }
 

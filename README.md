@@ -25,6 +25,7 @@ Rust CLI for converting IFC2X3 models into standalone GLB plus Cesium 3D Tiles 1
   - DWG -> ACAD2000 / DXF
   - OGR entity-level geometry inspect
   - JSON reports plus SQLite inspect DB
+  - Static Phase 1D review report for quarantine / duplicate QA
 
 ## Repository Policy
 
@@ -165,6 +166,20 @@ out\inspect_tamkang\project_inspect.db
 ```
 
 目前 DWG 主線是 `ODA -> ACAD2000 / DXF -> OGR entity-level inspect`。DGN 暫時保留 source traceability，標記為 `needs_alternative_route`。
+
+Phase 1D 從 SQLite + manifest 匯出 QA 報表，先回答為什麼 source 被 quarantine：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\export_inspect_review.ps1
+```
+
+輸出：
+
+```text
+out\inspect_tamkang\review_report.html
+```
+
+報表內容包含 8 個 source 狀態、selected scale、raw / P0.5-P99.5 bbox、warning、quarantine reason、duplicate score、entity count、layer / geometry type 統計。
 
 ## Verification
 

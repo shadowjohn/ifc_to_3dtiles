@@ -375,3 +375,23 @@
 - 初步分類：
   - `主橋塔.dwg`：`approved`，`selected_scale = 1.0`。
   - `DJB-M-SU-監測.dwg`、`主橋.dwg`、`管理中心_全.dwg`：`quarantined`，因 percentile bbox 仍超出 EPSG:3826 AOI，需下一步做 entity/layer outlier analysis。
+
+### Phase 1D Inspect Review Dashboard / QA Report
+
+- 新增 Rust `inspect_review` core：
+  - 從 `project_inspect.db` + `source_manifest.json` 產生 review model。
+  - 匯出 self-contained `review_report.html`，不吃 CDN，不碰 3D Tiles。
+  - source list 顯示 8 個 source 的 status、selected scale、entity count、P0.5/P99.5 bbox、warning count、duplicate summary。
+  - source detail 顯示 raw bbox、percentile bbox、z range、quarantine reason、warnings、top layers、geometry types。
+- 新增 duplicate QA scoring：
+  - 使用 percentile bbox、entity count、vertex count、layer histogram overlap。
+  - 分數大於 0.8 時列入 duplicate candidates，供 publish 前人工確認。
+- 新增 quarantine reason 判讀：
+  - scale classifier 無法選出 allowed scale。
+  - P0.5/P99.5 bbox 超出 AOI。
+  - raw bbox 與 percentile bbox 差距過大，疑似 stray point / construction line。
+  - z range 明確標示「不是 2D」或「可能是 2D」。
+  - DGN 固定標示 `needs_alternative_route / ODA invalid group code`。
+- 新增 `tools/export_inspect_review.ps1` 一鍵匯出：
+  - 預設輸入 `out\inspect_tamkang`
+  - 預設輸出 `out\inspect_tamkang\review_report.html`

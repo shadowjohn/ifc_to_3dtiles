@@ -13,6 +13,10 @@ use ifc_to_3dtiles::{
     },
     inspect::{CadProbeSummary, read_cad_probe_summary},
     inspect::{discover_sources, source_format_from_path, write_empty_cad_metadata_dumps},
+    inspect_review::{
+        InspectReviewReport, InspectReviewSource, build_review_report_from_db,
+        duplicate_review_score, render_review_html,
+    },
     project::{ProjectManifest, SourceFormat, SourceRecord, SourceStatus, WorkspaceLayout},
 };
 use std::{fs, path::PathBuf};
@@ -798,4 +802,205 @@ fn entity_inspect_sqlite_schema_accepts_sources_entities_and_stats() {
 
     assert_eq!(entity_count, 1);
     assert_eq!(stats_count, 1);
+}
+
+#[test]
+fn inspect_review_scores_probable_duplicate_dwg_sources() {
+    let first = review_stats(
+        "djb-m-su-dwg-0c82de78",
+        [292000.0, 2785000.0, -40.0, 293000.0, 2786000.0, 170.0],
+        24_640,
+        2_696_555,
+        [
+            ("_CIVIL_CONSTRUCTION", 18_439),
+            ("Cable", 755),
+            ("STEEL", 576),
+        ],
+    );
+    let second = review_stats(
+        "dwg-850173d8",
+        [292001.0, 2785001.0, -40.0, 293001.0, 2786001.0, 170.2],
+        24_077,
+        2_677_659,
+        [
+            ("_CIVIL_CONSTRUCTION", 18_439),
+            ("Cable", 755),
+            ("STEEL", 576),
+        ],
+    );
+
+    let score = duplicate_review_score(&first, &second);
+
+    assert!(score >= 0.9, "score was {score}");
+}
+
+#[test]
+fn inspect_review_explains_quarantine_without_calling_it_2d_when_z_range_is_real() {
+    let source = InspectReviewSource::from_stats(
+        "djb-m-su-dwg-0c82de78",
+        "DJB-M-SU-監測.dwg",
+        "dwg",
+        "quarantined",
+        &review_stats(
+            "djb-m-su-dwg-0c82de78",
+            [-2344516.9, 2784696.2, -40.2, 292398.9, 3730959.0, 169.78],
+            24_640,
+            2_696_555,
+            [
+                ("_CIVIL_CONSTRUCTION", 18_439),
+                ("Cable", 755),
+                ("STEEL", 576),
+            ],
+        ),
+        vec!["source bounds outside AOI for all allowed scales".to_string()],
+    );
+
+    assert!(
+        source
+            .quarantine_reasons
+            .iter()
+            .any(|reason| reason.contains("超出 AOI"))
+    );
+    assert!(
+        source
+            .quarantine_reasons
+            .iter()
+            .any(|reason| reason.contains("不是 2D"))
+    );
+    assert!(
+        source
+            .quarantine_reasons
+            .iter()
+            .all(|reason| !reason.contains("可能是 2D"))
+    );
+}
+
+#[test]
+fn inspect_review_html_contains_source_status_bbox_warnings_and_duplicate_score() {
+    let mut bridge_a = InspectReviewSource::from_stats(
+        "djb-m-su-dwg-0c82de78",
+        "DJB-M-SU-監測.dwg",
+        "dwg",
+        "quarantined",
+        &review_stats(
+            "djb-m-su-dwg-0c82de78",
+            [292000.0, 2785000.0, -40.0, 293000.0, 2786000.0, 170.0],
+            24_640,
+            2_696_555,
+            [
+                ("_CIVIL_CONSTRUCTION", 18_439),
+                ("Cable", 755),
+                ("STEEL", 576),
+            ],
+        ),
+        vec!["source bounds outside AOI for all allowed scales".to_string()],
+    );
+    bridge_a.add_duplicate_candidate("dwg-850173d8", "主橋.dwg", 0.96);
+    let report = InspectReviewReport {
+        project_id: "淡江大橋移交模型".to_string(),
+        generated_at: "test".to_string(),
+        source_count: 8,
+        sources: vec![bridge_a],
+    };
+
+    let html = render_review_html(&report);
+
+    assert!(html.contains("Phase 1D Inspect Review"));
+    assert!(html.contains("DJB-M-SU-監測.dwg"));
+    assert!(html.contains("quarantined"));
+    assert!(html.contains("P0.5/P99.5"));
+    assert!(html.contains("source bounds outside AOI"));
+    assert!(html.contains("主橋.dwg"));
+    assert!(html.contains("96.0%"));
+}
+
+#[test]
+fn inspect_review_can_build_report_from_sqlite_and_manifest() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let db_path = tmp.path().join("project_inspect.db");
+    let entity = CadEntity::with_bbox(
+        "dwg-12d5f1b6",
+        1,
+        "BridgeTower",
+        "POLYHEDRALSURFACE",
+        [292000.0, 2785000.0, 0.0, 292001.0, 2785001.0, 30.0],
+        8,
+        true,
+    );
+    let stats = summarize_entities("dwg-12d5f1b6", &[entity.clone()], &[1.0]);
+    write_entity_inspect_db(&db_path, &[entity], &[stats]).expect("write db");
+    let manifest_path = tmp.path().join("source_manifest.json");
+    fs::write(
+        &manifest_path,
+        r#"{
+          "project_id": "淡江大橋移交模型",
+          "source_epsg": 3826,
+          "anchor_source_id": null,
+          "allowed_scales": [1000.0, 1.0, 0.1, 0.01, 0.001],
+          "sources": [
+            {
+              "id": "dwg-12d5f1b6",
+              "display_name": "主橋塔",
+              "original_file_name": "主橋塔.dwg",
+              "relative_path": "主橋塔.dwg",
+              "path": "C:\\sample\\主橋塔.dwg",
+              "format": "dwg",
+              "status": "approved",
+              "original_size_bytes": 25339290,
+              "detected_crs": null,
+              "unit_scale_to_meter": 1.0,
+              "anchor_distance_m": null,
+              "raw_bbox": null,
+              "percentile_bbox": null,
+              "transform": null,
+              "cad_metadata_path": null,
+              "fingerprint_hash": null,
+              "duplicate_candidates": [],
+              "inspect_status": "approved",
+              "selected_scale": 1.0,
+              "warnings": []
+            }
+          ]
+        }"#,
+    )
+    .expect("write manifest");
+
+    let report = build_review_report_from_db(&db_path, &manifest_path).expect("build report");
+
+    assert_eq!(report.project_id, "淡江大橋移交模型");
+    assert_eq!(report.source_count, 1);
+    assert_eq!(report.sources[0].original_file_name, "主橋塔.dwg");
+    assert_eq!(report.sources[0].inspect_status, "approved");
+    assert_eq!(report.sources[0].selected_scale, Some(1.0));
+}
+
+fn review_stats<const N: usize>(
+    source_id: &str,
+    percentile_bbox: [f64; 6],
+    entity_count: u64,
+    vertex_count: u64,
+    layers: [(&str, u64); N],
+) -> CadEntityStats {
+    CadEntityStats {
+        source_id: source_id.to_string(),
+        entity_count,
+        parsed_entity_count: entity_count,
+        skipped_entity_count: 0,
+        vertex_count,
+        raw_bbox: percentile_bbox,
+        percentile_bbox,
+        z_range: (percentile_bbox[5] - percentile_bbox[2]).abs(),
+        selected_scale: None,
+        inspect_status: "quarantined".to_string(),
+        layer_histogram: layers
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value))
+            .collect(),
+        geometry_type_histogram: std::collections::BTreeMap::from([(
+            "POLYHEDRALSURFACE".to_string(),
+            entity_count,
+        )]),
+        fingerprint_hash: "hash".to_string(),
+        warnings: vec![],
+    }
 }
