@@ -264,3 +264,16 @@
 - 驗證：
   - `source_manifest.json` source id 8/8 唯一。
   - CAD source 7 個，sidecar 7 個。
+
+### Quarantine / Duplicate Core
+
+- 新增 source status decision 核心：
+  - centroid + percentile bounds 判斷 scale / AOI。
+  - Z range 小於 5cm 時標記為 2D 並 quarantine。
+  - 所有 scale candidates 都不在 AOI 時 quarantine。
+- 新增 geometry fingerprint duplicate scoring：
+  - vertex count
+  - triangle count
+  - bbox
+  - surface area
+- 這階段先提供可測核心，不直接套到 DGN/DWG inspect manifest；原因是 DGN/DWG 尚未有可信 geometry bbox / triangle / vertex 統計。

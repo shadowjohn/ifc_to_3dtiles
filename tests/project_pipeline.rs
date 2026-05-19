@@ -1,6 +1,9 @@
 use ifc_to_3dtiles::{
     cad_metadata::{CadHierarchyDump, CadLevel, CadMaterial, CadModel, CadReference},
-    georef::{Aoi, Bounds2, BoundsSummary, SourceTransform, classify_source_scale},
+    fingerprint::{GeometryFingerprint, duplicate_candidate_score},
+    georef::{
+        Aoi, Bounds2, BoundsSummary, SourceTransform, classify_source_scale, decide_source_status,
+    },
     inspect::{discover_sources, source_format_from_path, write_empty_cad_metadata_dumps},
     project::{ProjectManifest, SourceFormat, SourceRecord, SourceStatus, WorkspaceLayout},
 };
@@ -203,6 +206,51 @@ fn source_transform_declares_canonical_space() {
         "EPSG:3826 meters / local ENU / Z-up"
     );
     assert_eq!(transform.scale, [1.0, 1.0, 1.0]);
+}
+
+#[test]
+fn decide_source_status_approves_inside_aoi_3d_source() {
+    let aoi = Aoi::new(120_000.0, 2_400_000.0, 360_000.0, 2_800_000.0);
+    let bounds = Bounds2::new(300_000.0, 2_787_000.0, 301_000.0, 2_788_000.0);
+    let summary = BoundsSummary::from_raw_and_percentile(bounds, bounds);
+    let status = decide_source_status(summary, 20.0, &aoi, &[1000.0, 1.0, 0.1, 0.01, 0.001]);
+
+    assert_eq!(status.status, SourceStatus::Approved);
+    assert_eq!(status.selected_scale, Some(1.0));
+}
+
+#[test]
+fn decide_source_status_quarantines_flat_2d_source() {
+    let aoi = Aoi::new(120_000.0, 2_400_000.0, 360_000.0, 2_800_000.0);
+    let bounds = Bounds2::new(300_000.0, 2_787_000.0, 301_000.0, 2_788_000.0);
+    let summary = BoundsSummary::from_raw_and_percentile(bounds, bounds);
+    let status = decide_source_status(summary, 0.001, &aoi, &[1000.0, 1.0, 0.1, 0.01, 0.001]);
+
+    assert_eq!(status.status, SourceStatus::Quarantined);
+    assert!(status.warnings.iter().any(|warning| warning.contains("2D")));
+}
+
+#[test]
+fn geometry_fingerprint_detects_probable_duplicate_sources() {
+    let a = GeometryFingerprint {
+        source_id: "bridge-ifc".to_string(),
+        vertex_count: 100_000,
+        triangle_count: 180_000,
+        bbox: [300_000.0, 2_787_000.0, 0.0, 301_000.0, 2_788_000.0, 60.0],
+        surface_area_m2: 125_000.0,
+        hash: "a".to_string(),
+    };
+    let b = GeometryFingerprint {
+        source_id: "bridge-dgn".to_string(),
+        vertex_count: 100_250,
+        triangle_count: 179_900,
+        bbox: [300_000.2, 2_787_000.1, 0.0, 301_000.1, 2_788_000.2, 60.1],
+        surface_area_m2: 125_100.0,
+        hash: "b".to_string(),
+    };
+
+    let score = duplicate_candidate_score(&a, &b);
+    assert!(score >= 0.95);
 }
 
 #[test]

@@ -2,6 +2,7 @@ pub mod b3dm;
 pub mod cad_metadata;
 pub mod convert;
 pub mod crs;
+pub mod fingerprint;
 pub mod geometry;
 pub mod georef;
 pub mod glb;

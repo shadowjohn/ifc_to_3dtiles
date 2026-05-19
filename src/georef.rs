@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::project::SourceStatus;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Bounds2 {
     pub min_x: f64,
@@ -108,6 +110,13 @@ pub struct ScaleClassification {
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourceStatusDecision {
+    pub status: SourceStatus,
+    pub selected_scale: Option<f64>,
+    pub warnings: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SourceTransform {
     pub source_crs: String,
@@ -167,5 +176,38 @@ pub fn classify_source_scale(
         selected_scale: None,
         status: "outside_aoi".to_string(),
         warnings: vec!["source bounds outside AOI for all allowed scales".to_string()],
+    }
+}
+
+pub fn decide_source_status(
+    bounds_xy: BoundsSummary,
+    z_range_m: f64,
+    aoi: &Aoi,
+    allowed_scales: &[f64],
+) -> SourceStatusDecision {
+    let scale = classify_source_scale(&bounds_xy, aoi, allowed_scales);
+    let mut warnings = scale.warnings;
+
+    if z_range_m.abs() < 0.05 {
+        warnings.push("source appears 2D because z range is below 5cm".to_string());
+        return SourceStatusDecision {
+            status: SourceStatus::Quarantined,
+            selected_scale: scale.selected_scale,
+            warnings,
+        };
+    }
+
+    if scale.selected_scale.is_none() {
+        return SourceStatusDecision {
+            status: SourceStatus::Quarantined,
+            selected_scale: None,
+            warnings,
+        };
+    }
+
+    SourceStatusDecision {
+        status: SourceStatus::Approved,
+        selected_scale: scale.selected_scale,
+        warnings,
     }
 }
