@@ -311,3 +311,16 @@
   - 轉完再做 bbox / scale / fingerprint / hierarchy inspect
 - 明日計畫已寫入：
   - `docs/superpowers/plans/2026-05-20-phase-1b-oda-conversion-smoke.md`
+
+### Phase 1B Plan補充
+
+- 在 ODA conversion smoke 前新增 `Task 0: Source Manifest Usability Fields`：
+  - `display_name`
+  - `original_file_name`
+  - `relative_path`
+- 針對 `DJB-M-SU-監測.dgn.i.dgn` 這類重複 CAD-like 副檔名新增 warning：
+  - `possible_intermediate_or_export_copy`
+- ODA conversion report 也要帶出：
+  - `source_display_name`
+  - `source_original_file_name`
+  - `source_relative_path`

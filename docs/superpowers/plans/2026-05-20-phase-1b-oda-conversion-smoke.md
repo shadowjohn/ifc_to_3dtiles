@@ -32,6 +32,36 @@ Keep tool version and exported CAD version separate:
 
 Do not select the old `20.12.0.0` converter when `27.1.0.0` is available. It can remain in the report only as fallback evidence.
 
+## Input Manifest Additions
+
+Before ODA conversion, make `source_manifest.json` easier to debug by preserving human-readable source identity:
+
+```json
+{
+  "id": "dwg-850173d8",
+  "display_name": "主橋",
+  "original_file_name": "主橋.dwg",
+  "relative_path": "主橋.dwg",
+  "path": "C:\\Users\\stw_s\\Desktop\\ifc_to_3dtiles\\sample_files\\淡江大橋移交模型\\主橋.dwg",
+  "format": "dwg",
+  "warnings": []
+}
+```
+
+Also flag likely intermediate/export-copy CAD names before conversion:
+
+```json
+{
+  "id": "djb-m-su-dgn-i-dgn-c3cd6d29",
+  "original_file_name": "DJB-M-SU-監測.dgn.i.dgn",
+  "warnings": [
+    "possible_intermediate_or_export_copy: file has repeated CAD-like extensions"
+  ]
+}
+```
+
+This does not quarantine the file. It only makes later duplicate and overlap investigation easier.
+
 ## Output Contract
 
 Each converted CAD source writes one report entry:
@@ -39,6 +69,9 @@ Each converted CAD source writes one report entry:
 ```json
 {
   "source_id": "djb-m-su-dwg-a1b2c3d4",
+  "source_display_name": "DJB-M-SU-監測",
+  "source_original_file_name": "DJB-M-SU-監測.dwg",
+  "source_relative_path": "DJB-M-SU-監測.dwg",
   "input_path": "C:\\Users\\stw_s\\Desktop\\ifc_to_3dtiles\\sample_files\\淡江大橋移交模型\\DJB-M-SU-監測.dwg",
   "input_format": "dwg",
   "converted_path": "C:\\Users\\stw_s\\Desktop\\ifc_to_3dtiles\\out\\oda_normalized\\djb-m-su-dwg-a1b2c3d4\\DJB-M-SU-監測_R2018.dwg",
@@ -65,6 +98,155 @@ Final report path:
 
 ```text
 out/oda_normalized/oda_conversion_report.json
+```
+
+## Task 0: Source Manifest Usability Fields
+
+**Files:**
+- Modify: `src/project.rs`
+- Modify: `src/inspect.rs`
+- Test: `tests/project_pipeline.rs`
+
+- [ ] **Step 1: Write failing tests for readable source identity**
+
+Add tests to `tests/project_pipeline.rs`:
+
+```rust
+#[test]
+fn discover_sources_preserves_human_readable_identity() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let nested = tmp.path().join("cad").join("stage");
+    std::fs::create_dir_all(&nested).expect("nested dir");
+    std::fs::write(nested.join("主橋.dwg"), "dwg").expect("dwg");
+
+    let sources = discover_sources(tmp.path()).expect("discover sources");
+    let source = sources
+        .iter()
+        .find(|source| source.original_file_name == "主橋.dwg")
+        .expect("source");
+
+    assert_eq!(source.display_name, "主橋");
+    assert_eq!(source.original_file_name, "主橋.dwg");
+    assert_eq!(
+        source.relative_path,
+        std::path::PathBuf::from("cad").join("stage").join("主橋.dwg")
+    );
+}
+
+#[test]
+fn discover_sources_flags_repeated_cad_like_extensions() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(tmp.path().join("DJB-M-SU-監測.dgn.i.dgn"), "dgn").expect("dgn");
+
+    let sources = discover_sources(tmp.path()).expect("discover sources");
+    let source = sources
+        .iter()
+        .find(|source| source.original_file_name == "DJB-M-SU-監測.dgn.i.dgn")
+        .expect("source");
+
+    assert!(
+        source
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("possible_intermediate_or_export_copy"))
+    );
+}
+```
+
+- [ ] **Step 2: Run tests and verify they fail**
+
+```powershell
+& "$env:USERPROFILE\.cargo\bin\cargo.exe" test --test project_pipeline discover_sources_
+```
+
+Expected: fail because `SourceRecord` does not yet expose `display_name`, `original_file_name`, or `relative_path`.
+
+- [ ] **Step 3: Add fields to `SourceRecord`**
+
+Modify `src/project.rs`:
+
+```rust
+pub struct SourceRecord {
+    pub id: String,
+    pub display_name: String,
+    pub original_file_name: String,
+    pub relative_path: PathBuf,
+    pub path: PathBuf,
+    pub format: SourceFormat,
+    pub status: SourceStatus,
+    pub original_size_bytes: u64,
+    pub detected_crs: Option<String>,
+    pub unit_scale_to_meter: Option<f64>,
+    pub anchor_distance_m: Option<f64>,
+    pub raw_bbox: Option<[f64; 6]>,
+    pub percentile_bbox: Option<[f64; 6]>,
+    pub transform: Option<serde_json::Value>,
+    pub cad_metadata_path: Option<PathBuf>,
+    pub fingerprint_hash: Option<String>,
+    pub duplicate_candidates: Vec<String>,
+    pub warnings: Vec<String>,
+}
+```
+
+- [ ] **Step 4: Update existing `SourceRecord` literals**
+
+Update every `SourceRecord { ... }` literal in `tests/project_pipeline.rs` so it includes:
+
+```rust
+display_name: "DJB-M-SU-監測.dgn.i".to_string(),
+original_file_name: "DJB-M-SU-監測.dgn.i.dgn".to_string(),
+relative_path: PathBuf::from(r"sources\DJB-M-SU-監測.dgn.i.dgn"),
+```
+
+For manifests serialized in tests, assert the JSON has these fields and that old fields are still present.
+
+- [ ] **Step 5: Populate fields during discovery**
+
+In `src/inspect.rs`, build these values beside `stable_source_id(root, &path)`:
+
+```rust
+let relative_path = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+let original_file_name = path
+    .file_name()
+    .and_then(|name| name.to_str())
+    .unwrap_or("source")
+    .to_string();
+let display_name = path
+    .file_stem()
+    .and_then(|name| name.to_str())
+    .unwrap_or(&original_file_name)
+    .to_string();
+let mut warnings = Vec::new();
+if has_repeated_cad_like_extension(&original_file_name) {
+    warnings.push(
+        "possible_intermediate_or_export_copy: file has repeated CAD-like extensions".to_string(),
+    );
+}
+```
+
+Add helper:
+
+```rust
+fn has_repeated_cad_like_extension(file_name: &str) -> bool {
+    let lowered = file_name.to_ascii_lowercase();
+    let cad_tokens = [".dgn.", ".dwg.", ".dxf.", ".ifc."];
+    cad_tokens.iter().any(|token| lowered.contains(token))
+}
+```
+
+- [ ] **Step 6: Run targeted tests**
+
+```powershell
+& "$env:USERPROFILE\.cargo\bin\cargo.exe" test --test project_pipeline discover_sources_
+```
+
+Expected: pass.
+
+- [ ] **Step 7: Commit**
+
+```powershell
+git add src/project.rs src/inspect.rs tests/project_pipeline.rs
+git commit -m "Preserve readable source identity in manifest"
 ```
 
 ## Task 1: Lock ODA Baseline
@@ -158,6 +340,7 @@ Behavior:
 - Write each converted source under `out/oda_normalized/<source_id>/`.
 - Write `oda_conversion_report.json`.
 - Preserve input source identity and SHA256.
+- Copy source readability fields into each entry: `source_display_name`, `source_original_file_name`, `source_relative_path`.
 - Store both ODA tool version and requested output version: `oda_version`, `target_version`, `target_format`.
 
 - [ ] **Step 4: Smoke run one source first**
