@@ -218,3 +218,26 @@
   - preferred ODA 指向 `27.1.0.0`
   - `27.1.0.0` 標記為 `acceptable_baseline`
   - `20.12.0.0` 仍列出並標記為 `too_old_for_2026_cad_delivery`
+
+### Project Ingest Task 1-3
+
+- 新增 local project workspace manifest：
+  - `WorkspaceLayout`
+  - `ProjectManifest`
+  - `SourceRecord`
+  - `SourceFormat`
+  - `SourceStatus`
+- 新增 source discovery inspect 基礎：
+  - 掃描 `.ifc`、`.rvt`、`.dgn`、`.dwg`
+  - 略過未知副檔名
+  - 產生 ASCII stable source id
+  - CLI 新增 `inspect --input --output --source-epsg`
+- 新增 georef / scale classifier：
+  - 支援 scale candidates：`1000.0 / 1.0 / 0.1 / 0.01 / 0.001`
+  - 使用 centroid + percentile bounds 判斷 AOI
+  - raw bbox 飛出 AOI 時記 warning，不直接否決有效 source
+  - `SourceTransform` 固定 canonical space：`EPSG:3826 meters / local ENU / Z-up`
+- 驗證：
+  - `cargo test` 通過
+  - `ifc_to_3dtiles inspect` 跑 `sample_files\淡江大橋移交模型` 成功
+  - `source_manifest.json` 抓到 8 個 source：DGN 3、DWG 4、IFC 1

@@ -5,9 +5,11 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use ifc_to_3dtiles::{
     ConvertOptions, NormalMode, convert_path,
+    inspect::discover_sources,
+    project::{ProjectManifest, SourceFormat},
     revit::RevitVersion,
     rvt::{RvtToIfcOptions, export_rvt_to_ifc},
 };
@@ -55,11 +57,14 @@ impl CliRevitVersion {
 #[command(name = "ifc_to_3dtiles")]
 #[command(about = "Convert IFC or RVT models to GLB and Cesium 3D Tiles")]
 struct Cli {
-    #[arg(long)]
-    input: PathBuf,
+    #[command(subcommand)]
+    command: Option<Command>,
 
     #[arg(long)]
-    output: PathBuf,
+    input: Option<PathBuf>,
+
+    #[arg(long)]
+    output: Option<PathBuf>,
 
     #[arg(long, default_value_t = 3826)]
     source_epsg: u32,
@@ -115,9 +120,36 @@ struct Cli {
     rvt_timeout_minutes: u64,
 }
 
+#[derive(Debug, Subcommand)]
+enum Command {
+    Inspect {
+        #[arg(long)]
+        input: PathBuf,
+
+        #[arg(long)]
+        output: PathBuf,
+
+        #[arg(long, default_value_t = 3826)]
+        source_epsg: u32,
+    },
+}
+
 fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let cli = Cli::parse();
+    if let Some(command) = &cli.command {
+        return run_command(command);
+    }
+
+    let input = cli
+        .input
+        .clone()
+        .context("直接轉檔模式需要 --input；或使用 inspect --input")?;
+    let output = cli
+        .output
+        .clone()
+        .context("直接轉檔模式需要 --output；或使用 inspect --output")?;
+
     ensure!(
         (0.0..=180.0).contains(&cli.smooth_angle_deg),
         "--smooth-angle-deg 必須介於 0 到 180"
@@ -131,12 +163,12 @@ fn main() -> Result<()> {
         .checked_mul(60)
         .context("--rvt-timeout-minutes 太大")?;
 
-    let mut input = cli.input.clone();
+    let mut input = input;
     let mut cleanup_after_convert = Vec::new();
     if has_extension(&input, "rvt") {
-        fs::create_dir_all(&cli.output)
-            .with_context(|| format!("建立輸出目錄失敗：{}", cli.output.display()))?;
-        let ifc_path = cli.output.join(format!("{}.ifc", safe_stem(&input)));
+        fs::create_dir_all(&output)
+            .with_context(|| format!("建立輸出目錄失敗：{}", output.display()))?;
+        let ifc_path = output.join(format!("{}.ifc", safe_stem(&input)));
         if ifc_path.exists() {
             if cli.overwrite {
                 fs::remove_file(&ifc_path)
@@ -162,7 +194,7 @@ fn main() -> Result<()> {
 
     let outputs = convert_path(&ConvertOptions {
         input,
-        output: cli.output,
+        output,
         source_epsg: cli.source_epsg,
         tile_max_features: cli.tile_max_features,
         tile_max_triangles: cli.tile_max_triangles,
@@ -176,6 +208,38 @@ fn main() -> Result<()> {
     for output in outputs {
         println!("{}", output.display());
     }
+    Ok(())
+}
+
+fn run_command(command: &Command) -> Result<()> {
+    match command {
+        Command::Inspect {
+            input,
+            output,
+            source_epsg,
+        } => run_inspect(input, output, *source_epsg),
+    }
+}
+
+fn run_inspect(input: &Path, output: &Path, source_epsg: u32) -> Result<()> {
+    fs::create_dir_all(output)
+        .with_context(|| format!("建立 inspect 輸出目錄失敗：{}", output.display()))?;
+    let sources = discover_sources(input)?;
+    let anchor_source_id = sources
+        .iter()
+        .find(|source| source.format == SourceFormat::Ifc)
+        .map(|source| source.id.clone());
+    let manifest = ProjectManifest {
+        project_id: safe_stem(input),
+        source_epsg,
+        anchor_source_id,
+        allowed_scales: vec![1000.0, 1.0, 0.1, 0.01, 0.001],
+        sources,
+    };
+    let path = output.join("source_manifest.json");
+    fs::write(&path, serde_json::to_vec_pretty(&manifest)?)
+        .with_context(|| format!("寫入 manifest 失敗：{}", path.display()))?;
+    println!("{}", path.display());
     Ok(())
 }
 
