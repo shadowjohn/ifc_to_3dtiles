@@ -197,3 +197,24 @@
   - 前端優先 Bootstrap + jQuery + GoldenLayout + Tabulator + jsTree + Cesium。
   - Cesium 是正式 GIS/BIM viewer；Three.js 只作 GLB / small model debug viewer。
   - 第一版不做 Rust GUI、Qt Desktop、Electron 全包。
+
+### ODA File Converter Side-By-Side Update
+
+- 使用者已安裝新版 ODA File Converter：
+  - `C:\Program Files\ODA\ODAFileConverter 27.1.0\ODAFileConverter.exe`
+  - `ProductVersion`: `27.1.0.0`
+- 舊版保留：
+  - `C:\bin\ODAFileConverter\ODAFileConverter.exe`
+  - `ProductVersion`: `20.12.0.0`
+- `tools/inspect_cad_sources.ps1` 已改成掃描多個 ODA 版本：
+  - `C:\bin\ODAFileConverter*`
+  - `C:\Program Files\ODA\ODAFileConverter*`
+  - `ODA_FILE_CONVERTER_EXE` 環境變數覆寫
+- CAD probe 現在輸出：
+  - `oda_file_converters`
+  - `preferred_oda_file_converter`
+  - 相容舊欄位 `tools.oda_file_converter`
+- 驗證結果：
+  - preferred ODA 指向 `27.1.0.0`
+  - `27.1.0.0` 標記為 `acceptable_baseline`
+  - `20.12.0.0` 仍列出並標記為 `too_old_for_2026_cad_delivery`
