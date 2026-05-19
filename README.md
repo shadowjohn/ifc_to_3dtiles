@@ -199,6 +199,23 @@ out\inspect_tamkang\qa\needs_review_sources.json
 
 Phase 1E 會同步更新 `out\inspect_tamkang\review_report.html`，加入 duplicate compare、管理中心 outlier 與 approval manifest summary。
 
+Phase 1F 建立 approved-only publish skeleton，不做 CAD -> 3D Tiles：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\run_phase1f_publish_skeleton.ps1
+```
+
+主要輸出：
+
+```text
+out\inspect_tamkang\normalized\<source-id>\source_manifest.json
+out\inspect_tamkang\publish\sources_manifest.json
+out\inspect_tamkang\publish\debug_overlays.json
+out\inspect_tamkang\publish\index.html
+```
+
+`publish\sources_manifest.json` 只包含 approved source；rejected / needs_review 只進 `debug_overlays.json` 給 QA viewer 畫 bbox。
+
 ## Verification
 
 ```powershell

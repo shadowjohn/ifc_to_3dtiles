@@ -22,8 +22,9 @@ use ifc_to_3dtiles::{
         duplicate_review_score, render_review_html,
     },
     project::{ProjectManifest, SourceFormat, SourceRecord, SourceStatus, WorkspaceLayout},
+    publish_skeleton::{build_publish_skeleton, render_publish_viewer_html},
 };
-use std::{fs, path::PathBuf};
+use std::{collections::BTreeMap, fs, path::PathBuf};
 
 #[test]
 fn workspace_layout_uses_predictable_folders() {
@@ -1195,6 +1196,134 @@ fn phase1e_html_section_contains_duplicate_outlier_and_manifest_summary() {
     assert!(html.contains("approved_sources.json"));
 }
 
+#[test]
+fn phase1f_publish_skeleton_only_publishes_approved_sources() {
+    let manifest = phase1f_project_manifest();
+    let approvals = phase1f_approval_manifests();
+    let converted_paths = BTreeMap::from([
+        (
+            "dwg-12d5f1b6".to_string(),
+            PathBuf::from(r"C:\normalized\dwg-12d5f1b6\主橋塔.dxf"),
+        ),
+        (
+            "dwg-850173d8".to_string(),
+            PathBuf::from(r"C:\normalized\dwg-850173d8\主橋.dxf"),
+        ),
+        (
+            "dwg-dd37eec7".to_string(),
+            PathBuf::from(r"C:\normalized\dwg-dd37eec7\管理中心_全.dxf"),
+        ),
+    ]);
+
+    let skeleton = build_publish_skeleton(&manifest, &approvals, &converted_paths);
+
+    assert_eq!(skeleton.sources_manifest.sources.len(), 1);
+    assert_eq!(
+        skeleton.sources_manifest.sources[0].source_id,
+        "dwg-12d5f1b6"
+    );
+    assert!(
+        skeleton
+            .sources_manifest
+            .sources
+            .iter()
+            .all(|source| source.approval_decision == "approved")
+    );
+    assert!(
+        skeleton
+            .sources_manifest
+            .sources
+            .iter()
+            .all(|source| source.source_id != "dwg-850173d8")
+    );
+    assert!(
+        skeleton
+            .sources_manifest
+            .sources
+            .iter()
+            .all(|source| source.source_id != "dwg-dd37eec7")
+    );
+}
+
+#[test]
+fn phase1f_debug_overlay_keeps_rejected_and_needs_review_metadata_out_of_publish() {
+    let manifest = phase1f_project_manifest();
+    let approvals = phase1f_approval_manifests();
+    let skeleton = build_publish_skeleton(&manifest, &approvals, &BTreeMap::new());
+
+    let rejected = skeleton
+        .debug_overlays
+        .sources
+        .iter()
+        .find(|source| source.source_id == "dwg-850173d8")
+        .expect("rejected overlay");
+    assert_eq!(rejected.approval_decision, "rejected");
+    assert_eq!(
+        rejected.duplicate_of.as_deref(),
+        Some("djb-m-su-dwg-0c82de78")
+    );
+    assert!(rejected.bbox.is_some());
+
+    let dgn = skeleton
+        .debug_overlays
+        .sources
+        .iter()
+        .find(|source| source.source_id == "dgn-i-dgn-cd887b3a")
+        .expect("DGN overlay metadata");
+    assert_eq!(dgn.approval_decision, "needs_review");
+    assert!(dgn.bbox.is_none());
+    assert!(
+        dgn.warnings
+            .iter()
+            .any(|warning| warning.contains("no bbox available"))
+    );
+}
+
+#[test]
+fn phase1f_normalized_manifest_preserves_source_id_and_traceability_without_copying_cad() {
+    let manifest = phase1f_project_manifest();
+    let approvals = phase1f_approval_manifests();
+    let converted_paths = BTreeMap::from([(
+        "dwg-12d5f1b6".to_string(),
+        PathBuf::from(r"C:\normalized\dwg-12d5f1b6\主橋塔.dxf"),
+    )]);
+
+    let skeleton = build_publish_skeleton(&manifest, &approvals, &converted_paths);
+    let normalized = skeleton
+        .normalized_sources
+        .iter()
+        .find(|source| source.source_id == "dwg-12d5f1b6")
+        .expect("normalized approved source");
+    let json = serde_json::to_value(normalized).expect("serialize normalized manifest");
+
+    assert_eq!(json["source_id"], "dwg-12d5f1b6");
+    assert_eq!(json["approval_decision"], "approved");
+    assert_eq!(
+        json["converted_path"],
+        r"C:\normalized\dwg-12d5f1b6\主橋塔.dxf"
+    );
+    assert!(json.get("copy_cad_file").is_none());
+}
+
+#[test]
+fn phase1f_publish_viewer_html_has_three_bbox_toggles_and_metadata_fields() {
+    let html = render_publish_viewer_html();
+
+    assert!(html.contains("approved only"));
+    assert!(html.contains("rejected bbox"));
+    assert!(html.contains("needs review bbox"));
+    assert!(html.contains("approvedToggle"));
+    assert!(html.contains("rejectedToggle"));
+    assert!(html.contains("needsReviewToggle"));
+    assert!(html.contains("sources_manifest.json"));
+    assert!(html.contains("debug_overlays.json"));
+    assert!(html.contains("source_id"));
+    assert!(html.contains("approval_decision"));
+    assert!(html.contains("duplicate_of"));
+    assert!(html.contains("Cesium-1.141 missing"));
+    assert!(!html.contains("const outlines"));
+}
+
 fn review_stats<const N: usize>(
     source_id: &str,
     percentile_bbox: [f64; 6],
@@ -1259,4 +1388,187 @@ fn assert_source(sources: &[ApprovalSourceDecision], source_id: &str) {
         sources.iter().any(|source| source.source_id == source_id),
         "missing source {source_id}"
     );
+}
+
+fn phase1f_project_manifest() -> ProjectManifest {
+    ProjectManifest {
+        project_id: "淡江大橋移交模型".to_string(),
+        source_epsg: 3826,
+        anchor_source_id: None,
+        allowed_scales: vec![1000.0, 1.0, 0.1, 0.01, 0.001],
+        sources: vec![
+            phase1f_source(
+                "dwg-12d5f1b6",
+                "主橋塔",
+                "主橋塔.dwg",
+                SourceFormat::Dwg,
+                SourceStatus::Approved,
+                Some([292106.8, 2785254.6, -4.8, 292180.2, 2785518.2, 186.0]),
+                Some(1.0),
+            ),
+            phase1f_source(
+                "dwg-850173d8",
+                "主橋",
+                "主橋.dwg",
+                SourceFormat::Dwg,
+                SourceStatus::Quarantined,
+                Some([-2344516.9, 2784696.2, -16.4, 292398.9, 3730959.0, 166.39]),
+                None,
+            ),
+            phase1f_source(
+                "dwg-dd37eec7",
+                "管理中心_全",
+                "管理中心_全.dwg",
+                SourceFormat::Dwg,
+                SourceStatus::Quarantined,
+                Some([0.0, 0.0, 0.0, 292365795.4, 2785739723.5, 18109.8]),
+                None,
+            ),
+            phase1f_source(
+                "dgn-i-dgn-cd887b3a",
+                "管理中心_全.dgn.i",
+                "管理中心_全.dgn.i.dgn",
+                SourceFormat::Dgn,
+                SourceStatus::NeedsAlternativeRoute,
+                None,
+                None,
+            ),
+            phase1f_source(
+                "djb-m-su-ifc-21833332",
+                "DJB-M-SU-監測",
+                "DJB-M-SU-監測.ifc",
+                SourceFormat::Ifc,
+                SourceStatus::PendingInspect,
+                None,
+                None,
+            ),
+        ],
+    }
+}
+
+fn phase1f_source(
+    id: &str,
+    display_name: &str,
+    original_file_name: &str,
+    format: SourceFormat,
+    status: SourceStatus,
+    bbox: Option<[f64; 6]>,
+    selected_scale: Option<f64>,
+) -> SourceRecord {
+    SourceRecord {
+        id: id.to_string(),
+        display_name: display_name.to_string(),
+        original_file_name: original_file_name.to_string(),
+        relative_path: PathBuf::from(original_file_name),
+        path: PathBuf::from(r"C:\sample").join(original_file_name),
+        format,
+        status,
+        original_size_bytes: 100,
+        detected_crs: None,
+        unit_scale_to_meter: selected_scale,
+        anchor_distance_m: None,
+        raw_bbox: bbox,
+        percentile_bbox: bbox,
+        transform: None,
+        cad_metadata_path: None,
+        fingerprint_hash: Some(format!("{id}-hash")),
+        duplicate_candidates: vec![],
+        inspect_status: Some(
+            match status {
+                SourceStatus::Approved => "approved",
+                SourceStatus::Quarantined => "quarantined",
+                SourceStatus::NeedsAlternativeRoute => "needs_alternative_route",
+                SourceStatus::PendingInspect => "pending_inspect",
+                SourceStatus::Converted => "converted",
+                SourceStatus::Published => "published",
+            }
+            .to_string(),
+        ),
+        selected_scale,
+        warnings: vec![],
+    }
+}
+
+fn phase1f_approval_manifests() -> ifc_to_3dtiles::inspect_drilldown::ApprovalManifests {
+    ifc_to_3dtiles::inspect_drilldown::ApprovalManifests {
+        approved: ifc_to_3dtiles::inspect_drilldown::ApprovalManifest {
+            generated_at: "test".to_string(),
+            decision: "approved".to_string(),
+            sources: vec![phase1f_decision(
+                "dwg-12d5f1b6",
+                "主橋塔.dwg",
+                "dwg",
+                "approved",
+                "approved",
+                "entity inspect approved with selected scale",
+                None,
+            )],
+        },
+        rejected: ifc_to_3dtiles::inspect_drilldown::ApprovalManifest {
+            generated_at: "test".to_string(),
+            decision: "rejected".to_string(),
+            sources: vec![phase1f_decision(
+                "dwg-850173d8",
+                "主橋.dwg",
+                "dwg",
+                "quarantined",
+                "rejected",
+                "duplicate_candidate",
+                Some("djb-m-su-dwg-0c82de78"),
+            )],
+        },
+        needs_review: ifc_to_3dtiles::inspect_drilldown::ApprovalManifest {
+            generated_at: "test".to_string(),
+            decision: "needs_review".to_string(),
+            sources: vec![
+                phase1f_decision(
+                    "dwg-dd37eec7",
+                    "管理中心_全.dwg",
+                    "dwg",
+                    "quarantined",
+                    "needs_review",
+                    "requires human QA before publish",
+                    None,
+                ),
+                phase1f_decision(
+                    "dgn-i-dgn-cd887b3a",
+                    "管理中心_全.dgn.i.dgn",
+                    "dgn",
+                    "needs_alternative_route",
+                    "needs_review",
+                    "DGN needs alternative route: ODA invalid group code",
+                    None,
+                ),
+                phase1f_decision(
+                    "djb-m-su-ifc-21833332",
+                    "DJB-M-SU-監測.ifc",
+                    "ifc",
+                    "pending_inspect",
+                    "needs_review",
+                    "requires human QA before publish",
+                    None,
+                ),
+            ],
+        },
+    }
+}
+
+fn phase1f_decision(
+    source_id: &str,
+    original_file_name: &str,
+    format: &str,
+    inspect_status: &str,
+    decision: &str,
+    reason: &str,
+    duplicate_of: Option<&str>,
+) -> ApprovalSourceDecision {
+    ApprovalSourceDecision {
+        source_id: source_id.to_string(),
+        original_file_name: original_file_name.to_string(),
+        format: format.to_string(),
+        inspect_status: inspect_status.to_string(),
+        decision: decision.to_string(),
+        reason: reason.to_string(),
+        duplicate_of: duplicate_of.map(str::to_string),
+    }
 }

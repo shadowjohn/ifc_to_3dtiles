@@ -19,6 +19,7 @@ use ifc_to_3dtiles::{
     inspect_drilldown::write_drilldown_outputs,
     inspect_review::write_review_report_html,
     project::{ProjectManifest, SourceFormat, SourceStatus},
+    publish_skeleton::write_publish_skeleton_outputs,
     revit::RevitVersion,
     rvt::{RvtToIfcOptions, export_rvt_to_ifc},
 };
@@ -184,6 +185,13 @@ enum Command {
         #[arg(long)]
         manifest: Option<PathBuf>,
     },
+    PublishApproved {
+        #[arg(long)]
+        input: PathBuf,
+
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -289,6 +297,7 @@ fn run_command(command: &Command) -> Result<()> {
             db,
             manifest,
         } => run_inspect_drilldown(input, output, db, manifest),
+        Command::PublishApproved { input, output } => run_publish_approved(input, output),
     }
 }
 
@@ -456,6 +465,13 @@ fn run_inspect_drilldown(
     write_drilldown_outputs(&db_path, &manifest_path, &output_dir, &review_report_path)?;
     println!("{}", output_dir.display());
     println!("{}", review_report_path.display());
+    Ok(())
+}
+
+fn run_publish_approved(input: &Path, output: &Option<PathBuf>) -> Result<()> {
+    let output_path = output.clone().unwrap_or_else(|| input.join("publish"));
+    write_publish_skeleton_outputs(input, &output_path)?;
+    println!("{}", output_path.display());
     Ok(())
 }
 

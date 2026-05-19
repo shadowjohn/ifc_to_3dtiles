@@ -414,3 +414,21 @@
   - `needs_review_sources.json`
   - 第一版是機器建議 + 人工可修正，後續 publish pipeline 再把這三份當正式 gate。
 - `review_report.html` 現在會加入 Phase 1E QA summary。
+
+### Phase 1F Approved Source Publish Skeleton
+
+- 新增 Rust `publish_skeleton` core：
+  - 只讀 `qa/approved_sources.json` 作正式 publish runtime source。
+  - `qa/rejected_sources.json` 與 `qa/needs_review_sources.json` 只輸出到 debug overlay。
+  - 不做 CAD -> 3D Tiles，也不複製大型 DXF。
+- 新增 CLI：
+  - `ifc_to_3dtiles publish-approved --input out\inspect_tamkang --output out\inspect_tamkang\publish`
+- 新增 `tools/run_phase1f_publish_skeleton.ps1`。
+- 輸出：
+  - `normalized/<source-id>/source_manifest.json`
+  - `publish/sources_manifest.json`
+  - `publish/debug_overlays.json`
+  - `publish/index.html`
+- 目前 approved runtime source 只包含：
+  - `dwg-12d5f1b6 / 主橋塔.dwg`
+- `review_report.html` 會追加 Phase 1F publish skeleton summary。
