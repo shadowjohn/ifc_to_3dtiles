@@ -1,4 +1,5 @@
 pub mod b3dm;
+pub mod cad_conversion;
 pub mod cad_metadata;
 pub mod convert;
 pub mod crs;

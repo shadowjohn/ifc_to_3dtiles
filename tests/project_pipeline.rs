@@ -1,4 +1,5 @@
 use ifc_to_3dtiles::{
+    cad_conversion::{CadConversionReportEntry, CadConversionStatus},
     cad_metadata::{CadHierarchyDump, CadLevel, CadMaterial, CadModel, CadReference},
     fingerprint::{GeometryFingerprint, duplicate_candidate_score},
     georef::{
@@ -546,4 +547,60 @@ fn inspect_removes_stale_cad_metadata_sidecars_before_writing() {
 
     assert_eq!(sidecars.len(), 1);
     assert_ne!(sidecars[0], "stale.json");
+}
+
+#[test]
+fn cad_conversion_report_entry_serializes_output_contract() {
+    let entry = CadConversionReportEntry {
+        source_id: "djb-m-su-dwg-a1b2c3d4".to_string(),
+        source_display_name: "DJB-M-SU-監測".to_string(),
+        source_original_file_name: "DJB-M-SU-監測.dwg".to_string(),
+        source_relative_path: PathBuf::from("DJB-M-SU-監測.dwg"),
+        input_path: PathBuf::from(
+            r"C:\Users\stw_s\Desktop\ifc_to_3dtiles\sample_files\淡江大橋移交模型\DJB-M-SU-監測.dwg",
+        ),
+        input_format: SourceFormat::Dwg,
+        converted_path: Some(PathBuf::from(
+            r"C:\Users\stw_s\Desktop\ifc_to_3dtiles\out\oda_normalized\djb-m-su-dwg-a1b2c3d4\DJB-M-SU-監測_R2018.dwg",
+        )),
+        converted_format: Some("dwg".to_string()),
+        oda_version: Some("27.1.0.0".to_string()),
+        target_version: "ACAD2018".to_string(),
+        target_format: "DWG".to_string(),
+        success: true,
+        status: CadConversionStatus::Success,
+        input_sha256: "inputhex".to_string(),
+        converted_sha256: Some("convertedhex".to_string()),
+        bbox_before: None,
+        bbox_after: Some(serde_json::json!({
+            "raw": null,
+            "percentile": null
+        })),
+        level_count_after: None,
+        material_count_after: None,
+        fingerprint_after: None,
+        warnings: vec![],
+        command: None,
+        exit_code: None,
+    };
+
+    let json = serde_json::to_value(&entry).expect("serialize conversion entry");
+    assert_eq!(json["source_id"], "djb-m-su-dwg-a1b2c3d4");
+    assert_eq!(json["source_display_name"], "DJB-M-SU-監測");
+    assert_eq!(json["source_original_file_name"], "DJB-M-SU-監測.dwg");
+    assert_eq!(json["source_relative_path"], "DJB-M-SU-監測.dwg");
+    assert_eq!(json["input_format"], "dwg");
+    assert_eq!(json["converted_format"], "dwg");
+    assert_eq!(json["oda_version"], "27.1.0.0");
+    assert_eq!(json["target_version"], "ACAD2018");
+    assert_eq!(json["target_format"], "DWG");
+    assert_eq!(json["success"], true);
+    assert_eq!(json["status"], "success");
+    assert!(json["bbox_before"].is_null());
+    assert!(json["bbox_after"]["raw"].is_null());
+
+    let parsed: CadConversionReportEntry =
+        serde_json::from_value(json).expect("deserialize conversion entry");
+    assert_eq!(parsed.status, CadConversionStatus::Success);
+    assert_eq!(parsed.converted_sha256.as_deref(), Some("convertedhex"));
 }
