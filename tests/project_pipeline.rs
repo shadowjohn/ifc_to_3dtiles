@@ -4,6 +4,7 @@ use ifc_to_3dtiles::{
     georef::{
         Aoi, Bounds2, BoundsSummary, SourceTransform, classify_source_scale, decide_source_status,
     },
+    inspect::{CadProbeSummary, read_cad_probe_summary},
     inspect::{discover_sources, source_format_from_path, write_empty_cad_metadata_dumps},
     project::{ProjectManifest, SourceFormat, SourceRecord, SourceStatus, WorkspaceLayout},
 };
@@ -251,6 +252,128 @@ fn geometry_fingerprint_detects_probable_duplicate_sources() {
 
     let score = duplicate_candidate_score(&a, &b);
     assert!(score >= 0.95);
+}
+
+#[test]
+fn cad_probe_summary_marks_old_and_preferred_oda_converter() {
+    let json = r#"{
+      "tools": {
+        "ogrinfo": {"found": true, "source": "C:\\ms4w_MSSQL\\GDAL\\ogrinfo.exe", "version": null},
+        "ogr2ogr": {"found": true, "source": "C:\\ms4w_MSSQL\\GDAL\\ogr2ogr.exe", "version": null},
+        "oda_file_converter": {
+          "found": true,
+          "source": "C:\\Program Files\\ODA\\ODAFileConverter 27.1.0\\ODAFileConverter.exe",
+          "version": "27.1.0.0",
+          "version_risk": "acceptable_baseline"
+        }
+      },
+      "oda_file_converters": [
+        {
+          "found": true,
+          "name": "ODAFileConverter.exe",
+          "source": "C:\\Program Files\\ODA\\ODAFileConverter 27.1.0\\ODAFileConverter.exe",
+          "version": "27.1.0.0",
+          "version_major": 27,
+          "version_minor": 1,
+          "version_build": 0,
+          "version_revision": 0,
+          "version_risk": "acceptable_baseline",
+          "last_write_time": "2026-02-11T15:30:14.0000000+08:00"
+        },
+        {
+          "found": true,
+          "name": "ODAFileConverter.exe",
+          "source": "C:\\bin\\ODAFileConverter\\ODAFileConverter.exe",
+          "version": "20.12.0.0",
+          "version_major": 20,
+          "version_minor": 12,
+          "version_build": 0,
+          "version_revision": 0,
+          "version_risk": "too_old_for_2026_cad_delivery",
+          "last_write_time": "2023-04-23T11:56:10.0000000+08:00"
+        }
+      ],
+      "preferred_oda_file_converter": {
+        "found": true,
+        "name": "ODAFileConverter.exe",
+        "source": "C:\\Program Files\\ODA\\ODAFileConverter 27.1.0\\ODAFileConverter.exe",
+        "version": "27.1.0.0",
+        "version_major": 27,
+        "version_minor": 1,
+        "version_build": 0,
+        "version_revision": 0,
+        "version_risk": "acceptable_baseline",
+        "last_write_time": "2026-02-11T15:30:14.0000000+08:00"
+      },
+      "file_count": 8,
+      "cad_file_count": 7,
+      "extension_distribution": [
+        {"extension": ".dwg", "count": 4, "total_bytes": 149951738},
+        {"extension": ".dgn", "count": 3, "total_bytes": 240211456},
+        {"extension": ".ifc", "count": 1, "total_bytes": 117439099}
+      ],
+      "cad_files": []
+    }"#;
+
+    let summary: CadProbeSummary = serde_json::from_str(json).expect("parse probe summary");
+
+    assert_eq!(summary.cad_file_count, 7);
+    assert_eq!(
+        summary.preferred_oda_file_converter.version.as_deref(),
+        Some("27.1.0.0")
+    );
+    assert_eq!(
+        summary.tools.oda_file_converter.version_risk.as_deref(),
+        Some("acceptable_baseline")
+    );
+    assert!(
+        summary
+            .oda_file_converters
+            .iter()
+            .any(|tool| tool.version_risk.as_deref() == Some("too_old_for_2026_cad_delivery"))
+    );
+}
+
+#[test]
+fn read_cad_probe_summary_loads_probe_report_from_disk() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join("cad_probe_report.json");
+    fs::write(
+        &path,
+        r#"{
+          "tools": {
+            "ogrinfo": {"found": false, "source": null, "version": null},
+            "ogr2ogr": {"found": false, "source": null, "version": null},
+            "oda_file_converter": {"found": false, "source": null, "version": null, "version_risk": "missing"}
+          },
+          "oda_file_converters": [],
+          "preferred_oda_file_converter": {
+            "found": false,
+            "name": "ODAFileConverter.exe",
+            "source": null,
+            "version": null,
+            "version_major": 0,
+            "version_minor": 0,
+            "version_build": 0,
+            "version_revision": 0,
+            "version_risk": "missing",
+            "last_write_time": null
+          },
+          "file_count": 0,
+          "cad_file_count": 0,
+          "extension_distribution": [],
+          "cad_files": []
+        }"#,
+    )
+    .expect("write probe report");
+
+    let summary = read_cad_probe_summary(&path).expect("read probe report");
+
+    assert_eq!(summary.file_count, 0);
+    assert_eq!(
+        summary.preferred_oda_file_converter.version_risk.as_deref(),
+        Some("missing")
+    );
 }
 
 #[test]

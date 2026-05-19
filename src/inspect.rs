@@ -4,9 +4,78 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 
 use crate::cad_metadata::CadHierarchyDump;
 use crate::project::{SourceFormat, SourceRecord, SourceStatus};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CadProbeSummary {
+    pub tools: CadProbeTools,
+    #[serde(default)]
+    pub oda_file_converters: Vec<CadOdaToolSummary>,
+    pub preferred_oda_file_converter: CadOdaToolSummary,
+    pub file_count: usize,
+    pub cad_file_count: usize,
+    #[serde(default)]
+    pub extension_distribution: Vec<CadExtensionSummary>,
+    #[serde(default)]
+    pub cad_files: Vec<CadProbeFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CadProbeTools {
+    pub ogrinfo: CadToolSummary,
+    pub ogr2ogr: CadToolSummary,
+    pub oda_file_converter: CadToolSummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CadToolSummary {
+    pub found: bool,
+    pub source: Option<String>,
+    pub version: Option<String>,
+    #[serde(default)]
+    pub version_risk: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CadOdaToolSummary {
+    pub found: bool,
+    pub name: String,
+    pub source: Option<String>,
+    pub version: Option<String>,
+    pub version_major: u32,
+    pub version_minor: u32,
+    pub version_build: i32,
+    pub version_revision: i32,
+    pub version_risk: Option<String>,
+    pub last_write_time: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CadExtensionSummary {
+    pub extension: String,
+    pub count: usize,
+    pub total_bytes: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CadProbeFile {
+    #[serde(rename = "FullName")]
+    pub full_name: PathBuf,
+    #[serde(rename = "Extension")]
+    pub extension: String,
+    #[serde(rename = "Length")]
+    pub length: u64,
+}
+
+pub fn read_cad_probe_summary(path: &Path) -> Result<CadProbeSummary> {
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("讀取 CAD probe 失敗：{}", path.display()))?;
+    serde_json::from_str(&text)
+        .with_context(|| format!("解析 CAD probe JSON 失敗：{}", path.display()))
+}
 
 pub fn source_format_from_path(path: impl AsRef<Path>) -> SourceFormat {
     match path

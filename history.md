@@ -277,3 +277,23 @@
   - bbox
   - surface area
 - 這階段先提供可測核心，不直接套到 DGN/DWG inspect manifest；原因是 DGN/DWG 尚未有可信 geometry bbox / triangle / vertex 統計。
+
+### CAD Probe Summary Integration
+
+- Rust `inspect` 模組新增可解析 `cad_probe_report.json` 的 schema。
+- 支援欄位：
+  - `tools.ogrinfo`
+  - `tools.ogr2ogr`
+  - `tools.oda_file_converter`
+  - `oda_file_converters`
+  - `preferred_oda_file_converter`
+  - `extension_distribution`
+  - `cad_files`
+- 驗證目前 probe report：
+  - preferred ODA 為 `27.1.0.0`
+  - 舊 ODA `20.12.0.0` 仍可列入 fallback
+  - sample files 分布維持 `.dwg` 4、`.dgn` 3、`.ifc` 1
+- 直接測試 `ogrinfo` 樣本：
+  - DGN 樣本目前 GDAL 無法開啟。
+  - DWG 樣本回報 libopencad 只支援 DWG R2000，無法支援目前 DWG 版本。
+  - 因此短期 DGN/DWG hierarchy 不能依賴 GDAL/OGR，仍需 ODA conversion/probe route。
