@@ -241,3 +241,26 @@
   - `cargo test` 通過
   - `ifc_to_3dtiles inspect` 跑 `sample_files\淡江大橋移交模型` 成功
   - `source_manifest.json` 抓到 8 個 source：DGN 3、DWG 4、IFC 1
+
+### CAD Metadata Inspect Dump
+
+- 新增 CAD hierarchy dump schema：
+  - `models`
+  - `references`
+  - `levels`
+  - `cells`
+  - `shared_cells`
+  - `attachments`
+  - `element_classes`
+  - `materials`
+  - `line_styles`
+  - `warnings`
+- `inspect` 現在會為 DGN/DWG source 產生 `cad_metadata/<source-id>.json`。
+- 尚未做真實 ODA/GDAL hierarchy 解析前，先寫 empty buckets 並記 warning，確保 viewer / publish / debug 有固定資料入口。
+- 修正 source id 碰撞：
+  - 原本中文檔名如 `主橋.dwg`、`主橋塔.dwg` 會壓成相同 ASCII slug。
+  - 現在 source id 使用 ASCII slug + deterministic path hash。
+- `inspect` 重跑時會清掉舊 `cad_metadata/*.json`，避免 stale sidecar 汙染報告。
+- 驗證：
+  - `source_manifest.json` source id 8/8 唯一。
+  - CAD source 7 個，sidecar 7 個。

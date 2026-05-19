@@ -224,7 +224,11 @@ fn run_command(command: &Command) -> Result<()> {
 fn run_inspect(input: &Path, output: &Path, source_epsg: u32) -> Result<()> {
     fs::create_dir_all(output)
         .with_context(|| format!("建立 inspect 輸出目錄失敗：{}", output.display()))?;
-    let sources = discover_sources(input)?;
+    let mut sources = discover_sources(input)?;
+    if let Err(err) = ifc_to_3dtiles::inspect::write_empty_cad_metadata_dumps(&mut sources, output)
+    {
+        log::warn!("CAD metadata sidecar 產生失敗：{err:#}");
+    }
     let anchor_source_id = sources
         .iter()
         .find(|source| source.format == SourceFormat::Ifc)
