@@ -36,6 +36,9 @@ fn workspace_layout_uses_predictable_folders() {
 fn source_record_preserves_source_identity() {
     let source = SourceRecord {
         id: "dgn-djb-m-su-monitor".to_string(),
+        display_name: "DJB-M-SU-監測.dgn.i".to_string(),
+        original_file_name: "DJB-M-SU-監測.dgn.i.dgn".to_string(),
+        relative_path: PathBuf::from(r"sources\DJB-M-SU-監測.dgn.i.dgn"),
         path: PathBuf::from(r"sources\DJB-M-SU-監測.dgn.i.dgn"),
         format: SourceFormat::Dgn,
         status: SourceStatus::PendingInspect,
@@ -54,6 +57,8 @@ fn source_record_preserves_source_identity() {
 
     assert_eq!(source.format, SourceFormat::Dgn);
     assert_eq!(source.status, SourceStatus::PendingInspect);
+    assert_eq!(source.display_name, "DJB-M-SU-監測.dgn.i");
+    assert_eq!(source.original_file_name, "DJB-M-SU-監測.dgn.i.dgn");
 }
 
 #[test]
@@ -63,7 +68,26 @@ fn project_manifest_serializes_to_stable_json() {
         source_epsg: 3826,
         anchor_source_id: None,
         allowed_scales: vec![1000.0, 1.0, 0.1, 0.01, 0.001],
-        sources: vec![],
+        sources: vec![SourceRecord {
+            id: "dgn-djb-m-su-monitor".to_string(),
+            display_name: "DJB-M-SU-監測.dgn.i".to_string(),
+            original_file_name: "DJB-M-SU-監測.dgn.i.dgn".to_string(),
+            relative_path: PathBuf::from(r"sources\DJB-M-SU-監測.dgn.i.dgn"),
+            path: PathBuf::from(r"sources\DJB-M-SU-監測.dgn.i.dgn"),
+            format: SourceFormat::Dgn,
+            status: SourceStatus::PendingInspect,
+            original_size_bytes: 170_884_000,
+            detected_crs: None,
+            unit_scale_to_meter: None,
+            anchor_distance_m: None,
+            raw_bbox: None,
+            percentile_bbox: None,
+            transform: None,
+            cad_metadata_path: None,
+            fingerprint_hash: None,
+            duplicate_candidates: vec![],
+            warnings: vec![],
+        }],
     };
     let json = serde_json::to_string_pretty(&manifest).expect("serialize manifest");
 
@@ -71,6 +95,9 @@ fn project_manifest_serializes_to_stable_json() {
     assert!(json.contains("\"allowed_scales\""));
     assert!(json.contains("1000.0"));
     assert!(json.contains("0.001"));
+    assert!(json.contains("\"display_name\": \"DJB-M-SU-監測.dgn.i\""));
+    assert!(json.contains("\"original_file_name\": \"DJB-M-SU-監測.dgn.i.dgn\""));
+    assert!(json.contains("\"relative_path\""));
 }
 
 #[test]
@@ -123,6 +150,46 @@ fn discover_sources_generates_unique_ids_for_non_ascii_names() {
     assert_eq!(sources.len(), 3);
     assert_eq!(ids.len(), 3);
     assert!(sources.iter().all(|source| source.id.is_ascii()));
+}
+
+#[test]
+fn discover_sources_preserves_human_readable_identity() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let nested = tmp.path().join("cad").join("stage");
+    fs::create_dir_all(&nested).expect("nested dir");
+    fs::write(nested.join("主橋.dwg"), "dwg").expect("dwg");
+
+    let sources = discover_sources(tmp.path()).expect("discover sources");
+    let source = sources
+        .iter()
+        .find(|source| source.original_file_name == "主橋.dwg")
+        .expect("source");
+
+    assert_eq!(source.display_name, "主橋");
+    assert_eq!(source.original_file_name, "主橋.dwg");
+    assert_eq!(
+        source.relative_path,
+        PathBuf::from("cad").join("stage").join("主橋.dwg")
+    );
+}
+
+#[test]
+fn discover_sources_flags_repeated_cad_like_extensions() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    fs::write(tmp.path().join("DJB-M-SU-監測.dgn.i.dgn"), "dgn").expect("dgn");
+
+    let sources = discover_sources(tmp.path()).expect("discover sources");
+    let source = sources
+        .iter()
+        .find(|source| source.original_file_name == "DJB-M-SU-監測.dgn.i.dgn")
+        .expect("source");
+
+    assert!(
+        source
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("possible_intermediate_or_export_copy"))
+    );
 }
 
 #[test]

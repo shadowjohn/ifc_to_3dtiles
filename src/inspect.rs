@@ -106,8 +106,29 @@ pub fn discover_sources(root: &Path) -> Result<Vec<SourceRecord>> {
 
         let metadata =
             fs::metadata(&path).with_context(|| format!("讀取檔案資訊失敗：{}", path.display()))?;
+        let relative_path = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+        let original_file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("source")
+            .to_string();
+        let display_name = path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or(&original_file_name)
+            .to_string();
+        let mut warnings = Vec::new();
+        if has_repeated_cad_like_extension(&original_file_name) {
+            warnings.push(
+                "possible_intermediate_or_export_copy: file has repeated CAD-like extensions"
+                    .to_string(),
+            );
+        }
         sources.push(SourceRecord {
             id: stable_source_id(root, &path),
+            display_name,
+            original_file_name,
+            relative_path,
             path,
             format,
             status: SourceStatus::PendingInspect,
@@ -121,7 +142,7 @@ pub fn discover_sources(root: &Path) -> Result<Vec<SourceRecord>> {
             cad_metadata_path: None,
             fingerprint_hash: None,
             duplicate_candidates: vec![],
-            warnings: vec![],
+            warnings,
         });
     }
 
@@ -200,6 +221,12 @@ fn stable_source_id(root: &Path, path: &Path) -> String {
         trimmed.to_string()
     };
     format!("{slug}-{:08x}", stable_hash(relative))
+}
+
+fn has_repeated_cad_like_extension(file_name: &str) -> bool {
+    let lowered = file_name.to_ascii_lowercase();
+    let cad_tokens = [".dgn.", ".dwg.", ".dxf.", ".ifc."];
+    cad_tokens.iter().any(|token| lowered.contains(token))
 }
 
 fn stable_hash(path: &Path) -> u32 {

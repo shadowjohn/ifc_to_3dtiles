@@ -45,6 +45,9 @@ pub enum SourceStatus {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SourceRecord {
     pub id: String,
+    pub display_name: String,
+    pub original_file_name: String,
+    pub relative_path: PathBuf,
     pub path: PathBuf,
     pub format: SourceFormat,
     pub status: SourceStatus,
