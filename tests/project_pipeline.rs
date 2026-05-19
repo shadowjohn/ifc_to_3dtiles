@@ -1489,6 +1489,66 @@ fn phase1g_review_report_links_spatial_qa_manifest() {
     assert!(summary.contains("outlier marker"));
 }
 
+#[test]
+fn phase1h_spatial_qa_manifest_adds_aoi_gap_and_bbox_inflation_metrics() {
+    let qa = build_spatial_qa_manifest(
+        &phase1f_project_manifest(),
+        &phase1g_review_report(),
+        &phase1f_approval_manifests(),
+        &[phase1g_duplicate_pair()],
+        &[phase1g_outlier_report()],
+    );
+
+    let approved = qa
+        .sources
+        .iter()
+        .find(|source| source.source_id == "dwg-12d5f1b6")
+        .expect("approved source");
+    assert_eq!(approved.aoi_status, "inside_aoi");
+    assert_eq!(approved.aoi_gap_m, Some([0.0, 0.0, 0.0, 0.0]));
+    assert!(approved.bbox_inflation_ratio.expect("inflation ratio") > 1.0);
+
+    let rejected = qa
+        .sources
+        .iter()
+        .find(|source| source.source_id == "dwg-850173d8")
+        .expect("rejected source");
+    assert_eq!(rejected.aoi_status, "outside_aoi");
+    let gap = rejected.aoi_gap_m.expect("aoi gap");
+    assert!(
+        gap[0] > 2_000_000.0,
+        "west gap should explain far-away bbox"
+    );
+    assert!(gap[3] > 900_000.0, "north gap should explain AOI overflow");
+}
+
+#[test]
+fn phase1h_publish_viewer_has_review_navigation_and_drilldown_helpers() {
+    let skeleton = build_publish_skeleton(
+        &phase1f_project_manifest(),
+        &phase1f_approval_manifests(),
+        &BTreeMap::new(),
+    );
+    let qa = build_spatial_qa_manifest(
+        &phase1f_project_manifest(),
+        &phase1g_review_report(),
+        &phase1f_approval_manifests(),
+        &[phase1g_duplicate_pair()],
+        &[phase1g_outlier_report()],
+    );
+
+    let html = render_publish_viewer_html_with_data_and_spatial(Some(&skeleton), Some(&qa));
+
+    assert!(html.contains("sourceListPanel"));
+    assert!(html.contains("qaSearch"));
+    assert!(html.contains("renderSourceList"));
+    assert!(html.contains("zoomToSource"));
+    assert!(html.contains("showDuplicateDetail"));
+    assert!(html.contains("showOutlierList"));
+    assert!(html.contains("aoi_gap_m"));
+    assert!(html.contains("bbox_inflation_ratio"));
+}
+
 fn review_stats<const N: usize>(
     source_id: &str,
     percentile_bbox: [f64; 6],

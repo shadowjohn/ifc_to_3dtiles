@@ -89,6 +89,9 @@ pub struct SpatialQaSource {
     pub raw_bbox_wgs84: Option<[f64; 6]>,
     pub percentile_bbox: Option<[f64; 6]>,
     pub percentile_bbox_wgs84: Option<[f64; 6]>,
+    pub aoi_status: String,
+    pub aoi_gap_m: Option<[f64; 4]>,
+    pub bbox_inflation_ratio: Option<f64>,
     pub warnings: Vec<String>,
     pub quarantine_reasons: Vec<String>,
     pub duplicate_candidates: Vec<SpatialQaDuplicateCandidate>,
@@ -258,6 +261,9 @@ fn spatial_source_from_review(
     approval_reason: String,
     duplicate_of: Option<String>,
 ) -> SpatialQaSource {
+    let aoi_gap_m = source.percentile_bbox.map(bbox_aoi_gap_m);
+    let aoi_status = aoi_status(aoi_gap_m);
+    let bbox_inflation_ratio = bbox_inflation_ratio(source.raw_bbox, source.percentile_bbox);
     SpatialQaSource {
         source_id: source.source_id.clone(),
         original_file_name: source.original_file_name.clone(),
@@ -273,6 +279,9 @@ fn spatial_source_from_review(
         raw_bbox_wgs84: source.raw_bbox.and_then(bbox_to_wgs84),
         percentile_bbox: source.percentile_bbox,
         percentile_bbox_wgs84: source.percentile_bbox.and_then(bbox_to_wgs84),
+        aoi_status,
+        aoi_gap_m,
+        bbox_inflation_ratio,
         warnings: source.warnings.clone(),
         quarantine_reasons: source.quarantine_reasons.clone(),
         duplicate_candidates: source
@@ -396,6 +405,43 @@ fn bbox_center(bbox: [f64; 6]) -> [f64; 3] {
         (bbox[1] + bbox[4]) * 0.5,
         (bbox[2] + bbox[5]) * 0.5,
     ]
+}
+
+fn bbox_aoi_gap_m(bbox: [f64; 6]) -> [f64; 4] {
+    let aoi = DEFAULT_AOI_EPSG3826;
+    [
+        (aoi[0] - bbox[0]).max(0.0),
+        (aoi[1] - bbox[1]).max(0.0),
+        (bbox[3] - aoi[2]).max(0.0),
+        (bbox[4] - aoi[3]).max(0.0),
+    ]
+}
+
+fn aoi_status(gap: Option<[f64; 4]>) -> String {
+    match gap {
+        None => "no_bbox".to_string(),
+        Some(gap) if gap.iter().any(|value| *value > 0.001) => "outside_aoi".to_string(),
+        Some(_) => "inside_aoi".to_string(),
+    }
+}
+
+fn bbox_inflation_ratio(
+    raw_bbox: Option<[f64; 6]>,
+    percentile_bbox: Option<[f64; 6]>,
+) -> Option<f64> {
+    let raw = raw_bbox?;
+    let percentile = percentile_bbox?;
+    let raw_area = bbox_xy_area(raw);
+    let percentile_area = bbox_xy_area(percentile);
+    if percentile_area <= 0.000_001 {
+        None
+    } else {
+        Some((raw_area / percentile_area).max(1.0))
+    }
+}
+
+fn bbox_xy_area(bbox: [f64; 6]) -> f64 {
+    ((bbox[3] - bbox[0]).abs() * (bbox[4] - bbox[1]).abs()).max(0.0)
 }
 
 fn read_approval_manifests(qa_dir: &Path) -> Result<ApprovalManifests> {

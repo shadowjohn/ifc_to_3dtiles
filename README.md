@@ -238,6 +238,13 @@ Phase 1G viewer 支援：
 - duplicate compare overlay：顯示 `DJB-M-SU-監測.dwg` vs `主橋.dwg` 的重疊證據。
 - outlier marker：顯示 `管理中心_全.dwg` 可疑 entity 位置，點 marker 看 FID、layer、score、reason。
 
+Phase 1H 追加 QA navigation：
+
+- 左側 source list / search，可依 source、status、warning、layer、geometry type 搜尋。
+- source detail 顯示 `aoi_status`、`aoi_gap_m`、`bbox_inflation_ratio`。
+- 點 source 直接 zoom 到 P0.5/P99.5 bbox；detail panel 可切 raw / percentile zoom。
+- Duplicate / Outliers 快捷按鈕可直接打開 comparison / top outlier drilldown。
+
 ## Verification
 
 ```powershell

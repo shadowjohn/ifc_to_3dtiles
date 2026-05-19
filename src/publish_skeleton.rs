@@ -236,6 +236,15 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
     #toolbar label { display:flex; gap:6px; align-items:center; white-space:nowrap; }
     #status { position:absolute; z-index:2; right:12px; bottom:12px; max-width:520px; max-height:40vh; overflow:auto; background:rgba(16,20,24,.92); border:1px solid #2b3642; border-radius:8px; padding:10px 12px; white-space:pre-wrap; }
     #detailPanel { position:absolute; z-index:2; top:12px; right:12px; width:min(390px, calc(100vw - 24px)); max-height:calc(100vh - 96px); overflow:auto; background:rgba(16,20,24,.94); border:1px solid #2b3642; border-radius:8px; padding:12px; box-shadow:0 16px 40px rgba(0,0,0,.38); }
+    #sourceListPanel { position:absolute; z-index:2; top:72px; left:12px; width:min(360px, calc(100vw - 24px)); max-height:calc(100vh - 150px); overflow:auto; background:rgba(16,20,24,.94); border:1px solid #2b3642; border-radius:8px; padding:12px; box-shadow:0 16px 40px rgba(0,0,0,.30); }
+    #sourceListPanel h2 { margin:0 0 8px; font-size:15px; }
+    #qaSearch { box-sizing:border-box; width:100%; margin:0 0 8px; padding:7px 9px; border:1px solid #334150; border-radius:6px; background:#0d141b; color:#e8eef5; }
+    .source-row { width:100%; margin:0 0 6px; padding:8px; text-align:left; border:1px solid #2b3642; border-radius:6px; color:#e8eef5; background:#121a22; cursor:pointer; }
+    .source-row:hover { border-color:#6aa7ff; background:#172330; }
+    .source-title { display:flex; justify-content:space-between; gap:8px; align-items:center; }
+    .source-meta { margin-top:4px; color:#91a0ad; font-size:12px; }
+    .qa-actions { display:flex; gap:6px; flex-wrap:wrap; margin:8px 0; }
+    .qa-actions .btn { font-size:12px; padding:5px 8px; }
     #detailPanel h2 { margin:0 0 8px; font-size:16px; }
     #detailPanel h3 { margin:12px 0 6px; font-size:13px; color:#dce8f3; }
     #detailPanel p { margin:4px 0; }
@@ -266,6 +275,16 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
   <aside id="detailPanel">
     <h2>Spatial QA</h2>
     <p class="muted">點 bbox / outlier marker 查看來源、狀態、scale、warnings、duplicate、top layers。</p>
+  </aside>
+  <aside id="sourceListPanel">
+    <h2>Source QA</h2>
+    <input id="qaSearch" type="search" placeholder="搜尋 source / status / layer">
+    <div id="qaSummary" class="muted">loading</div>
+    <div class="qa-actions">
+      <button id="duplicateDrillBtn" class="btn">Duplicate</button>
+      <button id="outlierListBtn" class="btn">Outliers</button>
+    </div>
+    <div id="sourceList"></div>
   </aside>
   <pre id="status">sources_manifest.json / debug_overlays.json</pre>
   <!--EMBEDDED_MANIFESTS-->
@@ -325,6 +344,47 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
     function formatCounts(items) {
       if (!items || !items.length) return `<p class="muted">none</p>`;
       return items.map(item => `<span class="pill">${escapeHtml(item.name)} ${formatNumber(item.count)}</span>`).join("");
+    }
+    function formatAoiGap(source) {
+      if (!source || !source.aoi_gap_m) return "-";
+      const labels = ["W", "S", "E", "N"];
+      return source.aoi_gap_m.map((value, index) => `${labels[index]} ${formatNumber(value)}m`).join(" · ");
+    }
+    function formatRatio(value) {
+      if (value === null || value === undefined || !Number.isFinite(Number(value))) return "-";
+      return Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 }) + "x";
+    }
+    function sourceSearchText(source) {
+      return [
+        source.source_id,
+        source.original_file_name,
+        source.inspect_status,
+        source.approval_decision,
+        source.aoi_status,
+        ...(source.warnings || []),
+        ...(source.quarantine_reasons || []),
+        ...(source.top_layers || []).map(item => item.name),
+        ...(source.geometry_types || []).map(item => item.name)
+      ].join(" ").toLowerCase();
+    }
+    function renderSourceList() {
+      const list = document.getElementById("sourceList");
+      const query = (document.getElementById("qaSearch").value || "").trim().toLowerCase();
+      const sources = (state.spatialQa?.sources || [])
+        .filter(source => !query || sourceSearchText(source).includes(query));
+      document.getElementById("qaSummary").textContent =
+        `runtime ${state.approved.length} / debug ${state.rejected.length + state.needs_review.length} / showing ${sources.length}`;
+      list.innerHTML = sources.map(source => `
+        <button class="source-row" data-source-id="${escapeHtml(source.source_id)}">
+          <span class="source-title">
+            <b>${escapeHtml(source.original_file_name)}</b>
+            <span class="pill">${escapeHtml(source.approval_decision)}</span>
+          </span>
+          <span class="source-meta">
+            ${escapeHtml(source.inspect_status)} · ${escapeHtml(source.aoi_status || "no_bbox")} · scale ${escapeHtml(source.selected_scale ?? "-")}
+          </span>
+        </button>
+      `).join("");
     }
     function propValue(entity, key) {
       const value = entity && entity.properties && entity.properties[key];
@@ -441,6 +501,64 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       if (!text || text === "null") return null;
       return JSON.parse(text);
     }
+    function rectangleFromBbox(bbox) {
+      if (!bbox) return null;
+      return Cesium.Rectangle.fromDegrees(bbox[0], bbox[1], bbox[3], bbox[4]);
+    }
+    function zoomToSource(sourceId, kind) {
+      const source = state.sourceDetails.get(sourceId);
+      if (!source || !window.viewer) return;
+      const bbox = bboxForKind(source, kind || "percentile");
+      const rectangle = rectangleFromBbox(bbox);
+      if (rectangle) {
+        window.viewer.camera.flyTo({ destination: rectangle, duration: 0.55 });
+      }
+      showSourceDetail(sourceId, kind || "percentile");
+    }
+    function zoomToOutlier(outlier) {
+      if (!outlier || !outlier.center_wgs84 || !window.viewer) return;
+      const c = outlier.center_wgs84;
+      window.viewer.camera.flyTo({
+        destination: Cesium.Cartesian3.fromDegrees(c[0], c[1], (c[2] || 0) + 1500),
+        duration: 0.55
+      });
+      showOutlierDetail(outlier);
+    }
+    function showDuplicateDetail(index) {
+      const pair = (state.spatialQa?.duplicate_pairs || [])[index || 0];
+      if (!pair) return;
+      document.getElementById("duplicateCompareToggle").checked = true;
+      refresh(window.viewer);
+      document.getElementById("detailPanel").innerHTML = `
+        <h2>Duplicate Compare</h2>
+        <p><b>score</b> ${(pair.score * 100).toFixed(1)}%</p>
+        <p><b>retain</b> ${escapeHtml(pair.source_a_id === pair.retain_source_id ? pair.source_a_name : pair.source_b_name)}</p>
+        <p><b>reject</b> ${escapeHtml(pair.source_a_id === pair.reject_source_id ? pair.source_a_name : pair.source_b_name)}</p>
+        <p>${escapeHtml(pair.recommendation_reason)}</p>
+        <div class="qa-actions">
+          <button class="btn" onclick="zoomToSource('${escapeHtml(pair.source_a_id)}', 'percentile')">${escapeHtml(pair.source_a_name)}</button>
+          <button class="btn" onclick="zoomToSource('${escapeHtml(pair.source_b_id)}', 'percentile')">${escapeHtml(pair.source_b_name)}</button>
+        </div>
+        <p class="mono">entity ${formatNumber(pair.entity_count_a)} / ${formatNumber(pair.entity_count_b)}</p>
+        <p class="mono">vertex ${formatNumber(pair.vertex_count_a)} / ${formatNumber(pair.vertex_count_b)}</p>
+      `;
+      if (window.viewer && state.entities.length) window.viewer.zoomTo(window.viewer.entities);
+    }
+    function showOutlierList() {
+      const outliers = (state.spatialQa?.outliers || []).slice(0, 16);
+      document.getElementById("outlierToggle").checked = true;
+      refresh(window.viewer);
+      document.getElementById("detailPanel").innerHTML = `
+        <h2>Outlier Markers</h2>
+        <p class="muted">依 Phase 1E score 排序，點 FID 可定位。</p>
+        ${outliers.map((outlier, index) => `
+          <button class="source-row" onclick="zoomToOutlier((state.spatialQa?.outliers || [])[${index}])">
+            <span class="source-title"><b>FID ${escapeHtml(outlier.fid)}</b><span class="pill">${escapeHtml(outlier.layer)}</span></span>
+            <span class="source-meta">${escapeHtml(outlier.reason)} · score ${formatNumber(outlier.score)}</span>
+          </button>
+        `).join("")}
+      `;
+    }
     function showSourceDetail(sourceId, titleSuffix) {
       const source = state.sourceDetails.get(sourceId);
       const panel = document.getElementById("detailPanel");
@@ -457,6 +575,12 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
         <p><b>scale</b> ${source.selected_scale ?? "-"}</p>
         <p><b>entities</b> ${formatNumber(source.entity_count)} · <b>vertices</b> ${formatNumber(source.vertex_count)}</p>
         <p><b>duplicate_of</b> <span class="mono">${escapeHtml(source.duplicate_of || "-")}</span></p>
+        <p><b>AOI</b> ${escapeHtml(source.aoi_status || "no_bbox")} · ${escapeHtml(formatAoiGap(source))}</p>
+        <p><b>bbox inflation</b> ${escapeHtml(formatRatio(source.bbox_inflation_ratio))}</p>
+        <div class="qa-actions">
+          <button class="btn" onclick="zoomToSource('${escapeHtml(source.source_id)}', 'percentile')">Zoom P0.5/P99.5</button>
+          <button class="btn" onclick="zoomToSource('${escapeHtml(source.source_id)}', 'raw')">Zoom Raw</button>
+        </div>
         <h3>Warnings</h3>${formatList(source.warnings, "none")}
         <h3>Quarantine</h3>${formatList(source.quarantine_reasons, "none")}
         <h3>Duplicate</h3>${formatList(duplicateItems, "none")}
@@ -582,6 +706,20 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
       return handler;
     }
+    function wireReviewNavigation(viewer) {
+      document.getElementById("qaSearch").addEventListener("input", renderSourceList);
+      document.getElementById("sourceList").addEventListener("click", (event) => {
+        const row = event.target.closest(".source-row");
+        if (!row) return;
+        zoomToSource(row.dataset.sourceId, "percentile");
+      });
+      document.getElementById("duplicateDrillBtn").addEventListener("click", () => showDuplicateDetail(0));
+      document.getElementById("outlierListBtn").addEventListener("click", showOutlierList);
+      window.zoomToSource = zoomToSource;
+      window.zoomToOutlier = zoomToOutlier;
+      window.showDuplicateDetail = showDuplicateDetail;
+      window.showOutlierList = showOutlierList;
+    }
     async function main() {
       if (!window.Cesium) { cesiumMissing(); return; }
       const viewer = new Cesium.Viewer("cesiumContainer", {
@@ -624,6 +762,8 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       document.getElementById("duplicateCompareToggle").addEventListener("change", () => refresh(viewer));
       document.getElementById("flyBtn").addEventListener("click", () => viewer.zoomTo(viewer.entities));
       setupPickHandler(viewer);
+      wireReviewNavigation(viewer);
+      renderSourceList();
       refresh(viewer);
       if (state.approved[0]) showSourceDetail(state.approved[0].source_id, "approved");
       if (state.entities.length) viewer.zoomTo(viewer.entities);

@@ -460,3 +460,20 @@
   - duplicate pair：1
   - outlier marker：40
 - 本階段仍不做 geometry publish，也不做 layer isolate。
+
+### Phase 1H Spatial QA Navigation
+
+- 在 `spatial_qa_manifest.json` 的 source detail 補：
+  - `aoi_status`
+  - `aoi_gap_m`
+  - `bbox_inflation_ratio`
+- `aoi_gap_m` 以 EPSG:3826 meter 表示 W/S/E/N 四方向超出 AOI 的距離，方便快速判斷 quarantine 是否為飛點 / scale / origin 問題。
+- `bbox_inflation_ratio` 用 raw bbox 面積除以 percentile bbox 面積，快速看 raw bbox 是否被 stray geometry 放大。
+- `publish/index.html` 補左側 `Source QA` navigation：
+  - source list
+  - search
+  - source click zoom
+  - duplicate drilldown
+  - top outlier list
+- 右側 detail panel 現在能直接 zoom raw / percentile bbox。
+- 本階段仍不做 geometry publish，也不做 layer isolate；正式 runtime gate 仍只吃 approved。
