@@ -324,3 +324,17 @@
   - `source_display_name`
   - `source_original_file_name`
   - `source_relative_path`
+
+### Phase 1B ODA Conversion Smoke
+
+- 已實作並執行 `tools/convert_cad_with_oda.ps1`。
+- 本次全量 smoke：
+  - attempted：7
+  - success：4
+  - failed：3
+  - ODA version：`27.1.0.0`
+  - target：`ACAD2018 / DWG`
+- 結果判讀：
+  - 4 筆 `.dwg` 可由 ODA 轉出 normalized DWG。
+  - 3 筆 `.dgn` 皆失敗，ODA `.err` 顯示 `Invalid group code`，代表不能把這批 DGN 直接丟 ODA File Converter 當 DWG 類檔處理。
+  - `*.dgn.i.dgn` 已帶出 `possible_intermediate_or_export_copy` warning，後續 duplicate / overlap 判斷要特別看。
