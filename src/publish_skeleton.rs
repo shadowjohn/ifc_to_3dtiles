@@ -182,14 +182,33 @@ pub fn write_publish_skeleton_outputs(input: &Path, output: &Path) -> Result<()>
         serde_json::to_vec_pretty(&skeleton.debug_overlays)?,
     )
     .with_context(|| format!("寫入 debug_overlays 失敗：{}", output.display()))?;
-    fs::write(output.join("index.html"), render_publish_viewer_html())
-        .with_context(|| format!("寫入 publish viewer 失敗：{}", output.display()))?;
+    fs::write(
+        output.join("index.html"),
+        render_publish_viewer_html_with_data(Some(&skeleton)),
+    )
+    .with_context(|| format!("寫入 publish viewer 失敗：{}", output.display()))?;
     update_review_report(input, output, &skeleton)?;
     Ok(())
 }
 
 pub fn render_publish_viewer_html() -> String {
-    r#"<!doctype html>
+    render_publish_viewer_html_with_data(None)
+}
+
+pub fn render_publish_viewer_html_with_data(skeleton: Option<&PublishSkeleton>) -> String {
+    let embedded_sources = skeleton
+        .and_then(|skeleton| serde_json::to_string(&skeleton.sources_manifest).ok())
+        .unwrap_or_else(|| "null".to_string());
+    let embedded_overlays = skeleton
+        .and_then(|skeleton| serde_json::to_string(&skeleton.debug_overlays).ok())
+        .unwrap_or_else(|| "null".to_string());
+    let embedded = format!(
+        r#"<script type="application/json" id="embeddedSourcesManifest">{}</script>
+  <script type="application/json" id="embeddedDebugOverlays">{}</script>"#,
+        script_safe_json(&embedded_sources),
+        script_safe_json(&embedded_overlays)
+    );
+    r##"<!doctype html>
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8">
@@ -216,6 +235,7 @@ pub fn render_publish_viewer_html() -> String {
     <button id="flyBtn" class="btn">Zoom</button>
   </div>
   <pre id="status">sources_manifest.json / debug_overlays.json</pre>
+  <!--EMBEDDED_MANIFESTS-->
   <script>
     const DATA_FILES = {
       approved: "sources_manifest.json",
@@ -224,6 +244,12 @@ pub fn render_publish_viewer_html() -> String {
     const state = { approved: [], rejected: [], needs_review: [], entities: [] };
     function status(text) {
       document.getElementById("status").textContent = text;
+    }
+    function formatError(err) {
+      if (!err) return "unknown error";
+      if (err.stack) return err.stack;
+      if (err.message) return err.message;
+      try { return JSON.stringify(err); } catch (_) { return String(err); }
     }
     function cesiumMissing() {
       document.getElementById("missingCesium").style.display = "flex";
@@ -262,6 +288,12 @@ pub fn render_publish_viewer_html() -> String {
         }
       };
     }
+    function readEmbeddedJson(id) {
+      const node = document.getElementById(id);
+      const text = node && node.textContent ? node.textContent.trim() : "";
+      if (!text || text === "null") return null;
+      return JSON.parse(text);
+    }
     function clearEntities(viewer) {
       for (const entity of state.entities) viewer.entities.remove(entity);
       state.entities = [];
@@ -284,7 +316,12 @@ pub fn render_publish_viewer_html() -> String {
         "metadata: source_id, original_file_name, approval_decision, reason, duplicate_of"
       ].join("\n"));
     }
-    async function loadJson(url) {
+    async function loadJson(url, embeddedId) {
+      const embedded = readEmbeddedJson(embeddedId);
+      if (embedded) return embedded;
+      if (location.protocol === "file:") {
+        throw new Error(`${url} 沒有內嵌資料；請重新執行 Phase 1F publish skeleton，或改用本機 HTTP server 開啟。`);
+      }
       return Cesium.Resource.fetchJson({ url });
     }
     async function main() {
@@ -292,15 +329,25 @@ pub fn render_publish_viewer_html() -> String {
       const viewer = new Cesium.Viewer("cesiumContainer", {
         animation: false,
         timeline: false,
-        baseLayerPicker: true,
+        baseLayer: false,
+        imageryProvider: false,
+        terrainProvider: new Cesium.EllipsoidTerrainProvider(),
+        baseLayerPicker: false,
         geocoder: false,
         homeButton: true,
         sceneModePicker: false,
-        navigationHelpButton: false
+        navigationHelpButton: false,
+        showRenderLoopErrors: false
       });
       window.viewer = viewer;
-      const approved = await loadJson(DATA_FILES.approved);
-      const overlays = await loadJson(DATA_FILES.overlays);
+      viewer.scene.renderError.addEventListener((_scene, error) => {
+        status("Cesium render error\n" + formatError(error));
+      });
+      if (viewer.scene.globe) {
+        viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString("#0b1118");
+      }
+      const approved = await loadJson(DATA_FILES.approved, "embeddedSourcesManifest");
+      const overlays = await loadJson(DATA_FILES.overlays, "embeddedDebugOverlays");
       state.approved = approved.sources || [];
       state.rejected = (overlays.sources || []).filter(s => s.approval_decision === "rejected");
       state.needs_review = (overlays.sources || []).filter(s => s.approval_decision === "needs_review");
@@ -315,7 +362,8 @@ pub fn render_publish_viewer_html() -> String {
   </script>
 </body>
 </html>
-"#
+"##
+    .replace("<!--EMBEDDED_MANIFESTS-->", &embedded)
     .to_string()
 }
 
@@ -500,6 +548,12 @@ fn escape_html(text: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
+}
+
+fn script_safe_json(text: &str) -> String {
+    text.replace('&', "\\u0026")
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
 }
 
 fn chrono_like_now() -> String {

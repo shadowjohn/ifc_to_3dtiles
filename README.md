@@ -215,6 +215,7 @@ out\inspect_tamkang\publish\index.html
 ```
 
 `publish\sources_manifest.json` 只包含 approved source；rejected / needs_review 只進 `debug_overlays.json` 給 QA viewer 畫 bbox。
+`publish\index.html` 會內嵌這兩份 manifest，直接用 `file://` 開也不需要再 request JSON；Viewer 預設停用 Cesium ion 底圖，避免 QA skeleton 因外部底圖 request failed 中斷。
 
 ## Verification
 

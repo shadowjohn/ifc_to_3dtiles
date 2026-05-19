@@ -432,3 +432,6 @@
 - 目前 approved runtime source 只包含：
   - `dwg-12d5f1b6 / 主橋塔.dwg`
 - `review_report.html` 會追加 Phase 1F publish skeleton summary。
+- 修正 `publish/index.html` 在 `file://` 直接開啟時的 QA viewer 問題：
+  - 內嵌 `sources_manifest.json` / `debug_overlays.json`，避免 file mode request JSON 失敗。
+  - 停用 Cesium 預設 ion/network 底圖，避免 skeleton viewer 因外部 request failed 觸發 render loop error。

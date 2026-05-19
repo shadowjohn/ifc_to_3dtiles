@@ -22,7 +22,9 @@ use ifc_to_3dtiles::{
         duplicate_review_score, render_review_html,
     },
     project::{ProjectManifest, SourceFormat, SourceRecord, SourceStatus, WorkspaceLayout},
-    publish_skeleton::{build_publish_skeleton, render_publish_viewer_html},
+    publish_skeleton::{
+        build_publish_skeleton, render_publish_viewer_html, render_publish_viewer_html_with_data,
+    },
 };
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
@@ -1322,6 +1324,34 @@ fn phase1f_publish_viewer_html_has_three_bbox_toggles_and_metadata_fields() {
     assert!(html.contains("duplicate_of"));
     assert!(html.contains("Cesium-1.141 missing"));
     assert!(!html.contains("const outlines"));
+}
+
+#[test]
+fn phase1f_publish_viewer_uses_embedded_manifests_for_file_mode() {
+    let manifest = phase1f_project_manifest();
+    let approvals = phase1f_approval_manifests();
+    let skeleton = build_publish_skeleton(&manifest, &approvals, &BTreeMap::new());
+
+    let html = render_publish_viewer_html_with_data(Some(&skeleton));
+
+    assert!(html.contains("embeddedSourcesManifest"));
+    assert!(html.contains("embeddedDebugOverlays"));
+    assert!(html.contains("readEmbeddedJson"));
+    assert!(html.contains("location.protocol === \"file:\""));
+    assert!(html.contains("dwg-12d5f1b6"));
+    assert!(html.contains("dwg-850173d8"));
+}
+
+#[test]
+fn phase1f_publish_viewer_disables_default_network_imagery() {
+    let html = render_publish_viewer_html();
+
+    assert!(html.contains("baseLayer: false"));
+    assert!(html.contains("imageryProvider: false"));
+    assert!(html.contains("baseLayerPicker: false"));
+    assert!(html.contains("showRenderLoopErrors: false"));
+    assert!(html.contains("scene.renderError.addEventListener"));
+    assert!(!html.contains("baseLayerPicker: true"));
 }
 
 fn review_stats<const N: usize>(
