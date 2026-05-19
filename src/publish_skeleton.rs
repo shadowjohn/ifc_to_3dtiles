@@ -294,6 +294,25 @@ pub fn render_publish_viewer_html_with_data(skeleton: Option<&PublishSkeleton>) 
       if (!text || text === "null") return null;
       return JSON.parse(text);
     }
+    function createEmap5WmtsProvider() {
+      const provider = new Cesium.UrlTemplateImageryProvider({
+        url: "https://wmts.nlsc.gov.tw/wmts/EMAP5/default/GoogleMapsCompatible/{z}/{y}/{x}",
+        maximumLevel: 19,
+        credit: "NLSC EMAP5"
+      });
+      provider.errorEvent.addEventListener((error) => {
+        error.retry = false;
+        status("EMAP5 WMTS 載入失敗；bbox QA viewer 仍可使用。");
+      });
+      return provider;
+    }
+    function setupWmtsBasemap(viewer) {
+      try {
+        viewer.imageryLayers.addImageryProvider(createEmap5WmtsProvider(), 0);
+      } catch (err) {
+        status("EMAP5 WMTS 初始化失敗\n" + formatError(err));
+      }
+    }
     function clearEntities(viewer) {
       for (const entity of state.entities) viewer.entities.remove(entity);
       state.entities = [];
@@ -310,6 +329,7 @@ pub fn render_publish_viewer_html_with_data(skeleton: Option<&PublishSkeleton>) 
       if (document.getElementById("rejectedToggle").checked) addGroup(viewer, state.rejected, "rejected");
       if (document.getElementById("needsReviewToggle").checked) addGroup(viewer, state.needs_review, "needs_review");
       status([
+        "basemap: EMAP5 WMTS",
         `approved only: ${state.approved.length}`,
         `rejected bbox: ${state.rejected.length}`,
         `needs review bbox: ${state.needs_review.length}`,
@@ -346,6 +366,7 @@ pub fn render_publish_viewer_html_with_data(skeleton: Option<&PublishSkeleton>) 
       if (viewer.scene.globe) {
         viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString("#0b1118");
       }
+      setupWmtsBasemap(viewer);
       const approved = await loadJson(DATA_FILES.approved, "embeddedSourcesManifest");
       const overlays = await loadJson(DATA_FILES.overlays, "embeddedDebugOverlays");
       state.approved = approved.sources || [];

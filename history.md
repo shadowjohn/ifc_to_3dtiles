@@ -438,3 +438,4 @@
 - 新增 `tools/run_phase1f_viewer.ps1`：
   - 用 Python 本機 server 開 `publish/index.html`。
   - 避免 IIS / ASP.NET 因 AppPool ACL 造成 `401.3`。
+- Phase 1F QA viewer 加入 NLSC `EMAP5` WMTS 作地理參考底圖，讓 bbox overlay 可直接對台灣地圖位置。

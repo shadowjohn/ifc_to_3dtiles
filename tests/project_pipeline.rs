@@ -1354,6 +1354,17 @@ fn phase1f_publish_viewer_disables_default_network_imagery() {
     assert!(!html.contains("baseLayerPicker: true"));
 }
 
+#[test]
+fn phase1f_publish_viewer_adds_emap5_wmts_context_layer() {
+    let html = render_publish_viewer_html();
+
+    assert!(html.contains("createEmap5WmtsProvider"));
+    assert!(html.contains("wmts.nlsc.gov.tw/wmts/EMAP5/default/GoogleMapsCompatible/{z}/{y}/{x}"));
+    assert!(html.contains("viewer.imageryLayers.addImageryProvider"));
+    assert!(html.contains("EMAP5 WMTS"));
+    assert!(html.contains("provider.errorEvent.addEventListener"));
+}
+
 fn review_stats<const N: usize>(
     source_id: &str,
     percentile_bbox: [f64; 6],
