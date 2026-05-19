@@ -297,3 +297,17 @@
   - DGN 樣本目前 GDAL 無法開啟。
   - DWG 樣本回報 libopencad 只支援 DWG R2000，無法支援目前 DWG 版本。
   - 因此短期 DGN/DWG hierarchy 不能依賴 GDAL/OGR，仍需 ODA conversion/probe route。
+
+### Phase 1A Inspect Foundation Completed
+
+- 今日成果定義為 `Phase 1A: Inspect foundation completed`。
+- 已證實 OGR 不能當這批 DGN/DWG 的主路線：
+  - DGN 樣本無法由目前 GDAL 開啟。
+  - DWG 樣本版本超出 libopencad 支援範圍。
+- 下一階段方向不再卡 OGR 原始檔 inspect，改走：
+  - ODA 27.1.0 baseline
+  - ODA conversion smoke
+  - DGN/DWG 轉出 normalized CAD
+  - 轉完再做 bbox / scale / fingerprint / hierarchy inspect
+- 明日計畫已寫入：
+  - `docs/superpowers/plans/2026-05-20-phase-1b-oda-conversion-smoke.md`
