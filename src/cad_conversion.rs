@@ -51,3 +51,28 @@ pub struct CadConversionReportEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NormalizedCadInspectReport {
+    pub generated_at: String,
+    pub conversion_report_path: PathBuf,
+    pub entries: Vec<NormalizedCadInspectReportEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NormalizedCadInspectReportEntry {
+    pub source_id: String,
+    pub source_original_file_name: String,
+    pub converted_path: PathBuf,
+    pub inspect_success: bool,
+    pub ogrinfo_path: Option<PathBuf>,
+    pub exit_code: Option<i32>,
+    pub bbox_before: Option<Value>,
+    pub bbox_after: Option<Value>,
+    pub scale_candidates_after: Vec<f64>,
+    pub level_count_after: Option<usize>,
+    pub material_count_after: Option<usize>,
+    pub warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<Vec<String>>,
+}

@@ -1,5 +1,7 @@
 use ifc_to_3dtiles::{
-    cad_conversion::{CadConversionReportEntry, CadConversionStatus},
+    cad_conversion::{
+        CadConversionReportEntry, CadConversionStatus, NormalizedCadInspectReportEntry,
+    },
     cad_metadata::{CadHierarchyDump, CadLevel, CadMaterial, CadModel, CadReference},
     fingerprint::{GeometryFingerprint, duplicate_candidate_score},
     georef::{
@@ -603,4 +605,44 @@ fn cad_conversion_report_entry_serializes_output_contract() {
         serde_json::from_value(json).expect("deserialize conversion entry");
     assert_eq!(parsed.status, CadConversionStatus::Success);
     assert_eq!(parsed.converted_sha256.as_deref(), Some("convertedhex"));
+}
+
+#[test]
+fn normalized_cad_inspect_report_entry_serializes_bbox_contract() {
+    let entry = NormalizedCadInspectReportEntry {
+        source_id: "djb-m-su-dwg-0c82de78".to_string(),
+        source_original_file_name: "DJB-M-SU-監測.dwg".to_string(),
+        converted_path: PathBuf::from(
+            r"C:\Users\stw_s\Desktop\ifc_to_3dtiles\out\oda_normalized\djb-m-su-dwg-0c82de78\DJB-M-SU-監測.dwg",
+        ),
+        inspect_success: true,
+        ogrinfo_path: Some(PathBuf::from(r"C:\ms4w_MSSQL\GDAL\ogrinfo.exe")),
+        exit_code: Some(0),
+        bbox_before: None,
+        bbox_after: Some(serde_json::json!({
+            "raw": [300000.0, 2787000.0, 0.0, 301000.0, 2788000.0, 80.0],
+            "percentile": null
+        })),
+        scale_candidates_after: vec![1.0],
+        level_count_after: Some(12),
+        material_count_after: None,
+        warnings: vec![],
+        command: Some(vec![
+            "ogrinfo".to_string(),
+            "-so".to_string(),
+            "DJB-M-SU-監測.dwg".to_string(),
+        ]),
+    };
+
+    let json = serde_json::to_value(&entry).expect("serialize normalized inspect entry");
+    assert_eq!(json["source_id"], "djb-m-su-dwg-0c82de78");
+    assert_eq!(json["inspect_success"], true);
+    assert_eq!(json["bbox_after"]["raw"][0], 300000.0);
+    assert_eq!(json["scale_candidates_after"][0], 1.0);
+    assert_eq!(json["level_count_after"], 12);
+
+    let parsed: NormalizedCadInspectReportEntry =
+        serde_json::from_value(json).expect("deserialize normalized inspect entry");
+    assert!(parsed.inspect_success);
+    assert_eq!(parsed.scale_candidates_after, vec![1.0]);
 }

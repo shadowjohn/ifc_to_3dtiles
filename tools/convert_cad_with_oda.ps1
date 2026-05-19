@@ -5,6 +5,7 @@ param(
   [string]$TargetVersion = "ACAD2018",
   [ValidateSet("DWG", "DXF")]
   [string]$TargetFormat = "DWG",
+  [string]$SourceId = "",
   [int]$Limit = 0,
   [int]$TimeoutMinutes = 30
 )
@@ -160,6 +161,12 @@ $targetFormatLower = $TargetFormat.ToLowerInvariant()
 $cadSources = @($manifestObject.sources | Where-Object {
   $_.format -eq "dgn" -or $_.format -eq "dwg"
 })
+if ($SourceId) {
+  $cadSources = @($cadSources | Where-Object { $_.id -eq $SourceId })
+  if ($cadSources.Count -eq 0) {
+    throw "找不到指定 source_id：$SourceId"
+  }
+}
 if ($Limit -gt 0) {
   $cadSources = @($cadSources | Select-Object -First $Limit)
 }

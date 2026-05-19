@@ -338,3 +338,17 @@
   - 4 筆 `.dwg` 可由 ODA 轉出 normalized DWG。
   - 3 筆 `.dgn` 皆失敗，ODA `.err` 顯示 `Invalid group code`，代表不能把這批 DGN 直接丟 ODA File Converter 當 DWG 類檔處理。
   - `*.dgn.i.dgn` 已帶出 `possible_intermediate_or_export_copy` warning，後續 duplicate / overlap 判斷要特別看。
+
+### Phase 1B Normalized CAD Re-Inspect
+
+- 已新增 `tools/inspect_normalized_cad.ps1`。
+- `ACAD2018 / DWG`：
+  - ODA 可轉出 4 筆 DWG。
+  - 目前 GDAL/libopencad 仍無法 inspect，錯誤顯示只支援 `DWG R2000 [ACAD1015]`。
+- `ACAD2000 / DWG`：
+  - 檔頭確認為 `AC1015`。
+  - GDAL/libopencad 仍失敗，錯誤為 `HEADERVARS section CRC doesn't match`。
+- 單筆 `ACAD2000 / DXF` 探針：
+  - `DJB-M-SU-監測.dwg` 可轉出 DXF 並被 OGR inspect。
+  - OGR 可取得 layer extent，但 raw bbox 很大且 scale candidate 為空。
+  - 下一步應走 `ODA -> DXF -> entity-level/percentile bbox`，不能只信 DXF layer extent。
