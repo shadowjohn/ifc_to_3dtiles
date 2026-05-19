@@ -4,7 +4,7 @@
 
 **Goal:** Build a local-first project workspace that can inspect many IFC/DGN/DWG/RVT sources, detect CRS/scale problems, quarantine suspicious files, enrich metadata/group candidates, and publish one easy-to-load 3D Tiles package with flat / 90 / 180 normal modes.
 
-**Architecture:** Keep the existing Rust IFC/RVT converter as the geometry core, then add an ingest layer before conversion and a publish layer after conversion. The ingest layer writes deterministic manifests and reports; the publish layer combines approved normalized sources into root tilesets and viewer-ready group metadata without silently merging bad files.
+**Architecture:** Keep the existing Rust IFC/RVT converter as the geometry core, then add an ingest layer before conversion and a publish layer after conversion. The ingest layer writes deterministic manifests and reports; each approved source is converted into its own normalized tileset folder first, and the publish layer only creates root tilesets that reference those per-source tilesets. Do not merge source geometry at the start; source separation is required for large-project debugging, duplicate detection, quarantine, filtering, and group explosion.
 
 **Tech Stack:** Rust CLI, serde JSON manifests, existing IFC STEP parser, optional GDAL/OGR CLI probes for DGN/DWG inspection, PowerShell helper scripts, Cesium / Three viewer metadata integration.
 
@@ -13,6 +13,13 @@
 ## Scope
 
 This plan intentionally does not build a cloud platform yet. It builds a local project workspace and local web/viewer-friendly outputs first, because the hard problem is data trust: CRS, scale, duplicates, wrong-country geometry, 2D drawings, missing materials, and group semantics.
+
+Implementation priority is split into two levels:
+
+- **Level 1, required:** CRS, scale, bbox, source identity, group candidates, material/color metadata, property metadata, quarantine decisions, and per-source publish structure must be stable before chasing perfect geometry.
+- **Level 2, follow-up:** perfect DGN geometry, perfect source hierarchy, parametric solids, smart objects, civil alignments, terrain semantics, and OpenRoads metadata are best-effort unless a high-quality official/exported source is available.
+
+The reason is practical: a GIS viewer is damaged more by a model in the wrong country or at the wrong scale than by imperfect material fidelity. Position correctness and source traceability are release gates.
 
 Out of scope for this phase:
 
@@ -28,7 +35,7 @@ Out of scope for this phase:
 - Create `src/inspect.rs`: inspect IFC/DGN/DWG/RVT files and produce per-source bbox, CRS, unit scale candidates, warnings.
 - Create `src/georef.rs`: scale detection and AOI/anchor validation logic for EPSG:3826, `scale=1.0/0.1/0.01`.
 - Create `src/grouping.rs`: derive group candidates from IFC metadata and future DGN/DWG dumps.
-- Create `src/publish.rs`: combine approved source outputs into one root publish folder with three normal-mode tilesets.
+- Create `src/publish.rs`: wrap approved per-source normalized tilesets into one root publish folder with three normal-mode root tilesets.
 - Modify `src/main.rs`: add subcommands `inspect`, `convert-source`, `publish`, keep current direct conversion behavior.
 - Modify `src/lib.rs`: export new modules.
 - Modify `src/convert.rs`: expose per-source conversion hooks and include new source/group fields in metadata.
@@ -930,7 +937,7 @@ git commit -m "Add CAD source probe script"
 
 ---
 
-### Task 7: Publish Root Tilesets For Approved Sources
+### Task 7: Publish Root Tilesets For Approved Per-Source Tilesets
 
 **Files:**
 - Create: `src/publish.rs`
@@ -967,6 +974,8 @@ fn publish_tileset_wraps_child_tilesets_with_source_metadata() {
     assert_eq!(tileset["root"]["children"][0]["extras"]["source_id"], "main-ifc");
 }
 ```
+
+This test is intentionally validating root wrapping only. It must not combine child geometry buffers or rewrite child `.b3dm` payloads.
 
 - [ ] **Step 2: Run test and verify it fails**
 
@@ -1250,13 +1259,35 @@ Use this workflow when a project arrives as many IFC/DGN/DWG/RVT files with mixe
 
 ## Golden Rule
 
-Never auto-merge every source. Every source must pass inspect and approval before publish.
+Never auto-merge every source. Every source must pass inspect and approval before publish, and every approved source must remain a separate normalized tileset before the root publish tileset references it.
+
+Preferred project shape:
+
+```text
+normalized/
+  bridge-a/
+    tileset.json
+    tileset_smooth_90.json
+    tileset_smooth.json
+  bridge-b/
+    tileset.json
+    tileset_smooth_90.json
+    tileset_smooth.json
+
+publish/
+  tileset.json
+  tileset_smooth_90.json
+  tileset_smooth.json
+  sources_manifest.json
+  groups.json
+  warnings.json
+```
 
 ## Stages
 
 1. `inspect`: discover sources, write `source_manifest.json`, `group_candidates.json`, and warnings.
 2. `review`: user checks quarantined files, scale candidates, duplicate candidates, and group candidates.
-3. `convert-source`: approved sources are converted into normalized per-source outputs.
+3. `convert-source`: approved sources are converted into normalized per-source tileset outputs.
 4. `publish`: approved normalized outputs are wrapped into one root tileset set:
    - `tileset.json`
    - `tileset_smooth_90.json`
@@ -1286,6 +1317,8 @@ Quarantine when:
 ## No Bentley Tool Assumption
 
 The default route does not require paid Bentley tools. Existing IFC is the primary geometry path. DGN/DWG inspection is best effort through available local tools such as GDAL/OGR or an external converter, and missing tools are reported instead of silently skipped.
+
+High-quality DGN conversion without Bentley tooling is not guaranteed. Parametric solids, smart objects, civil alignments, terrain, and OpenRoads metadata may be lost or flattened by non-Bentley routes. This workflow treats DGN/DWG data first as inspect/enrichment sources unless a reliable geometry export path is proven for the specific project.
 ```
 
 - [ ] **Step 2: Update README**
@@ -1419,11 +1452,13 @@ Expected:
 2. Review `source_manifest.json` manually.
 3. Confirm scale detection for `1.0 / 0.1 / 0.01`.
 4. Confirm IFC group candidates are too coarse and DGN/DWG dump is needed only for enrichment.
-5. Convert only approved sources.
-6. Publish root tilesets after source review.
+5. Convert only approved sources into separate `normalized/<source-id>/` tilesets.
+6. Publish root tilesets after source review; root tilesets reference child tilesets and do not merge geometry buffers.
+7. Treat Level 1 correctness as the acceptance gate: CRS, scale, bbox, source identity, group keys, material/color metadata, property metadata, and quarantine decisions.
+8. Track Level 2 fidelity separately: perfect geometry, perfect hierarchy, parametric solids, smart objects, civil alignment, terrain, and OpenRoads metadata.
 
 ## Self-Review
 
-- Spec coverage: plan covers local workspace, inspect, scale normalization, quarantine, group candidates, publish, metadata, docs, and verification.
+- Spec coverage: plan covers local workspace, inspect, scale normalization, quarantine, group candidates, per-source normalized tilesets, publish root wrapping, metadata, docs, and verification.
 - Placeholder scan: no placeholder tokens remain.
 - Type consistency: `SourceFormat`, `SourceStatus`, `WorkspaceLayout`, `ProjectManifest`, `Bounds2`, `Aoi`, `PublishSource`, and metadata fields are introduced before later tasks use them.
