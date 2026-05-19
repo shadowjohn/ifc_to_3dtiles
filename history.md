@@ -435,3 +435,6 @@
 - 修正 `publish/index.html` 在 `file://` 直接開啟時的 QA viewer 問題：
   - 內嵌 `sources_manifest.json` / `debug_overlays.json`，避免 file mode request JSON 失敗。
   - 停用 Cesium 預設 ion/network 底圖，避免 skeleton viewer 因外部 request failed 觸發 render loop error。
+- 新增 `tools/run_phase1f_viewer.ps1`：
+  - 用 Python 本機 server 開 `publish/index.html`。
+  - 避免 IIS / ASP.NET 因 AppPool ACL 造成 `401.3`。
