@@ -142,6 +142,8 @@ pub fn discover_sources(root: &Path) -> Result<Vec<SourceRecord>> {
             cad_metadata_path: None,
             fingerprint_hash: None,
             duplicate_candidates: vec![],
+            inspect_status: None,
+            selected_scale: None,
             warnings,
         });
     }

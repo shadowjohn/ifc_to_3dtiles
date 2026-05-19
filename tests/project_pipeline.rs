@@ -2,6 +2,10 @@ use ifc_to_3dtiles::{
     cad_conversion::{
         CadConversionReportEntry, CadConversionStatus, NormalizedCadInspectReportEntry,
     },
+    cad_entity_inspect::{
+        CadEntity, CadEntityStats, entity_fingerprint_hash, parse_ogrinfo_entities,
+        scan_wkt_coordinates, summarize_entities, write_entity_inspect_db,
+    },
     cad_metadata::{CadHierarchyDump, CadLevel, CadMaterial, CadModel, CadReference},
     fingerprint::{GeometryFingerprint, duplicate_candidate_score},
     georef::{
@@ -55,6 +59,8 @@ fn source_record_preserves_source_identity() {
         cad_metadata_path: None,
         fingerprint_hash: None,
         duplicate_candidates: vec![],
+        inspect_status: None,
+        selected_scale: None,
         warnings: vec![],
     };
 
@@ -89,6 +95,8 @@ fn project_manifest_serializes_to_stable_json() {
             cad_metadata_path: None,
             fingerprint_hash: None,
             duplicate_candidates: vec![],
+            inspect_status: None,
+            selected_scale: None,
             warnings: vec![],
         }],
     };
@@ -645,4 +653,149 @@ fn normalized_cad_inspect_report_entry_serializes_bbox_contract() {
         serde_json::from_value(json).expect("deserialize normalized inspect entry");
     assert!(parsed.inspect_success);
     assert_eq!(parsed.scale_candidates_after, vec![1.0]);
+}
+
+#[test]
+fn dxf_wkt_scanner_parses_polyhedral_surface_z() {
+    let scan = scan_wkt_coordinates(
+        "POLYHEDRALSURFACE Z (((292109.5 2785256.5 -0.25,292109.2 2785256.6 0.25)))",
+    )
+    .expect("scan WKT coordinates");
+
+    assert_eq!(scan.geometry_type, "POLYHEDRALSURFACE");
+    assert!(scan.has_z);
+    assert_eq!(scan.points.len(), 2);
+    assert_eq!(
+        scan.bbox,
+        [292109.2, 2785256.5, -0.25, 292109.5, 2785256.6, 0.25]
+    );
+}
+
+#[test]
+fn ogrinfo_entity_parser_extracts_feature_metadata_and_bbox() {
+    let text = r#"
+OGRFeature(entities):0
+  FID (Integer) = 0
+  Layer (String) = 靜態應變計
+  SubClasses (String) = AcDbEntity:AcDbBlockReference
+  Linetype (String) = ByLayer
+  EntityHandle (String) = 14C5
+  Style = PEN(c:#000000,w:2.1g)
+  POLYHEDRALSURFACE Z (((292109.5 2785256.5 -0.25,292109.2 2785256.6 0.25)))
+"#;
+
+    let entities = parse_ogrinfo_entities("bridge-dwg", text);
+
+    assert_eq!(entities.len(), 1);
+    assert_eq!(entities[0].source_id, "bridge-dwg");
+    assert_eq!(entities[0].fid, 0);
+    assert_eq!(entities[0].layer, "靜態應變計");
+    assert_eq!(
+        entities[0].subclasses.as_deref(),
+        Some("AcDbEntity:AcDbBlockReference")
+    );
+    assert_eq!(entities[0].entity_handle.as_deref(), Some("14C5"));
+    assert_eq!(
+        entities[0].geometry_type.as_deref(),
+        Some("POLYHEDRALSURFACE")
+    );
+    assert_eq!(
+        entities[0].bbox,
+        Some([292109.2, 2785256.5, -0.25, 292109.5, 2785256.6, 0.25])
+    );
+}
+
+#[test]
+fn entity_stats_use_percentile_bbox_for_scale_and_ignore_outlier() {
+    let mut entities = Vec::new();
+    for idx in 0..1000 {
+        let x = 292000.0 + (idx % 20) as f64;
+        let y = 2785000.0 + (idx / 20) as f64;
+        entities.push(CadEntity::with_bbox(
+            "bridge-dwg",
+            idx,
+            "Cable",
+            "LINESTRING",
+            [x, y, 1.0, x + 1.0, y + 1.0, 5.0],
+            2,
+            true,
+        ));
+    }
+    entities.push(CadEntity::with_bbox(
+        "bridge-dwg",
+        9999,
+        "Garbage",
+        "LINESTRING",
+        [-2_344_516.0, 0.0, 0.0, -2_344_500.0, 10.0, 0.0],
+        2,
+        false,
+    ));
+
+    let stats = summarize_entities("bridge-dwg", &entities, &[1000.0, 1.0, 0.1, 0.01, 0.001]);
+
+    assert_eq!(stats.entity_count, 1001);
+    assert_eq!(stats.parsed_entity_count, 1001);
+    assert_eq!(stats.selected_scale, Some(1.0));
+    assert_eq!(stats.inspect_status, "approved");
+    assert!(stats.raw_bbox[0] < 0.0);
+    assert!(stats.percentile_bbox[0] > 291000.0);
+    assert_eq!(stats.layer_histogram.get("Cable"), Some(&1000));
+}
+
+#[test]
+fn dxf_entity_fingerprint_is_stable_for_same_stats() {
+    let stats = CadEntityStats {
+        source_id: "bridge-dwg".to_string(),
+        entity_count: 10,
+        parsed_entity_count: 9,
+        skipped_entity_count: 1,
+        vertex_count: 200,
+        raw_bbox: [0.0, 0.0, 0.0, 10.0, 10.0, 2.0],
+        percentile_bbox: [1.0, 1.0, 0.0, 9.0, 9.0, 2.0],
+        z_range: 2.0,
+        selected_scale: Some(1.0),
+        inspect_status: "approved".to_string(),
+        layer_histogram: std::collections::BTreeMap::from([("Cable".to_string(), 9)]),
+        geometry_type_histogram: std::collections::BTreeMap::from([(
+            "POLYHEDRALSURFACE".to_string(),
+            9,
+        )]),
+        fingerprint_hash: String::new(),
+        warnings: vec![],
+    };
+
+    let first = entity_fingerprint_hash(&stats);
+    let second = entity_fingerprint_hash(&stats);
+
+    assert_eq!(first, second);
+    assert!(first.len() >= 16);
+}
+
+#[test]
+fn entity_inspect_sqlite_schema_accepts_sources_entities_and_stats() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let db_path = tmp.path().join("project_inspect.db");
+    let entity = CadEntity::with_bbox(
+        "bridge-dwg",
+        1,
+        "Cable",
+        "POLYHEDRALSURFACE",
+        [292000.0, 2785000.0, 0.0, 292001.0, 2785001.0, 2.0],
+        8,
+        true,
+    );
+    let stats = summarize_entities("bridge-dwg", &[entity.clone()], &[1.0]);
+
+    write_entity_inspect_db(&db_path, &[entity], &[stats]).expect("write entity inspect db");
+
+    let conn = rusqlite::Connection::open(&db_path).expect("open sqlite");
+    let entity_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM entities", [], |row| row.get(0))
+        .expect("count entities");
+    let stats_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM source_stats", [], |row| row.get(0))
+        .expect("count stats");
+
+    assert_eq!(entity_count, 1);
+    assert_eq!(stats_count, 1);
 }

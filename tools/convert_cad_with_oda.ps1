@@ -6,6 +6,9 @@ param(
   [ValidateSet("DWG", "DXF")]
   [string]$TargetFormat = "DWG",
   [string]$SourceId = "",
+  [ValidateSet("", "dwg", "dgn")]
+  [string]$InputFormatFilter = "",
+  [string]$ReportName = "oda_conversion_report.json",
   [int]$Limit = 0,
   [int]$TimeoutMinutes = 30
 )
@@ -161,6 +164,9 @@ $targetFormatLower = $TargetFormat.ToLowerInvariant()
 $cadSources = @($manifestObject.sources | Where-Object {
   $_.format -eq "dgn" -or $_.format -eq "dwg"
 })
+if ($InputFormatFilter) {
+  $cadSources = @($cadSources | Where-Object { $_.format -eq $InputFormatFilter })
+}
 if ($SourceId) {
   $cadSources = @($cadSources | Where-Object { $_.id -eq $SourceId })
   if ($cadSources.Count -eq 0) {
@@ -283,7 +289,7 @@ $report = [ordered]@{
   entries = @($entries)
 }
 
-$reportPath = Join-Path $Output "oda_conversion_report.json"
+$reportPath = Join-Path $Output $ReportName
 $report | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $reportPath -Encoding UTF8
 Write-Host "ODA conversion report: $reportPath"
 Write-Host ("Attempted: {0}, success: {1}, failed: {2}" -f $report.attempted_count, $report.success_count, $report.failed_count)

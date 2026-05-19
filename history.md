@@ -352,3 +352,26 @@
   - `DJB-M-SU-監測.dwg` 可轉出 DXF 並被 OGR inspect。
   - OGR 可取得 layer extent，但 raw bbox 很大且 scale candidate 為空。
   - 下一步應走 `ODA -> DXF -> entity-level/percentile bbox`，不能只信 DXF layer extent。
+
+### Phase 1C DXF Entity-Level Inspect
+
+- 已新增 Rust `cad_entity_inspect` core：
+  - 解析 OGR `ogrinfo -geom=YES` 的 WKT geometry。
+  - 支援 `POLYHEDRALSURFACE Z` 座標掃描。
+  - 產生 entity bbox、source raw bbox、P0.5/P99.5 percentile bbox、scale classifier、fingerprint。
+- 已新增 `tools/run_phase1c_dxf_entity_inspect.ps1`：
+  - source inspect
+  - CAD probe
+  - DWG only `ODA -> ACAD2000 / DXF`
+  - layer-level evidence report
+  - entity-level inspect + SQLite
+- 本次實測：
+  - DWG -> DXF：4/4 成功。
+  - entity count：52,530。
+  - parsed entity count：52,530。
+  - skipped entity count：0。
+  - `project_inspect.db` tables：`sources` 8、`entities` 52,530、`entity_bboxes` 52,530、`source_stats` 4、`fingerprints` 4、`conversion_runs` 4。
+  - 3 筆 DGN 已回填 `needs_alternative_route`，原因是 `ODA invalid group code`。
+- 初步分類：
+  - `主橋塔.dwg`：`approved`，`selected_scale = 1.0`。
+  - `DJB-M-SU-監測.dwg`、`主橋.dwg`、`管理中心_全.dwg`：`quarantined`，因 percentile bbox 仍超出 EPSG:3826 AOI，需下一步做 entity/layer outlier analysis。

@@ -36,6 +36,7 @@ pub enum SourceFormat {
 #[serde(rename_all = "snake_case")]
 pub enum SourceStatus {
     PendingInspect,
+    NeedsAlternativeRoute,
     Approved,
     Quarantined,
     Converted,
@@ -61,6 +62,10 @@ pub struct SourceRecord {
     pub cad_metadata_path: Option<PathBuf>,
     pub fingerprint_hash: Option<String>,
     pub duplicate_candidates: Vec<String>,
+    #[serde(default)]
+    pub inspect_status: Option<String>,
+    #[serde(default)]
+    pub selected_scale: Option<f64>,
     pub warnings: Vec<String>,
 }
 

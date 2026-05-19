@@ -20,6 +20,11 @@ Rust CLI for converting IFC2X3 models into standalone GLB plus Cesium 3D Tiles 1
 - Three.js comparison viewers:
   - pure Three.js + `3d-tiles-renderer`
   - MapLibre GL JS + Three.js custom layer + `3d-tiles-renderer`
+- CAD inspect pipeline for DWG delivery:
+  - ODA File Converter 27.1 baseline
+  - DWG -> ACAD2000 / DXF
+  - OGR entity-level geometry inspect
+  - JSON reports plus SQLite inspect DB
 
 ## Repository Policy
 
@@ -142,6 +147,24 @@ http://127.0.0.1:8098/index_maplibre_three.html
 ```
 
 這兩頁用來比較 renderer / 圖台整合效能，讀同一份 `tileset.json`、`tileset_smooth_90.json`、`tileset_smooth.json`。
+
+## CAD Inspect Pipeline
+
+Phase 1C 建立可信 inspect DB，不產生 3D Tiles：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\run_phase1c_dxf_entity_inspect.ps1
+```
+
+主要輸出：
+
+```text
+out\inspect_tamkang\entity_inspect_report.json
+out\inspect_tamkang\cad_entities\<source_id>.entities.jsonl
+out\inspect_tamkang\project_inspect.db
+```
+
+目前 DWG 主線是 `ODA -> ACAD2000 / DXF -> OGR entity-level inspect`。DGN 暫時保留 source traceability，標記為 `needs_alternative_route`。
 
 ## Verification
 
