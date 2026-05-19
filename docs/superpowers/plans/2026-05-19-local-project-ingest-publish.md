@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a local-first project workspace that can inspect many IFC/DGN/DWG/RVT sources, detect CRS/scale problems, quarantine suspicious files, enrich metadata/group candidates, and publish one easy-to-load 3D Tiles package with flat / 90 / 180 normal modes.
+**Goal:** Build a local-first project workspace that can inspect many IFC/DGN/DWG/RVT sources, detect CRS/scale problems, quarantine suspicious files, dump CAD hierarchy metadata, enrich metadata/group candidates, and publish one easy-to-load 3D Tiles package with flat / 90 / 180 normal modes.
 
-**Architecture:** Keep the existing Rust IFC/RVT converter as the geometry core, then add an ingest layer before conversion and a publish layer after conversion. The ingest layer writes deterministic manifests and reports; each approved source is converted into its own normalized tileset folder first, and the publish layer only creates root tilesets that reference those per-source tilesets. Do not merge source geometry at the start; source separation is required for large-project debugging, duplicate detection, quarantine, filtering, and group explosion.
+**Architecture:** Keep the existing Rust IFC/RVT converter as the geometry core, then add an ingest layer before conversion and a publish layer after conversion. The ingest layer writes deterministic manifests and reports; each approved source is converted into its own normalized tileset folder first, and the publish layer only creates root tilesets that reference those per-source tilesets. Do not merge source geometry at the start; source separation is required for large-project debugging, duplicate detection, quarantine, filtering, and group explosion. Every approved source is normalized into one canonical world space: `EPSG:3826` meters, local project ENU, Z-up.
 
 **Tech Stack:** Rust CLI, serde JSON manifests, existing IFC STEP parser, optional GDAL/OGR CLI probes for DGN/DWG inspection, PowerShell helper scripts, Cesium / Three viewer metadata integration.
 
@@ -16,10 +16,10 @@ This plan intentionally does not build a cloud platform yet. It builds a local p
 
 Implementation priority is split into two levels:
 
-- **Level 1, required:** CRS, scale, bbox, source identity, group candidates, material/color metadata, property metadata, quarantine decisions, and per-source publish structure must be stable before chasing perfect geometry.
-- **Level 2, follow-up:** perfect DGN geometry, perfect source hierarchy, parametric solids, smart objects, civil alignments, terrain semantics, and OpenRoads metadata are best-effort unless a high-quality official/exported source is available.
+- **Level 1, required:** CRS, scale, centroid/percentile bounds, source identity, source transform, CAD hierarchy dump, group candidates, group spatial centers, material/color metadata, property metadata, duplicate fingerprints, quarantine decisions, viewer debug metadata, and per-source publish structure must be stable before chasing perfect geometry.
+- **Level 2, follow-up:** perfect DGN geometry, perfect hierarchy reconstruction, parametric solids, smart objects, civil alignments, terrain semantics, and OpenRoads metadata are best-effort unless a high-quality official/exported source is available.
 
-The reason is practical: a GIS viewer is damaged more by a model in the wrong country or at the wrong scale than by imperfect material fidelity. Position correctness and source traceability are release gates.
+The reason is practical: a GIS viewer is damaged more by a model in the wrong country, duplicated on itself, or at the wrong scale than by imperfect material fidelity. Position correctness, source traceability, and duplicate suppression are release gates.
 
 Out of scope for this phase:
 
@@ -32,10 +32,12 @@ Out of scope for this phase:
 ## File Structure
 
 - Create `src/project.rs`: project workspace layout, manifest structs, source status enums.
-- Create `src/inspect.rs`: inspect IFC/DGN/DWG/RVT files and produce per-source bbox, CRS, unit scale candidates, warnings.
-- Create `src/georef.rs`: scale detection and AOI/anchor validation logic for EPSG:3826, `scale=1.0/0.1/0.01`.
+- Create `src/inspect.rs`: inspect IFC/DGN/DWG/RVT files and produce per-source raw bbox, percentile bounds, CRS, unit scale candidates, warnings.
+- Create `src/cad_metadata.rs`: DGN/DWG hierarchy dump schema for models, references, levels, cells, shared cells, attachments, element classes, materials, and line styles.
+- Create `src/georef.rs`: canonical CRS normalization, source transform, scale detection, centroid/percentile AOI validation logic for EPSG:3826, `scale=1000.0/1.0/0.1/0.01/0.001`.
+- Create `src/fingerprint.rs`: geometry fingerprint and duplicate candidate detection by vertex count, triangle count, bbox, and surface area.
 - Create `src/grouping.rs`: derive group candidates from IFC metadata and future DGN/DWG dumps.
-- Create `src/publish.rs`: wrap approved per-source normalized tilesets into one root publish folder with three normal-mode root tilesets.
+- Create `src/publish.rs`: wrap approved per-source normalized tilesets into one root publish folder with three normal-mode root tilesets plus `sources_manifest.json`, `groups.json`, and warnings.
 - Modify `src/main.rs`: add subcommands `inspect`, `convert-source`, `publish`, keep current direct conversion behavior.
 - Modify `src/lib.rs`: export new modules.
 - Modify `src/convert.rs`: expose per-source conversion hooks and include new source/group fields in metadata.
@@ -83,6 +85,12 @@ fn source_record_preserves_source_identity() {
         detected_crs: None,
         unit_scale_to_meter: None,
         anchor_distance_m: None,
+        raw_bbox: None,
+        percentile_bbox: None,
+        transform: None,
+        cad_metadata_path: None,
+        fingerprint_hash: None,
+        duplicate_candidates: vec![],
         warnings: vec![],
     };
     assert_eq!(source.format, SourceFormat::Dgn);
@@ -95,7 +103,7 @@ fn project_manifest_serializes_to_stable_json() {
         project_id: "tamkang_bridge".to_string(),
         source_epsg: 3826,
         anchor_source_id: None,
-        allowed_scales: vec![1.0, 0.1, 0.01],
+        allowed_scales: vec![1000.0, 1.0, 0.1, 0.01, 0.001],
         sources: vec![],
     };
     let json = serde_json::to_string_pretty(&manifest).expect("serialize manifest");
@@ -173,6 +181,12 @@ pub struct SourceRecord {
     pub detected_crs: Option<String>,
     pub unit_scale_to_meter: Option<f64>,
     pub anchor_distance_m: Option<f64>,
+    pub raw_bbox: Option<[f64; 6]>,
+    pub percentile_bbox: Option<[f64; 6]>,
+    pub transform: Option<serde_json::Value>,
+    pub cad_metadata_path: Option<PathBuf>,
+    pub fingerprint_hash: Option<String>,
+    pub duplicate_candidates: Vec<String>,
     pub warnings: Vec<String>,
 }
 
@@ -317,6 +331,12 @@ pub fn discover_sources(root: &Path) -> Result<Vec<SourceRecord>> {
             detected_crs: None,
             unit_scale_to_meter: None,
             anchor_distance_m: None,
+            raw_bbox: None,
+            percentile_bbox: None,
+            transform: None,
+            cad_metadata_path: None,
+            fingerprint_hash: None,
+            duplicate_candidates: vec![],
             warnings: vec![],
         });
     }
@@ -390,7 +410,7 @@ if let Some(Command::Inspect { input, output, source_epsg }) = cli.command {
         project_id: safe_stem(&input),
         source_epsg,
         anchor_source_id: sources.iter().find(|s| s.format == ifc_to_3dtiles::project::SourceFormat::Ifc).map(|s| s.id.clone()),
-        allowed_scales: vec![1.0, 0.1, 0.01],
+        allowed_scales: vec![1000.0, 1.0, 0.1, 0.01, 0.001],
         sources,
     };
     let path = output.join("source_manifest.json");
@@ -428,7 +448,7 @@ git commit -m "Add source discovery inspect command"
 
 ---
 
-### Task 3: Georef Scale Classification
+### Task 3: Canonical Georef, Scale Classification, And Source Transform
 
 **Files:**
 - Create: `src/georef.rs`
@@ -436,18 +456,21 @@ git commit -m "Add source discovery inspect command"
 - Modify: `src/inspect.rs`
 - Test: `tests/project_pipeline.rs`
 
-- [ ] **Step 1: Write failing tests for scale selection**
+- [ ] **Step 1: Write failing tests for scale selection, percentile AOI checks, and source transform**
 
 Add to `tests/project_pipeline.rs`:
 
 ```rust
-use ifc_to_3dtiles::georef::{Aoi, Bounds2, classify_source_scale};
+use ifc_to_3dtiles::georef::{
+    Aoi, Bounds2, BoundsSummary, SourceTransform, classify_source_scale,
+};
 
 #[test]
 fn scale_classifier_accepts_taiwan_epsg_3826_meter_bounds() {
     let aoi = Aoi::new(120_000.0, 2_400_000.0, 360_000.0, 2_800_000.0);
     let bounds = Bounds2::new(300_000.0, 2_787_000.0, 301_000.0, 2_788_000.0);
-    let result = classify_source_scale(bounds, &aoi, &[1.0, 0.1, 0.01]);
+    let summary = BoundsSummary::from_raw_and_percentile(bounds, bounds);
+    let result = classify_source_scale(&summary, &aoi, &[1000.0, 1.0, 0.1, 0.01, 0.001]);
     assert_eq!(result.selected_scale, Some(1.0));
     assert_eq!(result.status, "inside_aoi");
 }
@@ -456,19 +479,50 @@ fn scale_classifier_accepts_taiwan_epsg_3826_meter_bounds() {
 fn scale_classifier_detects_centimeter_like_coordinates() {
     let aoi = Aoi::new(120_000.0, 2_400_000.0, 360_000.0, 2_800_000.0);
     let bounds = Bounds2::new(30_000_000.0, 278_700_000.0, 30_100_000.0, 278_800_000.0);
-    let result = classify_source_scale(bounds, &aoi, &[1.0, 0.1, 0.01]);
+    let summary = BoundsSummary::from_raw_and_percentile(bounds, bounds);
+    let result = classify_source_scale(&summary, &aoi, &[1000.0, 1.0, 0.1, 0.01, 0.001]);
     assert_eq!(result.selected_scale, Some(0.01));
     assert_eq!(result.status, "inside_aoi");
+}
+
+#[test]
+fn scale_classifier_detects_millimeter_like_coordinates() {
+    let aoi = Aoi::new(120_000.0, 2_400_000.0, 360_000.0, 2_800_000.0);
+    let bounds = Bounds2::new(300_000_000.0, 2_787_000_000.0, 301_000_000.0, 2_788_000_000.0);
+    let summary = BoundsSummary::from_raw_and_percentile(bounds, bounds);
+    let result = classify_source_scale(&summary, &aoi, &[1000.0, 1.0, 0.1, 0.01, 0.001]);
+    assert_eq!(result.selected_scale, Some(0.001));
+    assert_eq!(result.status, "inside_aoi");
+}
+
+#[test]
+fn scale_classifier_uses_percentile_bounds_when_raw_bbox_has_stray_points() {
+    let aoi = Aoi::new(120_000.0, 2_400_000.0, 360_000.0, 2_800_000.0);
+    let raw_bounds = Bounds2::new(-9_000_000.0, -9_000_000.0, 9_000_000.0, 9_000_000.0);
+    let percentile_bounds = Bounds2::new(300_000.0, 2_787_000.0, 301_000.0, 2_788_000.0);
+    let summary = BoundsSummary::from_raw_and_percentile(raw_bounds, percentile_bounds);
+    let result = classify_source_scale(&summary, &aoi, &[1000.0, 1.0, 0.1, 0.01, 0.001]);
+    assert_eq!(result.selected_scale, Some(1.0));
+    assert!(result.warnings.iter().any(|w| w.contains("raw bbox")));
 }
 
 #[test]
 fn scale_classifier_quarantines_far_away_model() {
     let aoi = Aoi::new(120_000.0, 2_400_000.0, 360_000.0, 2_800_000.0);
     let bounds = Bounds2::new(4_000_000.0, 6_000_000.0, 4_100_000.0, 6_100_000.0);
-    let result = classify_source_scale(bounds, &aoi, &[1.0, 0.1, 0.01]);
+    let summary = BoundsSummary::from_raw_and_percentile(bounds, bounds);
+    let result = classify_source_scale(&summary, &aoi, &[1000.0, 1.0, 0.1, 0.01, 0.001]);
     assert_eq!(result.selected_scale, None);
     assert_eq!(result.status, "outside_aoi");
     assert!(result.warnings.iter().any(|w| w.contains("outside AOI")));
+}
+
+#[test]
+fn source_transform_declares_canonical_space() {
+    let transform = SourceTransform::identity("EPSG:3826", 1.0);
+    assert_eq!(transform.canonical_crs, "EPSG:3826");
+    assert_eq!(transform.canonical_space, "EPSG:3826 meters / local ENU / Z-up");
+    assert_eq!(transform.scale, [1.0, 1.0, 1.0]);
 }
 ```
 
@@ -477,16 +531,18 @@ fn scale_classifier_quarantines_far_away_model() {
 Run:
 
 ```powershell
-cargo test scale_classifier_accepts_taiwan_epsg_3826_meter_bounds scale_classifier_detects_centimeter_like_coordinates scale_classifier_quarantines_far_away_model
+cargo test scale_classifier_accepts_taiwan_epsg_3826_meter_bounds scale_classifier_detects_centimeter_like_coordinates scale_classifier_detects_millimeter_like_coordinates scale_classifier_uses_percentile_bounds_when_raw_bbox_has_stray_points scale_classifier_quarantines_far_away_model source_transform_declares_canonical_space
 ```
 
 Expected: fail because `georef` module does not exist.
 
-- [ ] **Step 3: Implement scale classifier**
+- [ ] **Step 3: Implement scale classifier and canonical transform model**
 
 Create `src/georef.rs`:
 
 ```rust
+use serde::{Deserialize, Serialize};
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Bounds2 {
     pub min_x: f64,
@@ -516,6 +572,35 @@ impl Bounds2 {
     pub fn height(self) -> f64 {
         (self.max_y - self.min_y).abs()
     }
+
+    pub fn center(self) -> [f64; 2] {
+        [(self.min_x + self.max_x) * 0.5, (self.min_y + self.max_y) * 0.5]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BoundsSummary {
+    pub raw_bounds: Bounds2,
+    pub percentile_bounds: Bounds2,
+    pub centroid: [f64; 2],
+}
+
+impl BoundsSummary {
+    pub fn from_raw_and_percentile(raw_bounds: Bounds2, percentile_bounds: Bounds2) -> Self {
+        Self {
+            raw_bounds,
+            percentile_bounds,
+            centroid: percentile_bounds.center(),
+        }
+    }
+
+    pub fn scaled(self, scale: f64) -> Self {
+        Self {
+            raw_bounds: self.raw_bounds.scaled(scale),
+            percentile_bounds: self.percentile_bounds.scaled(scale),
+            centroid: [self.centroid[0] * scale, self.centroid[1] * scale],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -537,6 +622,13 @@ impl Aoi {
             && bounds.min_y >= self.min_y
             && bounds.max_y <= self.max_y
     }
+
+    pub fn contains_point(self, point: [f64; 2]) -> bool {
+        point[0] >= self.min_x
+            && point[0] <= self.max_x
+            && point[1] >= self.min_y
+            && point[1] <= self.max_y
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -546,18 +638,51 @@ pub struct ScaleClassification {
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SourceTransform {
+    pub source_crs: String,
+    pub canonical_crs: String,
+    pub translation: [f64; 3],
+    pub rotation_quat_xyzw: [f64; 4],
+    pub scale: [f64; 3],
+    pub unit_scale_to_meter: f64,
+    pub canonical_space: String,
+}
+
+impl SourceTransform {
+    pub fn identity(source_crs: &str, unit_scale_to_meter: f64) -> Self {
+        Self {
+            source_crs: source_crs.to_string(),
+            canonical_crs: "EPSG:3826".to_string(),
+            translation: [0.0, 0.0, 0.0],
+            rotation_quat_xyzw: [0.0, 0.0, 0.0, 1.0],
+            scale: [unit_scale_to_meter, unit_scale_to_meter, unit_scale_to_meter],
+            unit_scale_to_meter,
+            canonical_space: "EPSG:3826 meters / local ENU / Z-up".to_string(),
+        }
+    }
+}
+
 pub fn classify_source_scale(
-    raw_bounds: Bounds2,
+    bounds: &BoundsSummary,
     aoi: &Aoi,
     allowed_scales: &[f64],
 ) -> ScaleClassification {
     for scale in allowed_scales {
-        let scaled = raw_bounds.scaled(*scale);
-        if aoi.contains_bounds(scaled) && scaled.width() > 0.01 && scaled.height() > 0.01 {
+        let scaled = bounds.scaled(*scale);
+        if aoi.contains_point(scaled.centroid)
+            && aoi.contains_bounds(scaled.percentile_bounds)
+            && scaled.percentile_bounds.width() > 0.01
+            && scaled.percentile_bounds.height() > 0.01
+        {
+            let mut warnings = vec![];
+            if !aoi.contains_bounds(scaled.raw_bounds) {
+                warnings.push("raw bbox outside AOI; accepted by centroid and percentile bounds".to_string());
+            }
             return ScaleClassification {
                 selected_scale: Some(*scale),
                 status: "inside_aoi".to_string(),
-                warnings: vec![],
+                warnings,
             };
         }
     }
@@ -581,7 +706,7 @@ pub mod georef;
 Run:
 
 ```powershell
-cargo test scale_classifier_accepts_taiwan_epsg_3826_meter_bounds scale_classifier_detects_centimeter_like_coordinates scale_classifier_quarantines_far_away_model
+cargo test scale_classifier_accepts_taiwan_epsg_3826_meter_bounds scale_classifier_detects_centimeter_like_coordinates scale_classifier_detects_millimeter_like_coordinates scale_classifier_uses_percentile_bounds_when_raw_bbox_has_stray_points scale_classifier_quarantines_far_away_model source_transform_declares_canonical_space
 ```
 
 Expected: all pass.
@@ -746,6 +871,152 @@ git commit -m "Add IFC group candidate inspect output"
 
 ---
 
+### Task 4A: DGN/DWG Inspect Metadata Hierarchy Dump
+
+**Files:**
+- Create: `src/cad_metadata.rs`
+- Modify: `src/lib.rs`
+- Modify: `src/inspect.rs`
+- Test: `tests/project_pipeline.rs`
+
+This is the highest-priority DGN/DWG task. Even when geometry conversion is not yet reliable, inspect must preserve the hierarchy that later drives isolate, explode, search, and debug workflows.
+
+- [ ] **Step 1: Write failing test for CAD hierarchy dump schema**
+
+Add to `tests/project_pipeline.rs`:
+
+```rust
+use ifc_to_3dtiles::cad_metadata::{
+    CadHierarchyDump, CadModel, CadLevel, CadMaterial, CadReference,
+};
+
+#[test]
+fn cad_hierarchy_dump_preserves_dgn_metadata_buckets() {
+    let dump = CadHierarchyDump {
+        source_id: "bridge-dgn".to_string(),
+        models: vec![CadModel { name: "Default".to_string(), element_count: 120 }],
+        references: vec![CadReference { name: "pier-ref".to_string(), path: "pier.dgn".to_string() }],
+        levels: vec![CadLevel { name: "Cable".to_string(), element_count: 80 }],
+        cells: vec![],
+        shared_cells: vec![],
+        attachments: vec![],
+        element_classes: vec!["Primary".to_string()],
+        materials: vec![CadMaterial { name: "concrete".to_string(), color_rgba: [0.8, 0.8, 0.78, 1.0] }],
+        line_styles: vec!["ByLevel".to_string()],
+    };
+
+    let json = serde_json::to_value(&dump).expect("serialize CAD dump");
+    assert!(json.get("models").is_some());
+    assert!(json.get("references").is_some());
+    assert!(json.get("levels").is_some());
+    assert!(json.get("cells").is_some());
+    assert!(json.get("shared_cells").is_some());
+    assert!(json.get("attachments").is_some());
+    assert!(json.get("element_classes").is_some());
+    assert!(json.get("materials").is_some());
+    assert!(json.get("line_styles").is_some());
+}
+```
+
+- [ ] **Step 2: Run test and verify it fails**
+
+Run:
+
+```powershell
+cargo test cad_hierarchy_dump_preserves_dgn_metadata_buckets
+```
+
+Expected: fail because `cad_metadata` module does not exist.
+
+- [ ] **Step 3: Implement schema-first CAD dump module**
+
+Create `src/cad_metadata.rs`:
+
+```rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CadHierarchyDump {
+    pub source_id: String,
+    pub models: Vec<CadModel>,
+    pub references: Vec<CadReference>,
+    pub levels: Vec<CadLevel>,
+    pub cells: Vec<CadCell>,
+    pub shared_cells: Vec<CadCell>,
+    pub attachments: Vec<CadAttachment>,
+    pub element_classes: Vec<String>,
+    pub materials: Vec<CadMaterial>,
+    pub line_styles: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CadModel {
+    pub name: String,
+    pub element_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CadReference {
+    pub name: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CadLevel {
+    pub name: String,
+    pub element_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CadCell {
+    pub name: String,
+    pub element_count: usize,
+    pub center: Option<[f64; 3]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CadAttachment {
+    pub name: String,
+    pub path: String,
+    pub transform_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CadMaterial {
+    pub name: String,
+    pub color_rgba: [f32; 4],
+}
+```
+
+Modify `src/lib.rs`:
+
+```rust
+pub mod cad_metadata;
+```
+
+- [ ] **Step 4: Add inspect output contract**
+
+When the inspect route sees `.dgn` or `.dwg`, write a sidecar dump path in the source manifest:
+
+```text
+out/inspect_tamkang/cad_metadata/<source-id>.json
+```
+
+If no open inspection tool is available, still write an empty bucket schema and a warning such as:
+
+```text
+CAD hierarchy probe unavailable; geometry conversion may continue, but reference/model/level/cell metadata is incomplete.
+```
+
+- [ ] **Step 5: Commit**
+
+```powershell
+git add src/cad_metadata.rs src/lib.rs src/inspect.rs tests/project_pipeline.rs
+git commit -m "Add CAD hierarchy inspect metadata schema"
+```
+
+---
+
 ### Task 5: Quarantine Rules And Source Approval
 
 **Files:**
@@ -759,17 +1030,20 @@ git commit -m "Add IFC group candidate inspect output"
 Add to `tests/project_pipeline.rs`:
 
 ```rust
-use ifc_to_3dtiles::georef::{Aoi, Bounds2, decide_source_status};
+use ifc_to_3dtiles::georef::{Aoi, Bounds2, BoundsSummary, decide_source_status};
 use ifc_to_3dtiles::project::SourceStatus;
 
 #[test]
 fn decide_source_status_approves_inside_aoi_3d_source() {
     let aoi = Aoi::new(120_000.0, 2_400_000.0, 360_000.0, 2_800_000.0);
     let status = decide_source_status(
-        Bounds2::new(300_000.0, 2_787_000.0, 301_000.0, 2_788_000.0),
+        BoundsSummary::from_raw_and_percentile(
+            Bounds2::new(300_000.0, 2_787_000.0, 301_000.0, 2_788_000.0),
+            Bounds2::new(300_000.0, 2_787_000.0, 301_000.0, 2_788_000.0),
+        ),
         20.0,
         &aoi,
-        &[1.0, 0.1, 0.01],
+        &[1000.0, 1.0, 0.1, 0.01, 0.001],
     );
     assert_eq!(status.status, SourceStatus::Approved);
     assert_eq!(status.selected_scale, Some(1.0));
@@ -779,10 +1053,13 @@ fn decide_source_status_approves_inside_aoi_3d_source() {
 fn decide_source_status_quarantines_flat_2d_source() {
     let aoi = Aoi::new(120_000.0, 2_400_000.0, 360_000.0, 2_800_000.0);
     let status = decide_source_status(
-        Bounds2::new(300_000.0, 2_787_000.0, 301_000.0, 2_788_000.0),
+        BoundsSummary::from_raw_and_percentile(
+            Bounds2::new(300_000.0, 2_787_000.0, 301_000.0, 2_788_000.0),
+            Bounds2::new(300_000.0, 2_787_000.0, 301_000.0, 2_788_000.0),
+        ),
         0.001,
         &aoi,
-        &[1.0, 0.1, 0.01],
+        &[1000.0, 1.0, 0.1, 0.01, 0.001],
     );
     assert_eq!(status.status, SourceStatus::Quarantined);
     assert!(status.warnings.iter().any(|w| w.contains("2D")));
@@ -814,12 +1091,12 @@ pub struct SourceStatusDecision {
 }
 
 pub fn decide_source_status(
-    raw_bounds_xy: Bounds2,
+    bounds_xy: BoundsSummary,
     z_range_m: f64,
     aoi: &Aoi,
     allowed_scales: &[f64],
 ) -> SourceStatusDecision {
-    let scale = classify_source_scale(raw_bounds_xy, aoi, allowed_scales);
+    let scale = classify_source_scale(&bounds_xy, aoi, allowed_scales);
     let mut warnings = scale.warnings;
 
     if z_range_m.abs() < 0.05 {
@@ -937,6 +1214,120 @@ git commit -m "Add CAD source probe script"
 
 ---
 
+### Task 6A: Geometry Fingerprint And Duplicate Detection
+
+**Files:**
+- Create: `src/fingerprint.rs`
+- Modify: `src/lib.rs`
+- Modify: `src/inspect.rs`
+- Test: `tests/project_pipeline.rs`
+
+- [ ] **Step 1: Write failing tests for duplicate fingerprint candidates**
+
+Add to `tests/project_pipeline.rs`:
+
+```rust
+use ifc_to_3dtiles::fingerprint::{GeometryFingerprint, duplicate_candidate_score};
+
+#[test]
+fn geometry_fingerprint_detects_probable_duplicate_sources() {
+    let a = GeometryFingerprint {
+        source_id: "bridge-ifc".to_string(),
+        vertex_count: 100_000,
+        triangle_count: 180_000,
+        bbox: [300_000.0, 2_787_000.0, 0.0, 301_000.0, 2_788_000.0, 60.0],
+        surface_area_m2: 125_000.0,
+        hash: "a".to_string(),
+    };
+    let b = GeometryFingerprint {
+        source_id: "bridge-dgn".to_string(),
+        vertex_count: 100_250,
+        triangle_count: 179_900,
+        bbox: [300_000.2, 2_787_000.1, 0.0, 301_000.1, 2_788_000.2, 60.1],
+        surface_area_m2: 125_100.0,
+        hash: "b".to_string(),
+    };
+
+    let score = duplicate_candidate_score(&a, &b);
+    assert!(score >= 0.95);
+}
+```
+
+- [ ] **Step 2: Run test and verify it fails**
+
+Run:
+
+```powershell
+cargo test geometry_fingerprint_detects_probable_duplicate_sources
+```
+
+Expected: fail because `fingerprint` module does not exist.
+
+- [ ] **Step 3: Implement fingerprint summary**
+
+Create `src/fingerprint.rs`:
+
+```rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GeometryFingerprint {
+    pub source_id: String,
+    pub vertex_count: u64,
+    pub triangle_count: u64,
+    pub bbox: [f64; 6],
+    pub surface_area_m2: f64,
+    pub hash: String,
+}
+
+pub fn duplicate_candidate_score(a: &GeometryFingerprint, b: &GeometryFingerprint) -> f64 {
+    let tri_ratio = ratio_score(a.triangle_count as f64, b.triangle_count as f64);
+    let vertex_ratio = ratio_score(a.vertex_count as f64, b.vertex_count as f64);
+    let area_ratio = ratio_score(a.surface_area_m2, b.surface_area_m2);
+    let bbox_ratio = bbox_similarity(a.bbox, b.bbox);
+    (tri_ratio + vertex_ratio + area_ratio + bbox_ratio) / 4.0
+}
+
+fn ratio_score(a: f64, b: f64) -> f64 {
+    if a <= 0.0 || b <= 0.0 {
+        return 0.0;
+    }
+    a.min(b) / a.max(b)
+}
+
+fn bbox_similarity(a: [f64; 6], b: [f64; 6]) -> f64 {
+    let mut total = 0.0;
+    for i in 0..6 {
+        let scale = a[i].abs().max(b[i].abs()).max(1.0);
+        total += 1.0 - ((a[i] - b[i]).abs() / scale).min(1.0);
+    }
+    total / 6.0
+}
+```
+
+Modify `src/lib.rs`:
+
+```rust
+pub mod fingerprint;
+```
+
+- [ ] **Step 4: Inspect output contract**
+
+Add `fingerprint` and `duplicate_candidates` to inspect output. A source must be quarantined or require explicit review when:
+
+- The score is `>= 0.95` against an approved source.
+- The source has nearly identical bbox and triangle/vertex counts to another source but different format.
+- The source overlaps a published source strongly enough to risk duplicate bridge geometry.
+
+- [ ] **Step 5: Commit**
+
+```powershell
+git add src/fingerprint.rs src/lib.rs src/inspect.rs tests/project_pipeline.rs
+git commit -m "Add geometry duplicate fingerprinting"
+```
+
+---
+
 ### Task 7: Publish Root Tilesets For Approved Per-Source Tilesets
 
 **Files:**
@@ -950,7 +1341,9 @@ git commit -m "Add CAD source probe script"
 Add to `tests/project_pipeline.rs`:
 
 ```rust
-use ifc_to_3dtiles::publish::{PublishSource, build_publish_tileset};
+use ifc_to_3dtiles::publish::{
+    GroupManifestEntry, PublishSource, SourceManifestEntry, build_publish_tileset,
+};
 
 #[test]
 fn publish_tileset_wraps_child_tilesets_with_source_metadata() {
@@ -960,18 +1353,54 @@ fn publish_tileset_wraps_child_tilesets_with_source_metadata() {
             label: "DJB-M-SU-監測.ifc".to_string(),
             tileset_uri: "sources/main-ifc/tileset.json".to_string(),
             normal_mode: "flat".to_string(),
+            bbox: [300_000.0, 2_787_000.0, 0.0, 301_000.0, 2_788_000.0, 60.0],
         },
         PublishSource {
             source_id: "main-ifc".to_string(),
             label: "DJB-M-SU-監測.ifc".to_string(),
             tileset_uri: "sources/main-ifc/tileset_smooth_90.json".to_string(),
             normal_mode: "smooth_90".to_string(),
+            bbox: [300_000.0, 2_787_000.0, 0.0, 301_000.0, 2_788_000.0, 60.0],
         },
     ];
     let tileset = build_publish_tileset(&sources, "flat");
     assert_eq!(tileset["asset"]["version"], "1.0");
     assert_eq!(tileset["root"]["children"].as_array().unwrap().len(), 1);
     assert_eq!(tileset["root"]["children"][0]["extras"]["source_id"], "main-ifc");
+}
+
+#[test]
+fn publish_manifests_include_source_and_group_debug_contract() {
+    let source = SourceManifestEntry {
+        source_id: "main-dgn".to_string(),
+        format: "dgn".to_string(),
+        status: "approved".to_string(),
+        transform: serde_json::json!({
+            "translation": [0.0, 0.0, 0.0],
+            "rotation": [0.0, 0.0, 0.0, 1.0],
+            "scale": [1.0, 1.0, 1.0]
+        }),
+        bbox: serde_json::json!({
+            "raw": [300000.0, 2787000.0, 0.0, 301000.0, 2788000.0, 60.0],
+            "percentile": [300010.0, 2787010.0, 0.0, 300990.0, 2787990.0, 60.0]
+        }),
+        group_stats: serde_json::json!({"level:Cable": 80}),
+        materials: serde_json::json!({"concrete": {"color_rgba": [0.8, 0.8, 0.78, 1.0]}}),
+        warnings: vec![],
+    };
+    let group = GroupManifestEntry {
+        group_key: "level:Cable".to_string(),
+        label: "Cable".to_string(),
+        source_ids: vec!["main-dgn".to_string()],
+        feature_count: 80,
+        bbox: [300_000.0, 2_787_000.0, 0.0, 301_000.0, 2_788_000.0, 60.0],
+        center: [300_500.0, 2_787_500.0, 30.0],
+        explode_origin: [300_500.0, 2_787_500.0, 30.0],
+        material_summary: serde_json::json!({"concrete": 80}),
+    };
+
+    assert_eq!(source.transform["scale"][0], 1.0);
+    assert_eq!(group.explode_origin, group.center);
 }
 ```
 
@@ -1001,6 +1430,31 @@ pub struct PublishSource {
     pub label: String,
     pub tileset_uri: String,
     pub normal_mode: String,
+    pub bbox: [f64; 6],
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SourceManifestEntry {
+    pub source_id: String,
+    pub format: String,
+    pub status: String,
+    pub transform: Value,
+    pub bbox: Value,
+    pub group_stats: Value,
+    pub materials: Value,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GroupManifestEntry {
+    pub group_key: String,
+    pub label: String,
+    pub source_ids: Vec<String>,
+    pub feature_count: usize,
+    pub bbox: [f64; 6],
+    pub center: [f64; 3],
+    pub explode_origin: [f64; 3],
+    pub material_summary: Value,
 }
 
 pub fn build_publish_tileset(sources: &[PublishSource], normal_mode: &str) -> Value {
@@ -1018,6 +1472,7 @@ pub fn build_publish_tileset(sources: &[PublishSource], normal_mode: &str) -> Va
                 "extras": {
                     "source_id": source.source_id,
                     "label": source.label,
+                    "bbox": source.bbox,
                     "normal_mode": source.normal_mode
                 }
             })
@@ -1047,6 +1502,8 @@ Modify `src/lib.rs`:
 ```rust
 pub mod publish;
 ```
+
+Also add helper functions `build_source_manifest_entries(project: &ProjectManifest)` and `build_group_manifest_entries(project: &ProjectManifest)`. These should map approved `SourceRecord` values into the publish manifest schema and aggregate group records from `explode_group_key` plus inspect summaries. If group centers cannot yet be computed from geometry, write `null` / warning instead of fabricating a center.
 
 - [ ] **Step 4: Add CLI publish skeleton**
 
@@ -1085,14 +1542,62 @@ if let Some(Command::Publish { manifest, output }) = cli.command {
                 label: source.path.file_name().and_then(|s| s.to_str()).unwrap_or(&source.id).to_string(),
                 tileset_uri: format!("sources/{}/{}", source.id, name),
                 normal_mode: normal_mode.to_string(),
+                bbox: source.raw_bbox.unwrap_or([0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
             })
         })
         .collect();
     fs::write(output.join("tileset.json"), serde_json::to_vec_pretty(&ifc_to_3dtiles::publish::build_publish_tileset(&sources, "flat"))?)?;
     fs::write(output.join("tileset_smooth_90.json"), serde_json::to_vec_pretty(&ifc_to_3dtiles::publish::build_publish_tileset(&sources, "smooth_90"))?)?;
     fs::write(output.join("tileset_smooth.json"), serde_json::to_vec_pretty(&ifc_to_3dtiles::publish::build_publish_tileset(&sources, "smooth"))?)?;
+    fs::write(output.join("sources_manifest.json"), serde_json::to_vec_pretty(&build_source_manifest_entries(&project))?)?;
+    fs::write(output.join("groups.json"), serde_json::to_vec_pretty(&build_group_manifest_entries(&project))?)?;
     println!("{}", output.display());
     return Ok(());
+}
+```
+
+The publish layer must also write these debug manifests:
+
+```json
+{
+  "source_id": "main-dgn",
+  "format": "dgn",
+  "status": "approved",
+  "transform": {
+    "translation": [0.0, 0.0, 0.0],
+    "rotation": [0.0, 0.0, 0.0, 1.0],
+    "scale": [1.0, 1.0, 1.0]
+  },
+  "bbox": {
+    "raw": [300000.0, 2787000.0, 0.0, 301000.0, 2788000.0, 60.0],
+    "percentile": [300010.0, 2787010.0, 0.0, 300990.0, 2787990.0, 60.0]
+  },
+  "group_stats": {
+    "level:Cable": 80
+  },
+  "materials": {
+    "concrete": {
+      "color_rgba": [0.8, 0.8, 0.78, 1.0]
+    }
+  },
+  "warnings": []
+}
+```
+
+`groups.json` must keep the spatial center needed for shader explode:
+
+```json
+{
+  "group_key": "level:Cable",
+  "label": "Cable",
+  "source_ids": ["main-dgn"],
+  "feature_count": 80,
+  "bbox": [300000.0, 2787000.0, 0.0, 301000.0, 2788000.0, 60.0],
+  "center": [300500.0, 2787500.0, 30.0],
+  "explode_origin": [300500.0, 2787500.0, 30.0],
+  "material_summary": {
+    "concrete": 80
+  }
 }
 ```
 
@@ -1120,6 +1625,8 @@ git commit -m "Add publish root tileset builder"
 **Files:**
 - Modify: `src/convert.rs`
 - Test: `tests/core.rs`
+
+Feature metadata keeps the lookup key; `groups.json` keeps group-level spatial data such as `center` and `explode_origin`. Do not duplicate large group tables into every feature. For DGN/DWG-derived sources, candidate group priority is `reference -> model -> level -> cell/shared_cell -> material -> element_class`, because IFC group data may be absent or too coarse.
 
 - [ ] **Step 1: Write failing test for Batch Table source fields**
 
@@ -1193,6 +1700,18 @@ let explode_group_key = if let Some(first_group) = ctx.group_names_by_object.get
 };
 ```
 
+For CAD-derived sources, resolve `explode_group_key` from inspect metadata in this order:
+
+```rust
+let explode_group_key = cad_reference
+    .map(|name| format!("reference:{name}"))
+    .or_else(|| cad_model.map(|name| format!("model:{name}")))
+    .or_else(|| cad_level.map(|name| format!("level:{name}")))
+    .or_else(|| cad_cell.map(|name| format!("cell:{name}")))
+    .or_else(|| cad_material.map(|name| format!("material:{name}")))
+    .unwrap_or_else(|| format!("source:{source_id}"));
+```
+
 Extract current private batch table builder into:
 
 ```rust
@@ -1235,6 +1754,80 @@ Expected: all tests pass.
 ```powershell
 git add src/convert.rs tests/core.rs
 git commit -m "Add source and explode group metadata"
+```
+
+---
+
+### Task 8A: Viewer Debug Contract And Shader Explode
+
+**Files:**
+- Modify: `out/DJB-M-SU-_/index.html`
+- Modify: `out/DJB-M-SU-_/index_three.html`
+- Modify: `out/DJB-M-SU-_/index_maplibre_three.html`
+- Test: `tools/verify_index_page.ps1`
+
+- [ ] **Step 1: Add viewer verification checks**
+
+Extend `tools/verify_index_page.ps1` to check that the production viewer and comparison viewers expose these controls or data hooks:
+
+- Isolate source.
+- Isolate group.
+- Search property.
+- Highlight selected feature.
+- Hide/show source and group.
+- Transparency by source and group.
+- AOI clipping.
+- Section plane.
+- Flood simulation / water elevation test.
+- Terrain offset.
+- Debug source bbox.
+- Debug source transform.
+- Debug CRS.
+- Debug scale candidate.
+- Debug quarantine reason.
+
+- [ ] **Step 2: Implement shader explode contract**
+
+Explode must be a rendering effect, not a geometry rewrite. Use group spatial centers from `groups.json`:
+
+```glsl
+vec3 explodeDir = normalize(groupCenter - modelCenter);
+vec3 explodeOffset = explodeDir * explodeAmount;
+worldPosition.xyz += explodeOffset;
+```
+
+Rules:
+
+- Do not rebuild `.b3dm` for explode.
+- Do not duplicate selected geometry just to explode groups.
+- Keep batching where the renderer allows custom shader/material hooks.
+- Fallback to overlay mesh only when the renderer cannot inject a per-feature/group shader.
+
+- [ ] **Step 3: Keep source and group debug visible**
+
+Viewer debug panel must show:
+
+```json
+{
+  "source_id": "main-dgn",
+  "format": "dgn",
+  "crs": "EPSG:3826",
+  "scale_candidate": 1.0,
+  "transform": {
+    "translation": [0.0, 0.0, 0.0],
+    "rotation": [0.0, 0.0, 0.0, 1.0],
+    "scale": [1.0, 1.0, 1.0]
+  },
+  "bbox_mode": "centroid_percentile",
+  "quarantine_reason": null
+}
+```
+
+- [ ] **Step 4: Commit**
+
+```powershell
+git add out/DJB-M-SU-_/index.html out/DJB-M-SU-_/index_three.html out/DJB-M-SU-_/index_maplibre_three.html tools/verify_index_page.ps1
+git commit -m "Add viewer source debug and shader explode contract"
 ```
 
 ---
@@ -1285,8 +1878,8 @@ publish/
 
 ## Stages
 
-1. `inspect`: discover sources, write `source_manifest.json`, `group_candidates.json`, and warnings.
-2. `review`: user checks quarantined files, scale candidates, duplicate candidates, and group candidates.
+1. `inspect`: discover sources, write `source_manifest.json`, `cad_metadata/<source-id>.json`, `group_candidates.json`, duplicate candidates, and warnings.
+2. `review`: user checks quarantined files, centroid/percentile bounds, scale candidates, duplicate candidates, CAD hierarchy dumps, and group candidates.
 3. `convert-source`: approved sources are converted into normalized per-source tileset outputs.
 4. `publish`: approved normalized outputs are wrapped into one root tileset set:
    - `tileset.json`
@@ -1298,20 +1891,25 @@ publish/
 
 Allowed source unit scales:
 
+- `1000.0`: kilometer-like or very small source coordinates that must be expanded to meters.
 - `1.0`: EPSG:3826 meters.
 - `0.1`: decimeter-like source coordinates.
 - `0.01`: centimeter-like source coordinates.
+- `0.001`: millimeter-like source coordinates.
 
-If none of these puts the source inside the project AOI, quarantine the source.
+Scale selection uses centroid and percentile bounds first. Raw bbox is retained for diagnostics, but a single stray point or construction line must not be allowed to reject an otherwise valid source by itself.
+
+If none of these puts the source centroid and percentile bounds inside the project AOI, quarantine the source.
 
 ## Suspicious Source Rules
 
 Quarantine when:
 
-- Source bbox is outside AOI for every allowed scale.
+- Source centroid or percentile bounds are outside AOI for every allowed scale.
+- Raw bbox is extremely large or far away, even when percentile bounds pass; this is a warning that requires review.
 - Source appears almost 2D.
 - Source size is physically impossible for the project.
-- Source overlaps an approved source enough to look like a duplicate.
+- Source geometry fingerprint overlaps an approved source enough to look like a duplicate.
 - Source lacks a credible conversion path.
 
 ## No Bentley Tool Assumption
@@ -1328,7 +1926,7 @@ Add a section:
 ```markdown
 ## Local Project Workspace
 
-For many mixed IFC/DGN/DWG/RVT sources, use the local project workflow instead of directly merging every file. The workflow inspects sources, detects scale candidates `1.0 / 0.1 / 0.01`, quarantines suspicious files, and only publishes approved normalized sources.
+For many mixed IFC/DGN/DWG/RVT sources, use the local project workflow instead of directly merging every file. The workflow inspects sources, detects scale candidates `1000.0 / 1.0 / 0.1 / 0.01 / 0.001`, quarantines suspicious files, dumps CAD hierarchy metadata, and only publishes approved normalized sources.
 
 See `docs/local_project_workflow.md`.
 ```
@@ -1341,8 +1939,9 @@ Add:
 ### Local Project Ingest Plan
 
 - Planned local-first workspace for mixed IFC/DGN/DWG/RVT project delivery.
-- Required inspect before merge because sources may be EPSG:3826, EPSG:3826 scale 0.1, or EPSG:3826 scale 0.01.
-- Suspicious sources outside AOI, nearly 2D, or likely duplicate must be quarantined before publish.
+- Required inspect before merge because sources may be EPSG:3826, EPSG:3826 scale 1000.0, 0.1, 0.01, or 0.001.
+- CAD hierarchy dump is required for DGN/DWG because explode/filter/search may depend on reference, model, level, cell, shared cell, material, or element class.
+- Suspicious sources outside AOI by centroid/percentile bounds, nearly 2D, raw-bbox polluted, or likely duplicate must be quarantined before publish.
 ```
 
 - [ ] **Step 4: Commit**
@@ -1443,22 +2042,27 @@ Expected:
 - Existing viewer checks still pass.
 - Project workflow inspect produces:
   - `source_manifest.json`
+  - `cad_metadata/<source-id>.json` for DGN/DWG sources, even when the buckets are empty because no local open probe is available.
   - `group_candidates.json`
-  - quarantine/approval hints for mixed CRS/scale source handling.
+  - duplicate candidate hints.
+  - centroid/percentile bounds and quarantine/approval hints for mixed CRS/scale source handling.
+  - publish debug manifests: `sources_manifest.json`, `groups.json`, `warnings.json`.
 
 ## Rollout
 
 1. First run against `sample_files\淡江大橋移交模型`.
-2. Review `source_manifest.json` manually.
-3. Confirm scale detection for `1.0 / 0.1 / 0.01`.
-4. Confirm IFC group candidates are too coarse and DGN/DWG dump is needed only for enrichment.
-5. Convert only approved sources into separate `normalized/<source-id>/` tilesets.
-6. Publish root tilesets after source review; root tilesets reference child tilesets and do not merge geometry buffers.
-7. Treat Level 1 correctness as the acceptance gate: CRS, scale, bbox, source identity, group keys, material/color metadata, property metadata, and quarantine decisions.
-8. Track Level 2 fidelity separately: perfect geometry, perfect hierarchy, parametric solids, smart objects, civil alignment, terrain, and OpenRoads metadata.
+2. First priority is DGN/DWG inspect dump; do this even before reliable DGN geometry conversion.
+3. Review `source_manifest.json`, `cad_metadata/<source-id>.json`, duplicate candidates, and quarantined reasons manually.
+4. Confirm scale detection for `1000.0 / 1.0 / 0.1 / 0.01 / 0.001`.
+5. Confirm AOI logic uses centroid and percentile bounds; raw bbox only blocks publish when review confirms it is real model extent, not stray CAD garbage.
+6. Confirm IFC group candidates are too coarse and DGN/DWG dump is needed for reference/model/level/cell/material grouping.
+7. Convert only approved sources into separate `normalized/<source-id>/` tilesets.
+8. Publish root tilesets after source review; root tilesets reference child tilesets and do not merge geometry buffers.
+9. Treat Level 1 correctness as the acceptance gate: CRS, scale, canonical transform, centroid/percentile bounds, source identity, CAD hierarchy, group keys, group centers, material/color metadata, property metadata, duplicate suppression, and quarantine decisions.
+10. Track Level 2 fidelity separately: perfect geometry, perfect hierarchy, parametric solids, smart objects, civil alignment, terrain, and OpenRoads metadata.
 
 ## Self-Review
 
-- Spec coverage: plan covers local workspace, inspect, scale normalization, quarantine, group candidates, per-source normalized tilesets, publish root wrapping, metadata, docs, and verification.
+- Spec coverage: plan covers local workspace, DGN/DWG hierarchy inspect dump, scale normalization, canonical CRS/source transform, centroid/percentile AOI validation, duplicate fingerprinting, quarantine, group candidates, group spatial centers, shader explode contract, per-source normalized tilesets, publish root wrapping, viewer debug metadata, docs, and verification.
 - Placeholder scan: no placeholder tokens remain.
-- Type consistency: `SourceFormat`, `SourceStatus`, `WorkspaceLayout`, `ProjectManifest`, `Bounds2`, `Aoi`, `PublishSource`, and metadata fields are introduced before later tasks use them.
+- Type consistency: `SourceFormat`, `SourceStatus`, `WorkspaceLayout`, `ProjectManifest`, `CadHierarchyDump`, `Bounds2`, `BoundsSummary`, `Aoi`, `SourceTransform`, `GeometryFingerprint`, `PublishSource`, `SourceManifestEntry`, `GroupManifestEntry`, and metadata fields are introduced before later tasks use them.
