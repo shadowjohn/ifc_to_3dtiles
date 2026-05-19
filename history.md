@@ -2,6 +2,45 @@
 
 ## 2026-05-19
 
+### RVT -> IFC -> GLB
+
+- 採用 Autodesk Revit IFC exporter 路線，不使用 `dosymep/RevitCoreConsole` 當主流程。
+- 新增 Rust RVT orchestration：
+  - 偵測 Revit 2025 / 2026 / 2027。
+  - 支援 `--revit-version auto|2025|2026|2027`。
+  - RVT input 會寫 job JSON、安裝 Revit `.addin` manifest、啟動 Revit bridge、等待 IFC，再呼叫既有 IFC -> GLB / 3D Tiles pipeline。
+  - 支援 `--keep-ifc`、`--bridge-assembly`、`--rvt-timeout-minutes`。
+- 新增 C# `revit_bridge` add-in scaffold：
+  - 讀取 `RVT_TO_GLB_JOB`。
+  - 使用公開 Revit API `Application.OpenDocumentFile` 與 `Document.Export(..., IFCExportOptions)`。
+  - 預設 IFC2x3 Coordination View 2.0，開啟 common property sets、Revit property sets、base quantities、material psets。
+- 新增 revit-ifc tooling：
+  - `tools/fetch_revit_ifc.ps1` pin `IFC_v25.4.40` / `IFC_v26.4.1` / `IFC_v27.0.1.1`。
+  - `tools/build_revit_ifc.ps1` 可在本機抓回 tag 後嘗試編譯。
+  - `tools/build_revit_bridge.ps1` 依 Revit 版本建置 bridge DLL。
+- 擴充 IFC -> GLB：
+  - 不再只限 `IfcBuildingElementProxy`，改抓有 `IfcProductDefinitionShape` 的 IFC product。
+  - 保留 Revit-like property sets、surface style color、mapped representation。
+  - 輸出 `<name>_flat.glb`、`<name>_smooth.glb`、`metadata.json`、`unsupported_geometry_report.json`。
+  - GLB node/mesh `extras` 內含 feature metadata，另保留 `metadata.json` 方便外部檢查。
+- 新增 tests：
+  - Revit 版本偵測。
+  - RVT job JSON 序列化。
+  - Revit-like IFC wall fixture 的 flat/smooth GLB 與 metadata。
+  - RVT gated integration test：需設定 `RVT_TO_GLB_SAMPLE_RVT` 且本機有 Revit 才執行，否則跳過。
+- 驗證：
+  - `cargo test` 通過。
+  - PowerShell tooling syntax check 通過。
+  - 本機未偵測到 `C:\Program Files\Autodesk\Revit 2025/2026/2027\RevitAPI.dll`，因此尚未做實機 RVT export。
+- 後續補強：
+  - 找不到 Revit 時，console 會提示 Autodesk Account 與 Revit Free Trial 官方入口。
+  - 新增 `--revit-exe`，支援 Revit 安裝在非預設路徑時手動指定。
+  - Revit 偵測不再只認 `Revit 2027` 精準資料夾，會掃描 Autodesk 安裝根目錄底下含 `Revit` 與支援年份的資料夾，例如 `Revit 2027 Release`、`Autodesk Revit 2025`。
+  - Revit 2027 bridge build 修正為 multi-target `net8.0-windows;net10.0-windows`，`tools/build_revit_bridge.ps1 -Version 2027 -Configuration Debug` 已成功產生 `target/debug/revit_bridge/RvtToGlb.RevitIfcExporter.dll`。
+  - 實機 Revit 2027 export 回報 `ModificationOutsideTransactionException`，已將 `Document.Export(..., IFCExportOptions)` 包入 Revit `Transaction`，失敗時 rollback。
+  - Revit 開著時會鎖住 `target/debug/revit_bridge` DLL；Rust 預設 bridge 搜尋已改為優先使用 `target/revit_bridge/<version>/RvtToGlb.RevitIfcExporter.dll`，避免開發時覆蓋被鎖住的 runtime DLL。
+  - 發現舊的 `*.rvt-export-result.json` 會讓 Rust 新啟動 Revit 後立刻讀到上一輪錯誤；已在每次 RVT export 前刪除 stale result，並加 regression test。
+
 ### Three.js 比較 viewer
 
 - 新增 `out/DJB-M-SU-_/index_three.html`。
@@ -114,3 +153,14 @@
 - 加入 `.gitignore`。
 - 決定 source / tests / tools / docs / viewer shell 進 git。
 - 忽略 IFC、`target/`、generated tiles、local Cesium package。
+
+### Revit IFCFACEBASEDSURFACEMODEL
+
+- 使用 Revit 2027 匯出的 `阻尼器(比例需調整).ifc` 已確認是 `IFC2X3`，Body representation 為 `IFCFACEBASEDSURFACEMODEL((#IFCCONNECTEDFACESET))`。
+- 原本 IFC→GLB 只支援 `IFCFACETEDBREP`、`IFCSHELLBASEDSURFACEMODEL`、`IFCMAPPEDITEM`，因此 RVT→IFC 成功後仍回報「沒有可轉換的 IFC product 幾何」。
+- 新增 `mesh_face_based_surface_model`，沿用既有 `mesh_shell` 展開 `IFCFACE` / `IFCPOLYLOOP` 並產生 triangles。
+- `convert.rs` 新增 `IFCFACEBASEDSURFACEMODEL` match arm，套用既有 transform、顏色 fallback、missing-color 統計流程。
+- 驗證：
+  - `cargo test` 通過。
+  - `cargo build` 通過。
+  - 直接轉 `out/阻泥器/阻尼器(比例需調整).ifc` 到 `out/阻泥器_ifc_verify/阻尼器(比例需調整)` 成功，產出 flat/smooth GLB、metadata、tiles、unsupported report。

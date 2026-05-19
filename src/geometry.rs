@@ -489,6 +489,24 @@ pub fn mesh_shell_based_surface_model(
     Ok(mesh)
 }
 
+pub fn mesh_face_based_surface_model(
+    index: &StepIndex,
+    surface_model_id: u32,
+    transform: &Mat4,
+    options: MeshBuildOptions,
+) -> Result<Mesh> {
+    let surface_model = index
+        .entity(surface_model_id)
+        .ok_or_else(|| anyhow!("missing face based surface model #{surface_model_id}"))?;
+    let face_set_ids = extract_refs(index.body(surface_model));
+    let mut mesh = Mesh::new();
+    for face_set_id in face_set_ids {
+        let face_set_mesh = mesh_shell(index, face_set_id, transform, options)?;
+        mesh.append_with_batch(&face_set_mesh, options.batch_id);
+    }
+    Ok(mesh)
+}
+
 pub fn mesh_shell(
     index: &StepIndex,
     shell_id: u32,

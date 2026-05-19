@@ -1,9 +1,13 @@
 use anyhow::{Result, bail};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::geometry::Mesh;
 
 pub fn build_glb(mesh: &Mesh) -> Result<Vec<u8>> {
+    build_glb_with_extras(mesh, None)
+}
+
+pub fn build_glb_with_extras(mesh: &Mesh, extras: Option<Value>) -> Result<Vec<u8>> {
     if mesh.positions.is_empty() {
         bail!("cannot build GLB for empty mesh");
     }
@@ -44,7 +48,7 @@ pub fn build_glb(mesh: &Mesh) -> Result<Vec<u8>> {
 
     let count = mesh.positions.len();
     let (min, max) = position_min_max(&mesh.positions);
-    let json_value = json!({
+    let mut json_value = json!({
         "asset": { "version": "2.0", "generator": "ifc_to_3dtiles" },
         "scene": 0,
         "scenes": [{ "nodes": [0] }],
@@ -86,6 +90,10 @@ pub fn build_glb(mesh: &Mesh) -> Result<Vec<u8>> {
             { "bufferView": 3, "byteOffset": 0, "componentType": 5123, "count": count, "type": "SCALAR" }
         ]
     });
+    if let Some(extras) = extras {
+        json_value["nodes"][0]["extras"] = extras.clone();
+        json_value["meshes"][0]["extras"] = extras;
+    }
 
     let mut json_bytes = serde_json::to_vec(&json_value)?;
     while json_bytes.len() % 4 != 0 {

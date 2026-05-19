@@ -95,6 +95,7 @@ pub struct ConversionReport {
 struct Feature {
     metadata: FeatureMetadata,
     mesh: Mesh,
+    unsupported_items: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Default)]
@@ -173,10 +174,12 @@ fn convert_file(input: &Path, options: &ConvertOptions) -> Result<PathBuf> {
     let mut features = Vec::new();
     let mut skipped = 0usize;
 
-    for (ordinal, entity) in index
-        .entities_by_type("IFCBUILDINGELEMENTPROXY")
-        .enumerate()
-    {
+    let product_entities: Vec<&EntityRecord> = index
+        .entities()
+        .filter(|entity| is_ifc_product_with_shape(&index, entity))
+        .collect();
+
+    for (ordinal, entity) in product_entities.iter().enumerate() {
         match build_feature(&index, &ctx, &styles, entity, ordinal as u32) {
             Ok(Some(feature)) => features.push(feature),
             Ok(None) => skipped += 1,
@@ -188,12 +191,12 @@ fn convert_file(input: &Path, options: &ConvertOptions) -> Result<PathBuf> {
             }
         }
         if (ordinal + 1) % 1000 == 0 {
-            info!("已處理 {} 個 IFC proxy", ordinal + 1);
+            info!("已處理 {} 個 IFC product", ordinal + 1);
         }
     }
 
     if features.is_empty() {
-        bail!("沒有可轉換的 IfcBuildingElementProxy 幾何");
+        bail!("沒有可轉換的 IFC product 幾何");
     }
 
     let mut source_bounds = Bounds::empty();
@@ -249,6 +252,16 @@ fn convert_file(input: &Path, options: &ConvertOptions) -> Result<PathBuf> {
     } else {
         None
     };
+
+    write_standalone_glbs(&output_dir, input, &features, options)?;
+    fs::write(
+        output_dir.join("metadata.json"),
+        serde_json::to_vec_pretty(&build_metadata_report(&features))?,
+    )?;
+    fs::write(
+        output_dir.join("unsupported_geometry_report.json"),
+        serde_json::to_vec_pretty(&build_unsupported_geometry_report(&features))?,
+    )?;
 
     let tile_result = write_tiles(
         &tiles_dir,
@@ -402,6 +415,52 @@ fn write_tiles(
     Ok(result)
 }
 
+fn write_standalone_glbs(
+    output_dir: &Path,
+    input: &Path,
+    features: &[Feature],
+    options: &ConvertOptions,
+) -> Result<()> {
+    let mut mesh = Mesh::new();
+    for (batch_id, feature) in features.iter().enumerate() {
+        mesh.append_with_batch(&feature.mesh, batch_id as u16);
+    }
+    let metadata = build_metadata_report(features);
+    let stem = safe_stem(input);
+
+    if matches!(options.normal_mode, NormalMode::Flat | NormalMode::Both) {
+        let extras = standalone_glb_extras(input, "flat", features.len(), &metadata);
+        fs::write(
+            output_dir.join(format!("{stem}_flat.glb")),
+            glb::build_glb_with_extras(&mesh, Some(extras))?,
+        )?;
+    }
+    if matches!(options.normal_mode, NormalMode::Smooth | NormalMode::Both) {
+        let extras = standalone_glb_extras(input, "smooth", features.len(), &metadata);
+        let smooth = mesh.with_smoothed_normals_by_position_angle(1e-6, options.smooth_angle_deg);
+        fs::write(
+            output_dir.join(format!("{stem}_smooth.glb")),
+            glb::build_glb_with_extras(&smooth, Some(extras))?,
+        )?;
+    }
+    Ok(())
+}
+
+fn standalone_glb_extras(
+    input: &Path,
+    normal_mode: &str,
+    feature_count: usize,
+    metadata: &Value,
+) -> Value {
+    json!({
+        "source": input.display().to_string(),
+        "metadataFile": "metadata.json",
+        "featureCount": feature_count,
+        "normalMode": normal_mode,
+        "features": metadata,
+    })
+}
+
 fn write_b3dm(
     directory: &Path,
     filename: &str,
@@ -474,6 +533,36 @@ fn build_batch_table(metadata: &[FeatureMetadata]) -> Value {
         Value::Array(metadata.iter().map(|m| json!(m.psets_json)).collect()),
     );
     Value::Object(object)
+}
+
+fn build_metadata_report(features: &[Feature]) -> Value {
+    Value::Array(
+        features
+            .iter()
+            .map(|feature| {
+                let mut value = serde_json::to_value(&feature.metadata).unwrap_or(Value::Null);
+                if let Value::Object(object) = &mut value {
+                    let psets = serde_json::from_str::<Value>(&feature.metadata.psets_json)
+                        .unwrap_or_else(|_| json!({}));
+                    object.insert("psets".to_string(), psets);
+                }
+                value
+            })
+            .collect(),
+    )
+}
+
+fn build_unsupported_geometry_report(features: &[Feature]) -> Value {
+    let mut unsupported = BTreeMap::<String, usize>::new();
+    for feature in features {
+        for (key, value) in &feature.unsupported_items {
+            *unsupported.entry(key.clone()).or_insert(0) += value;
+        }
+    }
+    json!({
+        "feature_count": features.len(),
+        "unsupported_items": unsupported,
+    })
 }
 
 pub fn median_origin(points: &[[f64; 3]]) -> Vec3 {
@@ -587,7 +676,35 @@ fn build_feature(
     Ok(Some(Feature {
         metadata,
         mesh: resolved.mesh,
+        unsupported_items: resolved.stats.unsupported_items,
     }))
+}
+
+fn is_ifc_product_with_shape(index: &StepIndex, entity: &EntityRecord) -> bool {
+    if matches!(
+        entity.type_name.as_str(),
+        "IFCPROJECT"
+            | "IFCSITE"
+            | "IFCBUILDING"
+            | "IFCBUILDINGSTOREY"
+            | "IFCGROUP"
+            | "IFCPROPERTYSET"
+            | "IFCPROPERTYSINGLEVALUE"
+            | "IFCRELDEFINESBYPROPERTIES"
+            | "IFCRELCONTAINEDINSPATIALSTRUCTURE"
+            | "IFCRELAGGREGATES"
+            | "IFCRELASSIGNSTOGROUP"
+    ) {
+        return false;
+    }
+
+    let args = split_arguments(index.body(entity));
+    let Some(representation_id) = args.get(6).and_then(|arg| extract_first_ref(arg)) else {
+        return false;
+    };
+    index
+        .entity(representation_id)
+        .is_some_and(|representation| representation.type_name == "IFCPRODUCTDEFINITIONSHAPE")
 }
 
 fn mesh_product_definition(
@@ -648,6 +765,33 @@ fn mesh_shape_representation(
                         transform
                     };
                 let mesh = mesh_faceted_brep(
+                    index,
+                    item_id,
+                    &item_transform,
+                    MeshBuildOptions { batch_id: 0, color },
+                )?;
+                if !mesh.is_empty() {
+                    if styles.color_for_item(item_id).is_some() && resolved.first_style_id.is_none()
+                    {
+                        resolved.first_style_id = Some(item_id);
+                        resolved.first_color = Some(color);
+                    } else if styles.color_for_item(item_id).is_none() {
+                        resolved.stats.missing_color_faces += mesh.triangle_count();
+                    }
+                    resolved.mesh.append_with_batch(&mesh, 0);
+                }
+            }
+            "IFCFACEBASEDSURFACEMODEL" => {
+                let color = styles
+                    .color_for_item(item_id)
+                    .unwrap_or([0.65, 0.65, 0.65, 1.0]);
+                let item_transform =
+                    if crate::geometry::item_uses_projected_coordinates(index, item_id) {
+                        Mat4::identity()
+                    } else {
+                        transform
+                    };
+                let mesh = crate::geometry::mesh_face_based_surface_model(
                     index,
                     item_id,
                     &item_transform,

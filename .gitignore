@@ -1,10 +1,20 @@
 # Rust build output
 /target/
 
+# Revit bridge build output and pinned third-party source checkouts
+/revit_bridge/bin/
+/revit_bridge/obj/
+/third_party/revit-ifc/
+
 # Local IFC / BIM source files are large and often project-confidential.
 *.ifc
 *.ifczip
 *.ifcZIP
+*.rvt
+*.rfa
+*.rte
+*.rvt-export-job.json
+*.rvt-export-result.json
 
 # Generated 3D Tiles / glTF assets
 *.b3dm

@@ -1,14 +1,17 @@
-# IFC to Cesium 3D Tiles
+# IFC / RVT to GLB and Cesium 3D Tiles
 
-Rust CLI for converting AECOsim / IFC2X3 `IfcBuildingElementProxy` + `FacetedBrep` models into Cesium 3D Tiles 1.0 (`tileset.json` + `.b3dm`).
+Rust CLI for converting IFC2X3 models into standalone GLB plus Cesium 3D Tiles 1.0 (`tileset.json` + `.b3dm`). RVT input is supported through a Revit add-in bridge that exports IFC with Autodesk's Revit IFC exporter first.
 
 目前目標是先把 `DJB-M-SU-_.ifc` 這類 AECOsim IFC2X3 橋梁模型穩定轉出可在 CesiumJS 載入、可點選、保留屬性、顏色正常的 3D Tiles。這不是完整通用 IFC kernel。
 
 ## Features
 
 - STEP/IFC2X3 indexing parser, focused on AECOsim `FacetedBrep` / `MappedRepresentation`.
+- RVT -> IFC -> GLB orchestration for local Revit 2025 / 2026 / 2027.
 - Product metadata to Batch Table: IFC id、GlobalId、類型、名稱、樓層、群組、style、顏色、Pset JSON。
 - IFC style color extraction with fallback report.
+- Standalone `<name>_flat.glb` / `<name>_smooth.glb` with glTF `extras` metadata and metadata file pointer.
+- `metadata.json` and `unsupported_geometry_report.json` beside generated tiles.
 - EPSG:3826 to WGS84/ECEF georeferencing via `proj4rs`.
 - Root ENU-to-ECEF transform with local float32 geometry.
 - Spatial tiling with configurable feature / triangle limits.
@@ -61,6 +64,35 @@ cargo build --release
 ```
 
 注意：`--output` 請填 parent folder，例如 `.\out`。程式會自動建立 `out\<ifc-name>\`。如果填 `out\DJB-M-SU-_`，會變成 `out\DJB-M-SU-_\DJB-M-SU-_`。
+
+## RVT Input
+
+RVT 需要本機合法 Revit 2025-2027，並先建 Revit bridge：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\build_revit_bridge.ps1 -Version 2026 -Configuration Release
+```
+
+轉檔：
+
+```powershell
+.\target\release\ifc_to_3dtiles.exe `
+  --input ".\阻尼器(比例需調整).rvt" `
+  --output .\out `
+  --normal-mode both `
+  --revit-version auto `
+  --keep-ifc `
+  --overwrite
+```
+
+細節見 [docs/rvt_revit_ifc.md](docs/rvt_revit_ifc.md)。
+
+找不到 Revit 時，console 會提示官方安裝入口：
+
+- Autodesk Account: <https://manage.autodesk.com/products>
+- Revit Free Trial: <https://www.autodesk.com/products/revit/free-trial>
+
+非預設安裝路徑可用 `--revit-exe "D:\...\Revit.exe" --revit-version 2026` 指定。
 
 ## Demo Viewer
 
@@ -120,8 +152,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\verify_index_page.ps1
 
 ## Current Limits
 
-- 主要支援 AECOsim IFC2X3 `IfcBuildingElementProxy`。
-- 幾何以 `FacetedBrep` / `MappedRepresentation` 為主。
+- 主要支援 IFC2X3 product geometry；RVT 需先經 Revit IFC exporter。
+- 幾何以 `FacetedBrep` / `ShellBasedSurfaceModel` / `MappedRepresentation` 為主。
 - 顏色支援 IFC surface style，沒有 PBR material / texture。
 - 不做 Draco / meshopt 壓縮。
 - Viewer 目前預期輸出可包含：

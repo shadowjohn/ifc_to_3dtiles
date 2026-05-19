@@ -4,6 +4,9 @@ pub mod crs;
 pub mod geometry;
 pub mod glb;
 pub mod model;
+pub mod revit;
+pub mod rvt;
+pub mod rvt_job;
 pub mod step;
 pub mod tiles;
 

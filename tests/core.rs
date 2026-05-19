@@ -1,9 +1,16 @@
+use std::path::Path;
+
 use ifc_to_3dtiles::{
     b3dm,
-    convert::median_origin,
+    convert::{ConvertOptions, NormalMode, median_origin},
     crs,
     geometry::{self, MeshBuildOptions},
     model::StyleTable,
+    revit::{
+        RevitVersion, detect_revit_installations_in_roots, missing_revit_installation_message,
+        revit_installation_from_exe,
+    },
+    rvt_job::{RvtExportJob, RvtExportOptions},
     step::{StepIndex, decode_ifc_string},
 };
 
@@ -150,6 +157,35 @@ fn shell_based_surface_model_generates_triangles() {
 }
 
 #[test]
+fn face_based_surface_model_generates_triangles() {
+    let ifc = "\
+#1=IFCCARTESIANPOINT((0.,0.,0.));
+#2=IFCCARTESIANPOINT((1.,0.,0.));
+#3=IFCCARTESIANPOINT((1.,1.,0.));
+#4=IFCCARTESIANPOINT((0.,1.,0.));
+#11=IFCPOLYLOOP((#1,#2,#3,#4));
+#21=IFCFACEOUTERBOUND(#11,.T.);
+#31=IFCFACE((#21));
+#40=IFCCONNECTEDFACESET((#31));
+#50=IFCFACEBASEDSURFACEMODEL((#40));
+";
+    let index = StepIndex::parse(ifc);
+    let mesh = geometry::mesh_face_based_surface_model(
+        &index,
+        50,
+        &geometry::Mat4::identity(),
+        MeshBuildOptions {
+            batch_id: 4,
+            color: [0.0, 0.0, 1.0, 1.0],
+        },
+    )
+    .expect("face based surface model mesh");
+
+    assert_eq!(mesh.triangle_count(), 2);
+    assert!(mesh.batch_ids.iter().all(|id| *id == 4));
+}
+
+#[test]
 fn projected_coordinate_detection_sees_absolute_ifc_vertices() {
     let ifc = "\
 #1=IFCCARTESIANPOINT((292153.211476,2785320.469154,24.486251));
@@ -236,4 +272,207 @@ fn smooth_normals_respect_angle_threshold() {
     assert_eq!(sharp.normals[1], [1.0, 0.0, 0.0]);
     assert_ne!(full.normals[0], mesh.normals[0]);
     assert_eq!(full.normals[0], full.normals[1]);
+}
+
+#[test]
+fn revit_detection_finds_supported_install_roots() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let autodesk = temp.path().join("Autodesk");
+    let revit_2026 = autodesk.join("Revit 2026");
+    std::fs::create_dir_all(&revit_2026).expect("create fake revit dir");
+    std::fs::write(revit_2026.join("Revit.exe"), b"").expect("fake revit exe");
+    std::fs::create_dir_all(autodesk.join("Revit 2024")).expect("unsupported fake revit dir");
+    std::fs::write(autodesk.join("Revit 2024").join("Revit.exe"), b"")
+        .expect("fake unsupported revit exe");
+
+    let installs = detect_revit_installations_in_roots([autodesk.as_path()]);
+
+    assert_eq!(installs.len(), 1);
+    assert_eq!(installs[0].version, RevitVersion::V2026);
+    assert_eq!(installs[0].revit_exe, revit_2026.join("Revit.exe"));
+}
+
+#[test]
+fn revit_detection_accepts_release_named_install_dirs() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let autodesk = temp.path().join("Autodesk");
+    let revit_2027 = autodesk.join("Revit 2027 Release");
+    let revit_2025 = autodesk.join("Autodesk Revit 2025");
+    std::fs::create_dir_all(&revit_2027).expect("create fake revit dir");
+    std::fs::create_dir_all(&revit_2025).expect("create fake revit dir");
+    std::fs::write(revit_2027.join("Revit.exe"), b"").expect("fake revit exe");
+    std::fs::write(revit_2025.join("Revit.exe"), b"").expect("fake revit exe");
+
+    let installs = detect_revit_installations_in_roots([autodesk.as_path()]);
+
+    assert_eq!(installs.len(), 2);
+    assert_eq!(installs[0].version, RevitVersion::V2027);
+    assert_eq!(installs[0].revit_exe, revit_2027.join("Revit.exe"));
+    assert_eq!(installs[1].version, RevitVersion::V2025);
+    assert_eq!(installs[1].revit_exe, revit_2025.join("Revit.exe"));
+}
+
+#[test]
+fn explicit_revit_exe_parses_supported_version_from_path() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let install_dir = temp.path().join("Custom Autodesk").join("Revit 2026");
+    std::fs::create_dir_all(&install_dir).expect("create fake revit dir");
+    let revit_exe = install_dir.join("Revit.exe");
+    std::fs::write(&revit_exe, b"").expect("fake revit exe");
+
+    let install = revit_installation_from_exe(&revit_exe, None).expect("explicit install");
+
+    assert_eq!(install.version, RevitVersion::V2026);
+    assert_eq!(install.install_dir, install_dir);
+    assert_eq!(install.revit_exe, revit_exe);
+}
+
+#[test]
+fn missing_revit_message_points_to_official_downloads_and_manual_path() {
+    let message = missing_revit_installation_message();
+
+    assert!(message.contains("https://manage.autodesk.com/products"));
+    assert!(message.contains("https://www.autodesk.com/products/revit/free-trial"));
+    assert!(message.contains("--revit-exe"));
+}
+
+#[test]
+fn revit_bridge_ifc_export_is_wrapped_in_transaction() {
+    let source = include_str!("../revit_bridge/ExportApplication.cs");
+
+    assert!(source.contains("new Transaction(document"));
+    assert!(source.contains("transaction.Start()"));
+    assert!(source.contains("transaction.Commit()"));
+}
+
+#[test]
+fn rvt_export_job_serializes_expected_paths_and_ifc_options() {
+    let job = RvtExportJob {
+        input_rvt: "C:\\models\\damper.rvt".into(),
+        output_ifc: "C:\\out\\damper.ifc".into(),
+        result_json: "C:\\out\\damper.rvt-export-result.json".into(),
+        options: RvtExportOptions::default(),
+    };
+
+    let value = serde_json::to_value(&job).expect("serialize job");
+
+    assert_eq!(value["inputRvt"], "C:\\models\\damper.rvt");
+    assert_eq!(value["outputIfc"], "C:\\out\\damper.ifc");
+    assert_eq!(value["options"]["fileVersion"], "IFC2x3CV2");
+    assert_eq!(value["options"]["exportInternalRevitPropertySets"], true);
+    assert_eq!(value["options"]["exportBaseQuantities"], true);
+    assert_eq!(value["options"]["exportMaterialPsets"], true);
+}
+
+#[test]
+fn revit_like_ifc_wall_converts_to_flat_and_smooth_glb_with_metadata() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let input = temp.path().join("revit_wall.ifc");
+    std::fs::write(&input, revit_like_ifc_wall()).expect("write ifc fixture");
+    let output = temp.path().join("out");
+
+    let outputs = ifc_to_3dtiles::convert_path(&ConvertOptions {
+        input,
+        output: output.clone(),
+        source_epsg: 3826,
+        tile_max_features: 100,
+        tile_max_triangles: 1000,
+        normal_mode: NormalMode::Both,
+        smooth_angle_deg: 90.0,
+        overwrite: true,
+    })
+    .expect("convert revit-like ifc");
+
+    let out_dir = outputs.first().expect("output dir");
+    assert!(out_dir.join("revit_wall_flat.glb").is_file());
+    assert!(out_dir.join("revit_wall_smooth.glb").is_file());
+    assert!(out_dir.join("metadata.json").is_file());
+    assert!(out_dir.join("unsupported_geometry_report.json").is_file());
+
+    let flat_glb_json = read_glb_json(out_dir.join("revit_wall_flat.glb"));
+    assert_eq!(
+        flat_glb_json["nodes"][0]["extras"]["features"][0]["ifc_type"],
+        "IFCWALL"
+    );
+    assert_eq!(flat_glb_json["meshes"][0]["extras"]["normalMode"], "flat");
+
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(out_dir.join("metadata.json")).expect("metadata"))
+            .expect("metadata json");
+    assert_eq!(metadata[0]["ifc_type"], "IFCWALL");
+    assert_eq!(metadata[0]["name"], "Basic Wall");
+    assert_eq!(metadata[0]["psets"]["Pset_WallCommon"]["Reference"], "W1");
+}
+
+fn read_glb_json(path: impl AsRef<Path>) -> serde_json::Value {
+    let bytes = std::fs::read(path).expect("read glb");
+    assert_eq!(&bytes[0..4], b"glTF");
+    let json_length = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    assert_eq!(&bytes[16..20], b"JSON");
+    serde_json::from_slice(&bytes[20..20 + json_length]).expect("glb json")
+}
+
+fn revit_like_ifc_wall() -> &'static str {
+    "\
+ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION(('ViewDefinition [CoordinationView_V2.0]'),'2;1');
+FILE_SCHEMA(('IFC2X3'));
+ENDSEC;
+DATA;
+#1=IFCPROJECT('P1',$,'Project',$,$,$,$,$);
+#2=IFCSITE('S1',$,'Site',$,$,$,$,$,$,$,$,$,$,$);
+#3=IFCBUILDING('B1',$,'Building',$,$,$,$,$,$,$,$,$);
+#4=IFCBUILDINGSTOREY('ST1',$,'Level 1',$,$,$,$,$,$);
+#5=IFCRELAGGREGATES('RA1',$,$,$,#1,(#2));
+#6=IFCRELAGGREGATES('RA2',$,$,$,#2,(#3));
+#7=IFCRELAGGREGATES('RA3',$,$,$,#3,(#4));
+#10=IFCCARTESIANPOINT((0.,0.,0.));
+#11=IFCDIRECTION((0.,0.,1.));
+#12=IFCDIRECTION((1.,0.,0.));
+#13=IFCAXIS2PLACEMENT3D(#10,#11,#12);
+#14=IFCLOCALPLACEMENT($,#13);
+#20=IFCCARTESIANPOINT((0.,0.,0.));
+#21=IFCCARTESIANPOINT((1.,0.,0.));
+#22=IFCCARTESIANPOINT((1.,1.,0.));
+#23=IFCCARTESIANPOINT((0.,1.,0.));
+#24=IFCCARTESIANPOINT((0.,0.,1.));
+#25=IFCCARTESIANPOINT((1.,0.,1.));
+#26=IFCCARTESIANPOINT((1.,1.,1.));
+#27=IFCCARTESIANPOINT((0.,1.,1.));
+#30=IFCPOLYLOOP((#20,#21,#22,#23));
+#31=IFCPOLYLOOP((#24,#27,#26,#25));
+#32=IFCPOLYLOOP((#20,#24,#25,#21));
+#33=IFCPOLYLOOP((#21,#25,#26,#22));
+#34=IFCPOLYLOOP((#22,#26,#27,#23));
+#35=IFCPOLYLOOP((#23,#27,#24,#20));
+#40=IFCFACEOUTERBOUND(#30,.T.);
+#41=IFCFACEOUTERBOUND(#31,.T.);
+#42=IFCFACEOUTERBOUND(#32,.T.);
+#43=IFCFACEOUTERBOUND(#33,.T.);
+#44=IFCFACEOUTERBOUND(#34,.T.);
+#45=IFCFACEOUTERBOUND(#35,.T.);
+#50=IFCFACE((#40));
+#51=IFCFACE((#41));
+#52=IFCFACE((#42));
+#53=IFCFACE((#43));
+#54=IFCFACE((#44));
+#55=IFCFACE((#45));
+#60=IFCCLOSEDSHELL((#50,#51,#52,#53,#54,#55));
+#61=IFCFACETEDBREP(#60);
+#70=IFCCOLOURRGB($,0.1,0.2,0.3);
+#71=IFCSURFACESTYLESHADING(#70);
+#72=IFCSURFACESTYLE($,.BOTH.,(#71));
+#73=IFCPRESENTATIONSTYLEASSIGNMENT((#72));
+#74=IFCSTYLEDITEM(#61,(#73),$);
+#80=IFCSHAPEREPRESENTATION($,'Body','Brep',(#61));
+#81=IFCPRODUCTDEFINITIONSHAPE($,$,(#80));
+#90=IFCWALL('WALLGUID',$,'Basic Wall','Wall from Revit',$,#14,#81,'W1');
+#91=IFCRELCONTAINEDINSPATIALSTRUCTURE('RC1',$,$,$,(#90),#4);
+#100=IFCPROPERTYSINGLEVALUE('Reference',$,IFCLABEL('W1'),$);
+#101=IFCPROPERTYSET('PS1',$,'Pset_WallCommon',$,(#100));
+#102=IFCRELDEFINESBYPROPERTIES('RD1',$,$,$,(#90),#101);
+ENDSEC;
+END-ISO-10303-21;
+"
 }
