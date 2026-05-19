@@ -1,7 +1,9 @@
 param(
   [Alias("Input")]
   [string]$InputPath = "C:\Users\stw_s\Desktop\ifc_to_3dtiles\sample_files\淡江大橋移交模型",
-  [string]$Output = "C:\Users\stw_s\Desktop\ifc_to_3dtiles\out\cad_probe"
+  [string]$Output = "C:\Users\stw_s\Desktop\ifc_to_3dtiles\out\cad_probe",
+  [Alias("require-oda-major")]
+  [int]$RequireOdaMajor = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -194,6 +196,7 @@ $report = [ordered]@{
   input = $InputPath
   output = $Output
   generated_at = (Get-Date).ToString("o")
+  required_oda_major = if ($RequireOdaMajor -gt 0) { $RequireOdaMajor } else { $null }
   tools = $tools
   oda_file_converters = @($odaConverters)
   preferred_oda_file_converter = $preferredOda
@@ -232,4 +235,9 @@ Write-Host ("Sample files: {0}, CAD files: {1}" -f $report.file_count, $report.c
 Write-Host "Extension distribution:"
 foreach ($item in $report.extension_distribution) {
   Write-Host ("  {0}: {1} files, {2} bytes" -f $item.extension, $item.count, $item.total_bytes)
+}
+
+if ($RequireOdaMajor -gt 0 -and (-not $preferredOda.found -or $preferredOda.version_major -lt $RequireOdaMajor)) {
+  throw ("Preferred ODA File Converter is too old: required major {0}, detected {1} ({2})" -f `
+    $RequireOdaMajor, $preferredOda.version, $preferredOda.source)
 }
