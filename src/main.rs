@@ -21,6 +21,7 @@ use ifc_to_3dtiles::{
     project::{ProjectManifest, SourceFormat, SourceStatus},
     publish_skeleton::write_publish_skeleton_outputs,
     revit::RevitVersion,
+    runtime_publish::write_runtime_publish_outputs,
     rvt::{RvtToIfcOptions, export_rvt_to_ifc},
 };
 use rusqlite::params;
@@ -192,6 +193,13 @@ enum Command {
         #[arg(long)]
         output: Option<PathBuf>,
     },
+    RuntimePublish {
+        #[arg(long)]
+        input: PathBuf,
+
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -298,6 +306,7 @@ fn run_command(command: &Command) -> Result<()> {
             manifest,
         } => run_inspect_drilldown(input, output, db, manifest),
         Command::PublishApproved { input, output } => run_publish_approved(input, output),
+        Command::RuntimePublish { input, output } => run_runtime_publish(input, output),
     }
 }
 
@@ -472,6 +481,17 @@ fn run_publish_approved(input: &Path, output: &Option<PathBuf>) -> Result<()> {
     let output_path = output.clone().unwrap_or_else(|| input.join("publish"));
     write_publish_skeleton_outputs(input, &output_path)?;
     println!("{}", output_path.display());
+    Ok(())
+}
+
+fn run_runtime_publish(input: &Path, output: &Option<PathBuf>) -> Result<()> {
+    let output_path = output.clone().unwrap_or_else(|| input.join("publish"));
+    write_runtime_publish_outputs(input, &output_path)?;
+    println!("{}", output_path.join("runtime_manifest.json").display());
+    println!(
+        "{}",
+        output_path.join("runtime_budget_report.json").display()
+    );
     Ok(())
 }
 

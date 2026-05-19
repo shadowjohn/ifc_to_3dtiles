@@ -477,3 +477,42 @@
   - top outlier list
 - 右側 detail panel 現在能直接 zoom raw / percentile bbox。
 - 本階段仍不做 geometry publish，也不做 layer isolate；正式 runtime gate 仍只吃 approved。
+
+### Phase 1H Approved Geometry Runtime Skeleton
+
+- 新增第一條 approved-only runtime geometry skeleton：
+  - CLI：`ifc_to_3dtiles runtime-publish --input out\inspect_tamkang --output out\inspect_tamkang\publish`
+  - wrapper：`tools/run_phase1h_runtime_publish.ps1`
+- Runtime 只讀 `qa/approved_sources.json`：
+  - 目前 runtime source 只包含 `dwg-12d5f1b6 / 主橋塔.dwg`
+  - rejected / needs_review 不會進 `runtime_manifest.json`、`runtime_budget_report.json` 或 runtime geometry。
+- 新增 Rust modules：
+  - `runtime_publish.rs`
+  - `runtime_metadata.rs`
+  - `runtime_geometry.rs`
+- 輸出：
+  - `publish/runtime_manifest.json`
+  - `publish/runtime_budget_report.json`
+  - `publish/runtime_metadata/<source-id>.json`
+  - `publish/runtime/<source-id>/runtime.glb`
+  - `publish/runtime/<source-id>/runtime_metadata.json`
+  - `publish/runtime/<source-id>/runtime_pick.json`
+- Geometry 採 Phase 1H 指定的 `Entity BBox Proxy`：
+  - 每個 approved entity bbox 產生一個 proxy box。
+  - 退化 bbox 會補 0.25m 最小厚度。
+  - GLB 使用 source percentile bbox center 當 local origin，並在 `runtime_manifest.json` 寫入 `model_matrix`、`origin_epsg3826`、`origin_wgs84`。
+  - GLB 寫 `_BATCHID`，batch order 對應 `runtime_metadata.features`。
+- Runtime metadata 嚴格保持輕量：
+  - `feature_id`
+  - `source_id`
+  - `explode_group_key`
+  - `ifc_type`
+  - `material_id`
+  - 禁止 `psets_json`、CAD hierarchy、raw property dump、大型文字欄位。
+- `runtime_pick.json` 只作 Cesium picking index，不是完整屬性 source of truth。
+- `publish/index.html` 新增 `approved geometry` toggle：
+  - 讀 `runtime_manifest.json`
+  - 載 `runtime.glb`
+  - 讀 `runtime_pick.json` 建透明 pick boxes
+  - 點 runtime feature 顯示 minimal metadata
+  - bbox / AOI / duplicate / outlier QA overlays 繼續可用。

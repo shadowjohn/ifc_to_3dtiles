@@ -262,6 +262,7 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
   <div id="missingCesium">找不到同層 Cesium-1.141，請把 Cesium 放在 publish/Cesium-1.141 或改用正確相對路徑。</div>
   <div id="cesiumContainer"></div>
   <div id="toolbar">
+    <label><input id="approvedGeometryToggle" type="checkbox"> approved geometry</label>
     <label><input id="approvedToggle" type="checkbox" checked> approved only</label>
     <label><input id="rejectedToggle" type="checkbox"> rejected bbox</label>
     <label><input id="needsReviewToggle" type="checkbox"> needs review bbox</label>
@@ -275,6 +276,7 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
   <aside id="detailPanel">
     <h2>Spatial QA</h2>
     <p class="muted">點 bbox / outlier marker 查看來源、狀態、scale、warnings、duplicate、top layers。</p>
+    <div id="runtimeDebug" class="mono muted">runtime geometry unloaded</div>
   </aside>
   <aside id="sourceListPanel">
     <h2>Source QA</h2>
@@ -292,7 +294,8 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
     const DATA_FILES = {
       approved: "sources_manifest.json",
       overlays: "debug_overlays.json",
-      spatialQa: "spatial_qa_manifest.json"
+      spatialQa: "spatial_qa_manifest.json",
+      runtimeManifest: "runtime_manifest.json"
     };
     const state = {
       approved: [],
@@ -300,7 +303,15 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       needs_review: [],
       spatialQa: null,
       sourceDetails: new Map(),
-      entities: []
+      entities: [],
+      runtimeManifest: null,
+      runtimeModels: [],
+      runtimePickEntities: [],
+      runtimeFeatureDetails: new Map(),
+      runtimeLoaded: false,
+      runtimeLoading: false,
+      runtimeFeatureCount: 0,
+      runtimeMetadataFields: []
     };
     function status(text) {
       document.getElementById("status").textContent = text;
@@ -670,8 +681,10 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
           if (entityDef) state.entities.push(viewer.entities.add(entityDef));
         });
       }
+      setRuntimeVisible(document.getElementById("approvedGeometryToggle").checked && state.runtimeLoaded);
       status([
         "basemap: EMAP5 WMTS",
+        `approved geometry: ${state.runtimeLoaded ? state.runtimeModels.length : 0}`,
         `approved only: ${state.approved.length}`,
         `rejected bbox: ${state.rejected.length}`,
         `needs review bbox: ${state.needs_review.length}`,
@@ -686,6 +699,166 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
         throw new Error(`${url} 沒有內嵌資料；請重新執行 Phase 1F publish skeleton，或改用本機 HTTP server 開啟。`);
       }
       return Cesium.Resource.fetchJson({ url });
+    }
+    async function fetchRuntimeJson(url) {
+      if (location.protocol === "file:") {
+        throw new Error("runtime geometry 需要透過本機 HTTP server 載入，請使用 tools/run_phase1f_publish_viewer.ps1。");
+      }
+      return Cesium.Resource.fetchJson({ url: `${url}?t=${Date.now()}` });
+    }
+    function runtimeDebugText() {
+      const sourceCount = state.runtimeManifest?.sources?.length || 0;
+      return [
+        `runtime source count: ${sourceCount}`,
+        `loaded geometry count: ${state.runtimeModels.length}`,
+        `runtime feature count: ${state.runtimeFeatureCount}`,
+        `runtime metadata fields: ${state.runtimeMetadataFields.join(", ") || "-"}`
+      ].join("\n");
+    }
+    function updateRuntimeDebug() {
+      const node = document.getElementById("runtimeDebug");
+      if (node) node.textContent = runtimeDebugText();
+    }
+    function setRuntimeVisible(visible) {
+      for (const entry of state.runtimeModels) entry.model.show = visible;
+      for (const entity of state.runtimePickEntities) entity.show = visible;
+      updateRuntimeDebug();
+    }
+    function runtimeMaterial(feature, alpha) {
+      const color = feature.explode_group_key && feature.explode_group_key.includes("電梯")
+        ? Cesium.Color.ORANGE
+        : Cesium.Color.CYAN;
+      return color.withAlpha(alpha);
+    }
+    function clearRuntimeHighlight() {
+      for (const entity of state.runtimePickEntities) {
+        const feature = state.runtimeFeatureDetails.get(String(propValue(entity, "runtime_feature_key")));
+        entity.box.material = runtimeMaterial(feature || {}, 0.025);
+        entity.box.outline = false;
+      }
+      for (const entry of state.runtimeModels) {
+        entry.model.color = Cesium.Color.WHITE;
+        entry.model.colorBlendMode = Cesium.ColorBlendMode.MIX;
+        entry.model.colorBlendAmount = 0.0;
+      }
+    }
+    function highlightRuntimeSource(sourceId) {
+      clearRuntimeHighlight();
+      for (const entity of state.runtimePickEntities) {
+        if (propValue(entity, "source_id") === sourceId) {
+          entity.box.material = Cesium.Color.YELLOW.withAlpha(0.42);
+          entity.box.outline = true;
+          entity.box.outlineColor = Cesium.Color.YELLOW;
+        }
+      }
+      for (const entry of state.runtimeModels) {
+        if (entry.source_id === sourceId) {
+          entry.model.color = Cesium.Color.YELLOW.withAlpha(0.45);
+          entry.model.colorBlendMode = Cesium.ColorBlendMode.HIGHLIGHT;
+          entry.model.colorBlendAmount = 0.45;
+        }
+      }
+    }
+    function highlightRuntimeGroup(explodeGroupKey) {
+      clearRuntimeHighlight();
+      for (const entity of state.runtimePickEntities) {
+        if (propValue(entity, "explode_group_key") === explodeGroupKey) {
+          entity.box.material = Cesium.Color.YELLOW.withAlpha(0.48);
+          entity.box.outline = true;
+          entity.box.outlineColor = Cesium.Color.YELLOW;
+        }
+      }
+    }
+    function showRuntimeFeatureDetail(feature) {
+      if (!feature) return;
+      window.currentRuntimeFeature = feature;
+      highlightRuntimeGroup(feature.explode_group_key);
+      document.getElementById("detailPanel").innerHTML = `
+        <h2>Runtime Feature</h2>
+        <p><b>source_id</b> <span class="mono">${escapeHtml(feature.source_id)}</span></p>
+        <p><b>feature_id</b> <span class="mono">${escapeHtml(feature.feature_id)}</span></p>
+        <p><b>explode_group_key</b> ${escapeHtml(feature.explode_group_key)}</p>
+        <p><b>ifc_type</b> ${escapeHtml(feature.ifc_type)}</p>
+        <p><b>material_id</b> ${escapeHtml(feature.material_id)}</p>
+        <div class="qa-actions">
+          <button class="btn" onclick="highlightRuntimeSource(window.currentRuntimeFeature.source_id)">Highlight Source</button>
+          <button class="btn" onclick="highlightRuntimeGroup(window.currentRuntimeFeature.explode_group_key)">Highlight Group</button>
+        </div>
+        <div id="runtimeDebug" class="mono muted">${escapeHtml(runtimeDebugText())}</div>
+      `;
+    }
+    function runtimeBoxEntity(feature) {
+      if (!feature.center_wgs84 || !feature.dimensions) return null;
+      const center = feature.center_wgs84;
+      const dimensions = feature.dimensions.map(value => Math.max(Number(value) || 0.25, 0.25));
+      const key = `${feature.source_id}:${feature.feature_id}`;
+      state.runtimeFeatureDetails.set(key, feature);
+      return {
+        name: `runtime ${feature.source_id} FID ${feature.feature_id}`,
+        position: Cesium.Cartesian3.fromDegrees(center[0], center[1], center[2] || 0),
+        box: {
+          dimensions: new Cesium.Cartesian3(dimensions[0], dimensions[1], dimensions[2]),
+          material: runtimeMaterial(feature, 0.025),
+          outline: false,
+          outlineColor: Cesium.Color.YELLOW
+        },
+        properties: {
+          qa_kind: "runtime_feature",
+          runtime_feature_key: key,
+          source_id: feature.source_id,
+          feature_id: feature.feature_id,
+          explode_group_key: feature.explode_group_key,
+          ifc_type: feature.ifc_type,
+          material_id: feature.material_id
+        }
+      };
+    }
+    async function loadRuntimeGeometry(viewer) {
+      if (state.runtimeLoaded || state.runtimeLoading) {
+        setRuntimeVisible(true);
+        return;
+      }
+      state.runtimeLoading = true;
+      try {
+        state.runtimeManifest = await fetchRuntimeJson(DATA_FILES.runtimeManifest);
+        state.runtimeFeatureCount = 0;
+        state.runtimeMetadataFields = [];
+        for (const source of (state.runtimeManifest.sources || [])) {
+          const modelMatrix = Cesium.Matrix4.fromArray(source.model_matrix);
+          const url = `${source.geometry_path}runtime.glb`;
+          const model = Cesium.Model.fromGltfAsync
+            ? await Cesium.Model.fromGltfAsync({ url, modelMatrix, allowPicking: true })
+            : Cesium.Model.fromGltf({ url, modelMatrix, allowPicking: true });
+          if (!Cesium.Model.fromGltfAsync && model.readyPromise) await model.readyPromise;
+          model.show = true;
+          viewer.scene.primitives.add(model);
+          state.runtimeModels.push({ source_id: source.source_id, model });
+          const pickIndex = await fetchRuntimeJson(`${source.geometry_path}runtime_pick.json`);
+          for (const feature of (pickIndex.features || [])) {
+            const entityDef = runtimeBoxEntity(feature);
+            if (!entityDef) continue;
+            const entity = viewer.entities.add(entityDef);
+            state.runtimePickEntities.push(entity);
+          }
+          state.runtimeFeatureCount += Number(source.feature_count || 0);
+          state.runtimeMetadataFields = source.runtime_metadata_fields || state.runtimeMetadataFields;
+        }
+        state.runtimeLoaded = true;
+        setRuntimeVisible(true);
+        updateRuntimeDebug();
+      } catch (err) {
+        document.getElementById("approvedGeometryToggle").checked = false;
+        status("runtime geometry 載入失敗\n" + formatError(err));
+      } finally {
+        state.runtimeLoading = false;
+      }
+    }
+    async function toggleRuntimeGeometry(viewer) {
+      if (document.getElementById("approvedGeometryToggle").checked) {
+        await loadRuntimeGeometry(viewer);
+      } else {
+        setRuntimeVisible(false);
+      }
     }
     function setupPickHandler(viewer) {
       const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
@@ -702,6 +875,9 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
           if (outlier) showOutlierDetail(outlier);
         } else if (kind === "aoi") {
           showAoiDetail();
+        } else if (kind === "runtime_feature") {
+          const key = String(propValue(entity, "runtime_feature_key"));
+          showRuntimeFeatureDetail(state.runtimeFeatureDetails.get(key));
         }
       }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
       return handler;
@@ -719,6 +895,8 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       window.zoomToOutlier = zoomToOutlier;
       window.showDuplicateDetail = showDuplicateDetail;
       window.showOutlierList = showOutlierList;
+      window.highlightRuntimeSource = highlightRuntimeSource;
+      window.highlightRuntimeGroup = highlightRuntimeGroup;
     }
     async function main() {
       if (!window.Cesium) { cesiumMissing(); return; }
@@ -752,6 +930,7 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       state.approved = approved.sources || [];
       state.rejected = (overlays.sources || []).filter(s => s.approval_decision === "rejected");
       state.needs_review = (overlays.sources || []).filter(s => s.approval_decision === "needs_review");
+      document.getElementById("approvedGeometryToggle").addEventListener("change", () => toggleRuntimeGeometry(viewer));
       document.getElementById("approvedToggle").addEventListener("change", () => refresh(viewer));
       document.getElementById("rejectedToggle").addEventListener("change", () => refresh(viewer));
       document.getElementById("needsReviewToggle").addEventListener("change", () => refresh(viewer));

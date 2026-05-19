@@ -245,6 +245,31 @@ Phase 1H 追加 QA navigation：
 - 點 source 直接 zoom 到 P0.5/P99.5 bbox；detail panel 可切 raw / percentile zoom。
 - Duplicate / Outliers 快捷按鈕可直接打開 comparison / top outlier drilldown。
 
+Phase 1H Runtime 建立第一條 approved-only geometry runtime skeleton，仍不是正式 CAD -> 3D Tiles：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\run_phase1h_runtime_publish.ps1
+```
+
+主要輸出：
+
+```text
+out\inspect_tamkang\publish\runtime_manifest.json
+out\inspect_tamkang\publish\runtime_budget_report.json
+out\inspect_tamkang\publish\runtime_metadata\dwg-12d5f1b6.json
+out\inspect_tamkang\publish\runtime\dwg-12d5f1b6\runtime.glb
+out\inspect_tamkang\publish\runtime\dwg-12d5f1b6\runtime_metadata.json
+out\inspect_tamkang\publish\runtime\dwg-12d5f1b6\runtime_pick.json
+```
+
+規則：
+
+- runtime 只讀 `qa\approved_sources.json`，目前只包含 `dwg-12d5f1b6 / 主橋塔.dwg`。
+- rejected / needs_review 只留在 QA overlay，不會進 `runtime_manifest.json` 或 geometry。
+- Phase 1H geometry 是 entity bbox proxy GLB，只用來驗證 approved gate、source-aware rendering、minimal metadata 與 Cesium loading。
+- runtime metadata 只保留 `feature_id`、`source_id`、`explode_group_key`、`ifc_type`、`material_id`；完整 CAD/IFC 查詢仍回 inspect DB / QA manifests。
+- `runtime_pick.json` 只存 bbox picking index，不是屬性資料 source of truth。
+
 ## Verification
 
 ```powershell

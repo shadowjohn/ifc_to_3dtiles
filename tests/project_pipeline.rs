@@ -27,6 +27,14 @@ use ifc_to_3dtiles::{
         build_publish_skeleton, render_publish_viewer_html, render_publish_viewer_html_with_data,
         render_publish_viewer_html_with_data_and_spatial,
     },
+    runtime_geometry::{RuntimeFeatureGeometry, build_runtime_proxy_glb},
+    runtime_metadata::{
+        RUNTIME_METADATA_FIELDS, RuntimeFeatureMetadata, RuntimeMetadataPayload,
+        validate_runtime_metadata_fields,
+    },
+    runtime_publish::{
+        RuntimeSourceBuildSummary, build_runtime_budget_report, build_runtime_manifest,
+    },
     spatial_qa::{SpatialQaAoi, build_spatial_qa_manifest, render_spatial_qa_review_summary},
 };
 use std::{collections::BTreeMap, fs, path::PathBuf};
@@ -1547,6 +1555,179 @@ fn phase1h_publish_viewer_has_review_navigation_and_drilldown_helpers() {
     assert!(html.contains("showOutlierList"));
     assert!(html.contains("aoi_gap_m"));
     assert!(html.contains("bbox_inflation_ratio"));
+}
+
+#[test]
+fn phase1h_runtime_manifest_is_approved_only_and_declares_minimal_metadata_fields() {
+    let runtime_manifest = build_runtime_manifest(
+        &phase1f_project_manifest(),
+        &phase1f_approval_manifests(),
+        &[RuntimeSourceBuildSummary {
+            source_id: "dwg-12d5f1b6".to_string(),
+            feature_count: 1_314,
+            source_vertex_count: 692_642,
+            bbox_percentile: Some([292106.8, 2785254.6, -4.8, 292180.2, 2785518.2, 186.0]),
+            origin_epsg3826: [292143.5, 2785386.4, 90.6],
+            origin_wgs84: [121.428, 25.16, 90.6],
+            model_matrix: [
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+        }],
+    )
+    .expect("build runtime manifest");
+
+    assert_eq!(runtime_manifest.runtime_version, 1);
+    assert_eq!(runtime_manifest.approved_source_count, 1);
+    assert_eq!(runtime_manifest.sources.len(), 1);
+    assert_eq!(runtime_manifest.sources[0].source_id, "dwg-12d5f1b6");
+    assert_eq!(
+        runtime_manifest.sources[0].geometry_path,
+        "runtime/dwg-12d5f1b6/"
+    );
+    assert_eq!(runtime_manifest.sources[0].feature_count, 1_314);
+    assert_eq!(runtime_manifest.sources[0].vertex_count, 692_642);
+    assert_eq!(
+        runtime_manifest.sources[0].runtime_metadata_fields,
+        RUNTIME_METADATA_FIELDS
+            .iter()
+            .map(|field| field.to_string())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        runtime_manifest
+            .sources
+            .iter()
+            .all(|source| source.source_id != "dwg-850173d8")
+    );
+    assert!(
+        runtime_manifest
+            .sources
+            .iter()
+            .all(|source| source.source_id != "dwg-dd37eec7")
+    );
+    assert!(
+        runtime_manifest
+            .sources
+            .iter()
+            .all(|source| source.source_id != "djb-m-su-ifc-21833332")
+    );
+}
+
+#[test]
+fn phase1h_runtime_metadata_allows_only_minimal_fields_and_rejects_forbidden_payloads() {
+    let payload = RuntimeMetadataPayload {
+        source_id: "dwg-12d5f1b6".to_string(),
+        features: vec![RuntimeFeatureMetadata {
+            feature_id: 7,
+            source_id: "dwg-12d5f1b6".to_string(),
+            explode_group_key: "layer:電梯軌道".to_string(),
+            ifc_type: "POLYHEDRALSURFACE".to_string(),
+            material_id: "default".to_string(),
+        }],
+    };
+    let value = serde_json::to_value(&payload).expect("metadata json");
+
+    validate_runtime_metadata_fields(&value).expect("minimal metadata accepted");
+    assert!(value.to_string().contains("layer:電梯軌道"));
+    assert!(!value.to_string().contains("psets_json"));
+    assert!(!value.to_string().contains("cad_hierarchy"));
+
+    let forbidden = serde_json::json!({
+        "source_id": "dwg-12d5f1b6",
+        "features": [{
+            "feature_id": 7,
+            "source_id": "dwg-12d5f1b6",
+            "explode_group_key": "layer:電梯軌道",
+            "ifc_type": "POLYHEDRALSURFACE",
+            "material_id": "default",
+            "psets_json": "{}"
+        }]
+    });
+
+    assert!(validate_runtime_metadata_fields(&forbidden).is_err());
+}
+
+#[test]
+fn phase1h_entity_bbox_proxy_builds_non_empty_glb_with_batch_ids_and_pick_index() {
+    let output = build_runtime_proxy_glb(
+        "dwg-12d5f1b6",
+        [292143.5, 2785386.4, 90.6],
+        [121.428, 25.16, 90.6],
+        &[
+            RuntimeFeatureGeometry {
+                feature_id: 10,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "電梯軌道".to_string(),
+                geometry_type: "POLYHEDRALSURFACE".to_string(),
+                material_id: "default".to_string(),
+                bbox: [292140.0, 2785380.0, 90.0, 292141.0, 2785381.0, 91.0],
+            },
+            RuntimeFeatureGeometry {
+                feature_id: 11,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "退化bbox".to_string(),
+                geometry_type: "POINT".to_string(),
+                material_id: "default".to_string(),
+                bbox: [292142.0, 2785382.0, 90.0, 292142.0, 2785382.0, 90.0],
+            },
+        ],
+    )
+    .expect("build runtime proxy");
+
+    assert_eq!(&output.glb[0..4], b"glTF");
+    assert_eq!(output.metadata.features.len(), 2);
+    assert_eq!(output.metadata.features[0].feature_id, 10);
+    assert_eq!(
+        output.metadata.features[0].explode_group_key,
+        "layer:電梯軌道"
+    );
+    assert_eq!(output.mesh.triangle_count(), 24);
+    assert_eq!(output.mesh.batch_ids[0], 0);
+    assert!(output.mesh.batch_ids.iter().any(|batch_id| *batch_id == 1));
+    assert_eq!(output.pick_index.features.len(), 2);
+    assert!(
+        output.pick_index.features[1]
+            .dimensions
+            .iter()
+            .all(|value| *value >= 0.25)
+    );
+}
+
+#[test]
+fn phase1h_runtime_budget_counts_geometry_file_and_metadata_size() {
+    let report = build_runtime_budget_report(vec![
+        ifc_to_3dtiles::runtime_metadata::RuntimeBudgetSource {
+            source_id: "dwg-12d5f1b6".to_string(),
+            triangle_count: 15_768,
+            vertex_count: 47_304,
+            runtime_metadata_bytes: 192_000,
+            bbox_volume: 1_234_567.0,
+            geometry_file_size: 4_200_000,
+        },
+    ]);
+
+    assert_eq!(report.runtime_version, 1);
+    assert_eq!(report.sources.len(), 1);
+    assert_eq!(report.sources[0].source_id, "dwg-12d5f1b6");
+    assert_eq!(report.sources[0].triangle_count, 15_768);
+    assert_eq!(report.sources[0].geometry_file_size, 4_200_000);
+}
+
+#[test]
+fn phase1h_publish_viewer_has_runtime_geometry_toggle_and_pick_handlers() {
+    let html = render_publish_viewer_html();
+
+    assert!(html.contains("approved geometry"));
+    assert!(html.contains("approvedGeometryToggle"));
+    assert!(html.contains("runtime_manifest.json"));
+    assert!(html.contains("runtime_pick.json"));
+    assert!(html.contains("loadRuntimeGeometry"));
+    assert!(html.contains("showRuntimeFeatureDetail"));
+    assert!(html.contains("runtimeDebug"));
+    assert!(html.contains("feature_id"));
+    assert!(html.contains("explode_group_key"));
+    assert!(html.contains("ifc_type"));
+    assert!(html.contains("material_id"));
 }
 
 fn review_stats<const N: usize>(
