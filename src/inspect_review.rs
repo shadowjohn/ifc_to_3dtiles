@@ -226,6 +226,10 @@ pub fn duplicate_review_score(a: &CadEntityStats, b: &CadEntityStats) -> f64 {
 }
 
 pub fn render_review_html(report: &InspectReviewReport) -> String {
+    render_review_html_with_extra(report, "")
+}
+
+pub fn render_review_html_with_extra(report: &InspectReviewReport, extra_html: &str) -> String {
     let mut html = String::new();
     html.push_str("<!doctype html><html lang=\"zh-Hant\"><head><meta charset=\"utf-8\">");
     html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
@@ -368,6 +372,7 @@ pub fn render_review_html(report: &InspectReviewReport) -> String {
         html.push_str("</div></div></div></details>");
     }
 
+    html.push_str(extra_html);
     html.push_str("</main></body></html>");
     html
 }

@@ -395,3 +395,22 @@
 - 新增 `tools/export_inspect_review.ps1` 一鍵匯出：
   - 預設輸入 `out\inspect_tamkang`
   - 預設輸出 `out\inspect_tamkang\review_report.html`
+
+### Phase 1E Quarantine Drilldown + Approval Workflow
+
+- 新增 Rust `inspect_drilldown` core：
+  - 直接讀 `project_inspect.db` + `source_manifest.json`。
+  - 不重跑 ODA / OGR，不轉 3D Tiles。
+  - 產生第二層 QA artifacts 到 `out\inspect_tamkang\qa`。
+- Duplicate pair compare：
+  - 比較 `DJB-M-SU-監測.dwg` / `主橋.dwg` 的 bbox、entity count、vertex count、layer histogram、geometry type histogram、fingerprint。
+  - 目前建議保留 `DJB-M-SU-監測.dwg`，`主橋.dwg` 先列 rejected duplicate candidate。
+- 管理中心 outlier drilldown：
+  - 針對 `管理中心_全.dwg` 產出 `entity_outliers.json`。
+  - 列出最遠 entity、最大 bbox entity、最大 Z range entity、outside AOI entity 與 layer outlier summary。
+- Approval manifests：
+  - `approved_sources.json`
+  - `rejected_sources.json`
+  - `needs_review_sources.json`
+  - 第一版是機器建議 + 人工可修正，後續 publish pipeline 再把這三份當正式 gate。
+- `review_report.html` 現在會加入 Phase 1E QA summary。

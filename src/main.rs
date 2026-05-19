@@ -16,6 +16,7 @@ use ifc_to_3dtiles::{
     },
     convert_path,
     inspect::discover_sources,
+    inspect_drilldown::write_drilldown_outputs,
     inspect_review::write_review_report_html,
     project::{ProjectManifest, SourceFormat, SourceStatus},
     revit::RevitVersion,
@@ -170,6 +171,19 @@ enum Command {
         #[arg(long)]
         manifest: Option<PathBuf>,
     },
+    InspectDrilldown {
+        #[arg(long)]
+        input: PathBuf,
+
+        #[arg(long)]
+        output: Option<PathBuf>,
+
+        #[arg(long)]
+        db: Option<PathBuf>,
+
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -269,6 +283,12 @@ fn run_command(command: &Command) -> Result<()> {
             db,
             manifest,
         } => run_inspect_review(input, output, db, manifest),
+        Command::InspectDrilldown {
+            input,
+            output,
+            db,
+            manifest,
+        } => run_inspect_drilldown(input, output, db, manifest),
     }
 }
 
@@ -416,6 +436,26 @@ fn run_inspect_review(
         .unwrap_or_else(|| input.join("review_report.html"));
     write_review_report_html(&db_path, &manifest_path, &output_path)?;
     println!("{}", output_path.display());
+    Ok(())
+}
+
+fn run_inspect_drilldown(
+    input: &Path,
+    output: &Option<PathBuf>,
+    db: &Option<PathBuf>,
+    manifest: &Option<PathBuf>,
+) -> Result<()> {
+    let db_path = db
+        .clone()
+        .unwrap_or_else(|| input.join("project_inspect.db"));
+    let manifest_path = manifest
+        .clone()
+        .unwrap_or_else(|| input.join("source_manifest.json"));
+    let output_dir = output.clone().unwrap_or_else(|| input.join("qa"));
+    let review_report_path = input.join("review_report.html");
+    write_drilldown_outputs(&db_path, &manifest_path, &output_dir, &review_report_path)?;
+    println!("{}", output_dir.display());
+    println!("{}", review_report_path.display());
     Ok(())
 }
 

@@ -13,6 +13,10 @@ use ifc_to_3dtiles::{
     },
     inspect::{CadProbeSummary, read_cad_probe_summary},
     inspect::{discover_sources, source_format_from_path, write_empty_cad_metadata_dumps},
+    inspect_drilldown::{
+        ApprovalSourceDecision, EntityBboxRecord, classify_approval_manifests,
+        compare_duplicate_pair, detect_entity_outliers, render_phase1e_html_section,
+    },
     inspect_review::{
         InspectReviewReport, InspectReviewSource, build_review_report_from_db,
         duplicate_review_score, render_review_html,
@@ -974,6 +978,223 @@ fn inspect_review_can_build_report_from_sqlite_and_manifest() {
     assert_eq!(report.sources[0].selected_scale, Some(1.0));
 }
 
+#[test]
+fn phase1e_duplicate_compare_recommends_monitoring_source_over_main_bridge_duplicate() {
+    let monitor = review_stats(
+        "djb-m-su-dwg-0c82de78",
+        [-2344516.9, 2784696.2, -40.2, 292398.9, 3730959.0, 169.78],
+        24_640,
+        2_696_555,
+        [
+            ("_CIVIL_CONSTRUCTION", 18_439),
+            ("Cable", 755),
+            ("STEEL", 576),
+        ],
+    );
+    let main_bridge = review_stats(
+        "dwg-850173d8",
+        [-2344516.9, 2784696.2, -16.4, 292398.9, 3730959.0, 166.39],
+        24_077,
+        2_677_659,
+        [
+            ("_CIVIL_CONSTRUCTION", 18_439),
+            ("Cable", 755),
+            ("STEEL", 576),
+        ],
+    );
+
+    let pair = compare_duplicate_pair("DJB-M-SU-監測.dwg", &monitor, "主橋.dwg", &main_bridge);
+
+    assert!(pair.score > 0.9);
+    assert_eq!(pair.retain_source_id, "djb-m-su-dwg-0c82de78");
+    assert_eq!(pair.reject_source_id, "dwg-850173d8");
+    assert!(pair.recommendation_reason.contains("完整監測交付主檔"));
+    assert!(pair.layer_count_diff.contains_key("_CIVIL_CONSTRUCTION"));
+}
+
+#[test]
+fn phase1e_outlier_detector_finds_far_entity_largest_bbox_and_z_range() {
+    let records = vec![
+        EntityBboxRecord::new(
+            "dwg-dd37eec7",
+            1,
+            "normal",
+            Some("A1".to_string()),
+            Some("POLYHEDRALSURFACE".to_string()),
+            20,
+            [292000.0, 2785000.0, 1.0, 292010.0, 2785010.0, 10.0],
+        ),
+        EntityBboxRecord::new(
+            "dwg-dd37eec7",
+            2,
+            "far_layer",
+            Some("FAR".to_string()),
+            Some("POLYHEDRALSURFACE".to_string()),
+            20,
+            [
+                292365000.0,
+                2785739000.0,
+                0.0,
+                292365795.0,
+                2785739723.0,
+                10.0,
+            ],
+        ),
+        EntityBboxRecord::new(
+            "dwg-dd37eec7",
+            3,
+            "tower_z",
+            Some("Z1".to_string()),
+            Some("LINESTRING".to_string()),
+            2,
+            [292050.0, 2785050.0, 0.0, 292055.0, 2785055.0, 18109.0],
+        ),
+    ];
+
+    let report = detect_entity_outliers("dwg-dd37eec7", "管理中心_全.dwg", &records, 5);
+
+    assert!(
+        report
+            .outliers
+            .iter()
+            .any(|outlier| outlier.fid == 2 && outlier.reason == "far_from_source_center")
+    );
+    assert!(
+        report
+            .outliers
+            .iter()
+            .any(|outlier| outlier.fid == 2 && outlier.reason == "largest_bbox_diagonal")
+    );
+    assert!(
+        report
+            .outliers
+            .iter()
+            .any(|outlier| outlier.fid == 3 && outlier.reason == "largest_z_range")
+    );
+    assert!(
+        report
+            .layer_outliers
+            .iter()
+            .any(|layer| layer.layer == "far_layer" && layer.entity_count == 1)
+    );
+}
+
+#[test]
+fn phase1e_approval_classifier_splits_approved_rejected_and_needs_review_sources() {
+    let mut approved = InspectReviewSource::from_stats(
+        "dwg-12d5f1b6",
+        "主橋塔.dwg",
+        "dwg",
+        "approved",
+        &review_stats(
+            "dwg-12d5f1b6",
+            [292106.8, 2785254.6, -4.8, 292180.2, 2785518.2, 186.0],
+            1_314,
+            692_642,
+            [("電梯軌道", 854)],
+        ),
+        vec![],
+    );
+    approved.selected_scale = Some(1.0);
+    let monitor = InspectReviewSource::from_stats(
+        "djb-m-su-dwg-0c82de78",
+        "DJB-M-SU-監測.dwg",
+        "dwg",
+        "quarantined",
+        &review_stats(
+            "djb-m-su-dwg-0c82de78",
+            [-2344516.9, 2784696.2, -40.2, 292398.9, 3730959.0, 169.78],
+            24_640,
+            2_696_555,
+            [("_CIVIL_CONSTRUCTION", 18_439)],
+        ),
+        vec![],
+    );
+    let main_bridge = InspectReviewSource::from_stats(
+        "dwg-850173d8",
+        "主橋.dwg",
+        "dwg",
+        "quarantined",
+        &review_stats(
+            "dwg-850173d8",
+            [-2344516.9, 2784696.2, -16.4, 292398.9, 3730959.0, 166.39],
+            24_077,
+            2_677_659,
+            [("_CIVIL_CONSTRUCTION", 18_439)],
+        ),
+        vec![],
+    );
+    let dgn = InspectReviewSource {
+        source_id: "dgn-i-dgn-cd887b3a".to_string(),
+        display_name: "管理中心_全".to_string(),
+        original_file_name: "管理中心_全.dgn.i.dgn".to_string(),
+        format: "dgn".to_string(),
+        inspect_status: "needs_alternative_route".to_string(),
+        selected_scale: None,
+        entity_count: 0,
+        parsed_entity_count: 0,
+        skipped_entity_count: 0,
+        vertex_count: 0,
+        raw_bbox: None,
+        percentile_bbox: None,
+        z_range: None,
+        fingerprint_hash: None,
+        layer_histogram: Default::default(),
+        geometry_type_histogram: Default::default(),
+        warnings: vec!["DGN needs alternative route: ODA invalid group code".to_string()],
+        quarantine_reasons: vec![],
+        duplicate_candidates: vec![],
+    };
+    let duplicate = compare_duplicate_pair(
+        "DJB-M-SU-監測.dwg",
+        &monitor_stats(),
+        "主橋.dwg",
+        &main_bridge_stats(),
+    );
+
+    let manifests =
+        classify_approval_manifests(&[approved, monitor, main_bridge, dgn], &[duplicate]);
+
+    assert_source(&manifests.approved.sources, "dwg-12d5f1b6");
+    assert_source(&manifests.rejected.sources, "dwg-850173d8");
+    assert_source(&manifests.needs_review.sources, "djb-m-su-dwg-0c82de78");
+    assert_source(&manifests.needs_review.sources, "dgn-i-dgn-cd887b3a");
+}
+
+#[test]
+fn phase1e_html_section_contains_duplicate_outlier_and_manifest_summary() {
+    let duplicate = compare_duplicate_pair(
+        "DJB-M-SU-監測.dwg",
+        &monitor_stats(),
+        "主橋.dwg",
+        &main_bridge_stats(),
+    );
+    let outliers = detect_entity_outliers(
+        "dwg-dd37eec7",
+        "管理中心_全.dwg",
+        &[EntityBboxRecord::new(
+            "dwg-dd37eec7",
+            9,
+            "S-BEAM-CONC",
+            Some("H9".to_string()),
+            Some("POLYHEDRALSURFACE".to_string()),
+            100,
+            [0.0, 0.0, 0.0, 292365795.0, 2785739723.0, 18109.0],
+        )],
+        3,
+    );
+    let manifests = classify_approval_manifests(&[], &[duplicate.clone()]);
+
+    let html = render_phase1e_html_section(&[duplicate], Some(&outliers), &manifests);
+
+    assert!(html.contains("Phase 1E QA"));
+    assert!(html.contains("DJB-M-SU-監測.dwg"));
+    assert!(html.contains("主橋.dwg"));
+    assert!(html.contains("管理中心_全.dwg"));
+    assert!(html.contains("S-BEAM-CONC"));
+    assert!(html.contains("approved_sources.json"));
+}
+
 fn review_stats<const N: usize>(
     source_id: &str,
     percentile_bbox: [f64; 6],
@@ -1003,4 +1224,39 @@ fn review_stats<const N: usize>(
         fingerprint_hash: "hash".to_string(),
         warnings: vec![],
     }
+}
+
+fn monitor_stats() -> CadEntityStats {
+    review_stats(
+        "djb-m-su-dwg-0c82de78",
+        [-2344516.9, 2784696.2, -40.2, 292398.9, 3730959.0, 169.78],
+        24_640,
+        2_696_555,
+        [
+            ("_CIVIL_CONSTRUCTION", 18_439),
+            ("Cable", 755),
+            ("STEEL", 576),
+        ],
+    )
+}
+
+fn main_bridge_stats() -> CadEntityStats {
+    review_stats(
+        "dwg-850173d8",
+        [-2344516.9, 2784696.2, -16.4, 292398.9, 3730959.0, 166.39],
+        24_077,
+        2_677_659,
+        [
+            ("_CIVIL_CONSTRUCTION", 18_439),
+            ("Cable", 755),
+            ("STEEL", 576),
+        ],
+    )
+}
+
+fn assert_source(sources: &[ApprovalSourceDecision], source_id: &str) {
+    assert!(
+        sources.iter().any(|source| source.source_id == source_id),
+        "missing source {source_id}"
+    );
 }

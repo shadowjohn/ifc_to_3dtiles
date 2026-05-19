@@ -181,6 +181,24 @@ out\inspect_tamkang\review_report.html
 
 報表內容包含 8 個 source 狀態、selected scale、raw / P0.5-P99.5 bbox、warning、quarantine reason、duplicate score、entity count、layer / geometry type 統計。
 
+Phase 1E 做第二層 quarantine drilldown 與 approval workflow：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\run_phase1e_drilldown.ps1
+```
+
+主要輸出：
+
+```text
+out\inspect_tamkang\qa\duplicate_pairs.json
+out\inspect_tamkang\qa\entity_outliers.json
+out\inspect_tamkang\qa\approved_sources.json
+out\inspect_tamkang\qa\rejected_sources.json
+out\inspect_tamkang\qa\needs_review_sources.json
+```
+
+Phase 1E 會同步更新 `out\inspect_tamkang\review_report.html`，加入 duplicate compare、管理中心 outlier 與 approval manifest summary。
+
 ## Verification
 
 ```powershell
