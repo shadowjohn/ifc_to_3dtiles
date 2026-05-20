@@ -346,6 +346,9 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
         nearestDistancePx: null,
         thresholdPx: 36,
         candidateCount: 0,
+        rayHitCount: 0,
+        rayHitDistance: null,
+        fallbackMethod: "-",
         candidates: []
       }
     };
@@ -424,7 +427,10 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
           `selected featureId: ${escapeHtml(debug.selectedFeatureId ?? "-")}`,
           `nearest screen distance px: ${formatNumber(debug.nearestDistancePx)}`,
           `threshold px: ${formatNumber(debug.thresholdPx)}`,
-          `candidate count: ${formatNumber(debug.candidateCount)}`
+          `candidate count: ${formatNumber(debug.candidateCount)}`,
+          `ray hit count: ${formatNumber(debug.rayHitCount)}`,
+          `ray hit distance: ${formatNumber(debug.rayHitDistance)}`,
+          `fallback method: ${escapeHtml(debug.fallbackMethod || "-")}`
         ].join("<br>");
       }
       if (list) {
@@ -818,6 +824,8 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       const valid = (candidates || [])
         .filter(candidate =>
           candidate
+          && candidate.screenDistancePx !== null
+          && candidate.screenDistancePx !== undefined
           && Number.isFinite(Number(candidate.screenDistancePx))
           && candidate.screenDistancePx >= 0
         )
@@ -882,6 +890,7 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
     }
     function pickSourceLabel(pickSource) {
       if (pickSource === "cesium_pick") return "pickSource = cesium_pick";
+      if (pickSource === "spatial_pick_index_ray") return "pickSource = spatial_pick_index_ray";
       if (pickSource === "spatial_pick_index") return "pickSource = spatial_pick_index";
       return "pickSource = miss";
     }
@@ -991,6 +1000,9 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
           nearestDistancePx: null,
           thresholdPx,
           candidateCount: 0,
+          rayHitCount: 0,
+          rayHitDistance: null,
+          fallbackMethod: "-",
           candidates: []
         });
         const picked = viewer.scene.pick(movement.position);
@@ -999,14 +1011,14 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
           const kind = propValue(entity, "qa_kind");
           if (kind === "source" || kind === "duplicate") {
             state.pickMode = "cesium_pick";
-            updatePickDebug({ pickSource: "cesium_pick" });
+            updatePickDebug({ pickSource: "cesium_pick", fallbackMethod: "cesium_pick" });
             clearSpatialPickHighlight(viewer);
             showSourceDetail(propValue(entity, "source_id"), propValue(entity, "bbox_kind"));
             refresh(viewer);
             return;
           } else if (kind === "outlier") {
             state.pickMode = "cesium_pick";
-            updatePickDebug({ pickSource: "cesium_pick", selectedFeatureId: propValue(entity, "fid") });
+            updatePickDebug({ pickSource: "cesium_pick", selectedFeatureId: propValue(entity, "fid"), fallbackMethod: "cesium_pick" });
             clearSpatialPickHighlight(viewer);
             const index = Number(propValue(entity, "outlier_index"));
             const outlier = state.spatialQa?.outliers?.[index];
@@ -1015,18 +1027,28 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
             return;
           } else if (kind === "aoi") {
             state.pickMode = "cesium_pick";
-            updatePickDebug({ pickSource: "cesium_pick" });
+            updatePickDebug({ pickSource: "cesium_pick", fallbackMethod: "cesium_pick" });
             clearSpatialPickHighlight(viewer);
             showAoiDetail();
             refresh(viewer);
             return;
           } else if (kind === "runtime_feature") {
-            updatePickDebug({ pickSource: "cesium_pick", selectedFeatureId: propValue(entity, "feature_id") });
+            updatePickDebug({ pickSource: "cesium_pick", selectedFeatureId: propValue(entity, "feature_id"), fallbackMethod: "cesium_pick" });
             clearSpatialPickHighlight(viewer);
             const key = String(propValue(entity, "runtime_feature_key"));
             showRuntimeFeatureDetail(state.runtimeFeatureDetails.get(key), "cesium_pick");
             return;
           }
+        }
+        const rayPick = spatialRayPickFeature(viewer, movement.position);
+        if (rayPick) {
+          showSpatialPickFeatureDetail(rayPick, "spatial_pick_index_ray");
+          if (document.getElementById("showPickBboxToggle").checked) {
+            drawSpatialPickBbox(viewer, rayPick);
+          } else {
+            clearSpatialPickHighlight(viewer);
+          }
+          return;
         }
         const fallback = nearestSpatialPickFeature(viewer, movement.position, thresholdPx);
         if (fallback) {
@@ -1063,10 +1085,73 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
         candidates: ranked.topCandidates,
         nearestDistancePx: ranked.topCandidates[0]?.screenDistancePx ?? null,
         selectedFeatureId: ranked.hit?.featureId ?? null,
-        pickSource: ranked.hit ? "spatial_pick_index" : "miss"
+        pickSource: ranked.hit ? "spatial_pick_index" : "miss",
+        fallbackMethod: ranked.hit ? "nearest_center" : "miss"
       });
       drawCandidateCenters(viewer, ranked.topCandidates);
       return ranked.hit;
+    }
+    function spatialRayPickFeature(viewer, clickPosition) {
+      const ray = viewer.camera.getPickRay(clickPosition);
+      if (!ray) {
+        updatePickDebug({ fallbackMethod: "ray_unavailable" });
+        return null;
+      }
+      const hits = [];
+      for (const feature of (state.spatialPickIndex?.features || [])) {
+        const aabb = spatialPickFeatureWorldAabb(feature);
+        if (!aabb) continue;
+        const distance = rayIntersectsAabb(ray.origin, ray.direction, aabb.min, aabb.max);
+        if (distance === null) continue;
+        hits.push({ ...feature, rayDistance: distance });
+      }
+      const ranked = rankSpatialRayHits(hits);
+      updatePickDebug({
+        rayHitCount: ranked.hitCount,
+        rayHitDistance: ranked.hit?.rayDistance ?? null,
+        selectedFeatureId: ranked.hit?.featureId ?? state.pickDebug.selectedFeatureId,
+        pickSource: ranked.hit ? "spatial_pick_index_ray" : state.pickDebug.pickSource,
+        fallbackMethod: ranked.hit ? "ray_vs_bbox" : "nearest_center"
+      });
+      return ranked.hit;
+    }
+    function rankSpatialRayHits(hits) {
+      const valid = (hits || [])
+        .filter(hit =>
+          hit
+          && hit.rayDistance !== null
+          && hit.rayDistance !== undefined
+          && Number.isFinite(Number(hit.rayDistance))
+          && hit.rayDistance >= 0
+        )
+        .sort((a, b) => a.rayDistance - b.rayDistance);
+      return {
+        hit: valid[0] || null,
+        hits: valid,
+        hitCount: valid.length
+      };
+    }
+    function rayIntersectsAabb(rayOrigin, rayDirection, min, max) {
+      let tMin = 0;
+      let tMax = Number.POSITIVE_INFINITY;
+      for (const axis of ["x", "y", "z"]) {
+        const origin = rayOrigin[axis];
+        const direction = rayDirection[axis];
+        const minValue = min[axis];
+        const maxValue = max[axis];
+        if (![origin, direction, minValue, maxValue].every(Number.isFinite)) return null;
+        if (Math.abs(direction) < 1e-12) {
+          if (origin < minValue || origin > maxValue) return null;
+          continue;
+        }
+        let t1 = (minValue - origin) / direction;
+        let t2 = (maxValue - origin) / direction;
+        if (t1 > t2) [t1, t2] = [t2, t1];
+        tMin = Math.max(tMin, t1);
+        tMax = Math.min(tMax, t2);
+        if (tMin > tMax) return null;
+      }
+      return tMin;
     }
     function spatialPickFeatureWorldCenter(feature) {
       const source = state.spatialPickSources.get(feature.sourceId);
@@ -1076,6 +1161,22 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
         new Cesium.Cartesian3(feature.center[0], feature.center[1], feature.center[2]),
         new Cesium.Cartesian3()
       );
+    }
+    function spatialPickFeatureWorldAabb(feature) {
+      const corners = spatialPickBboxWorldCorners(feature);
+      if (corners.length !== 8) return null;
+      const min = new Cesium.Cartesian3(Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY);
+      const max = new Cesium.Cartesian3(Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY);
+      for (const corner of corners) {
+        min.x = Math.min(min.x, corner.x);
+        min.y = Math.min(min.y, corner.y);
+        min.z = Math.min(min.z, corner.z);
+        max.x = Math.max(max.x, corner.x);
+        max.y = Math.max(max.y, corner.y);
+        max.z = Math.max(max.z, corner.z);
+      }
+      if (![min.x, min.y, min.z, max.x, max.y, max.z].every(Number.isFinite)) return null;
+      return { min, max };
     }
     function spatialPickBboxWorldCorners(feature) {
       const source = state.spatialPickSources.get(feature.sourceId);
@@ -1153,7 +1254,9 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       updatePickDebug({
         pickSource,
         selectedFeatureId: feature.featureId,
-        nearestDistancePx: feature.screenDistancePx ?? state.pickDebug.nearestDistancePx
+        nearestDistancePx: feature.screenDistancePx ?? state.pickDebug.nearestDistancePx,
+        rayHitDistance: feature.rayDistance ?? state.pickDebug.rayHitDistance,
+        fallbackMethod: pickSource === "spatial_pick_index_ray" ? "ray_vs_bbox" : "nearest_center"
       });
       document.getElementById("detailPanel").innerHTML = `
         <h2>Spatial Pick Feature</h2>
@@ -1173,7 +1276,7 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
     function showPickMiss() {
       state.pickMode = "miss";
       clearSpatialPickHighlight(window.viewer);
-      updatePickDebug({ pickSource: "miss", selectedFeatureId: null });
+      updatePickDebug({ pickSource: "miss", selectedFeatureId: null, fallbackMethod: "miss" });
       document.getElementById("detailPanel").innerHTML = `
         <h2>Pick Miss</h2>
         <p><b>${escapeHtml(pickSourceLabel("miss"))}</b></p>

@@ -1816,6 +1816,32 @@ fn phase1ge_js_pick_accuracy_test_script_exists() {
 }
 
 #[test]
+fn phase1gf_publish_viewer_has_ray_bbox_pick_hooks_and_debug_fields() {
+    let html = render_publish_viewer_html();
+
+    assert!(html.contains("spatial_pick_index_ray"));
+    assert!(html.contains("spatialRayPickFeature"));
+    assert!(html.contains("rayIntersectsAabb"));
+    assert!(html.contains("rankSpatialRayHits"));
+    assert!(html.contains("viewer.camera.getPickRay"));
+    assert!(html.contains("ray hit count"));
+    assert!(html.contains("ray hit distance"));
+    assert!(html.contains("fallback method"));
+}
+
+#[test]
+fn phase1gf_js_pick_accuracy_tests_cover_ray_bbox_cases() {
+    let script = std::fs::read_to_string("tools/test_phase1g_pick_accuracy.js")
+        .expect("Phase 1G-F JS test script");
+
+    assert!(script.contains("ray intersects bbox"));
+    assert!(script.contains("ray misses bbox"));
+    assert!(script.contains("nearest ray hit wins"));
+    assert!(script.contains("ray miss falls back to nearest center"));
+    assert!(script.contains("invalid bbox skipped"));
+}
+
+#[test]
 fn phase1gc_spatial_pick_index_serializes_runtime_only_schema_with_local_bbox() {
     let index = build_spatial_pick_index(
         "local",
