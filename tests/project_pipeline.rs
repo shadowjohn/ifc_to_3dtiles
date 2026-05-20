@@ -1877,6 +1877,33 @@ fn phase1gg_js_pick_accuracy_tests_cover_visual_explainability() {
 }
 
 #[test]
+fn phase1gh_publish_viewer_has_spatial_grid_index_controls_and_debug_fields() {
+    let html = render_publish_viewer_html();
+
+    assert!(html.contains("pickIndexModeToggle"));
+    assert!(html.contains("buildSpatialPickGridIndex"));
+    assert!(html.contains("querySpatialPickGridForNearest"));
+    assert!(html.contains("querySpatialPickGridForRay"));
+    assert!(html.contains("spatialPickCandidatesForNearest"));
+    assert!(html.contains("spatialPickCandidatesForRay"));
+    assert!(html.contains("pickIndexMode"));
+    assert!(html.contains("candidatePrefilterCount"));
+    assert!(html.contains("finalCandidateCount"));
+    assert!(html.contains("pickTimeMs"));
+}
+
+#[test]
+fn phase1gh_js_pick_accuracy_tests_cover_spatial_grid_index() {
+    let script = std::fs::read_to_string("tools/test_phase1g_pick_accuracy.js")
+        .expect("Phase 1G-H JS test script");
+
+    assert!(script.contains("grid build count matches feature count"));
+    assert!(script.contains("grid query returns nearby candidates"));
+    assert!(script.contains("grid invalid falls back to full scan"));
+    assert!(script.contains("grid result remains same as full scan"));
+}
+
+#[test]
 fn phase1gc_spatial_pick_index_serializes_runtime_only_schema_with_local_bbox() {
     let index = build_spatial_pick_index(
         "local",

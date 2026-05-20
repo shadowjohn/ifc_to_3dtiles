@@ -71,6 +71,74 @@ function pickWithRayThenNearest(rayHits, nearestCandidates, thresholdPx) {
   };
 }
 
+function gridPoint(feature) {
+  const c = feature && feature.center;
+  if (!Array.isArray(c) || c.length < 2) return null;
+  const x = Number(c[0]);
+  const y = Number(c[1]);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x, y };
+}
+
+function gridCellKey(x, y, cellSize) {
+  return `${Math.floor(x / cellSize)},${Math.floor(y / cellSize)}`;
+}
+
+function buildSpatialPickGridIndex(features, cellSize = 128) {
+  const grid = {
+    valid: true,
+    cellSize,
+    featureCount: 0,
+    cells: new Map()
+  };
+  for (const feature of features || []) {
+    const point = gridPoint(feature);
+    if (!point) continue;
+    const key = gridCellKey(point.x, point.y, cellSize);
+    if (!grid.cells.has(key)) grid.cells.set(key, []);
+    grid.cells.get(key).push(feature);
+    grid.featureCount += 1;
+  }
+  grid.valid = grid.featureCount > 0;
+  return grid;
+}
+
+function querySpatialPickGridForNearest(grid, point, radiusCells = 1) {
+  if (!grid || !grid.valid || !point) return null;
+  const cellX = Math.floor(point.x / grid.cellSize);
+  const cellY = Math.floor(point.y / grid.cellSize);
+  const result = [];
+  for (let y = cellY - radiusCells; y <= cellY + radiusCells; y++) {
+    for (let x = cellX - radiusCells; x <= cellX + radiusCells; x++) {
+      result.push(...(grid.cells.get(`${x},${y}`) || []));
+    }
+  }
+  return result;
+}
+
+function querySpatialPickGridForRay(grid, roughBbox) {
+  if (!grid || !grid.valid || !roughBbox) return null;
+  const minX = Math.floor(roughBbox.minX / grid.cellSize);
+  const maxX = Math.floor(roughBbox.maxX / grid.cellSize);
+  const minY = Math.floor(roughBbox.minY / grid.cellSize);
+  const maxY = Math.floor(roughBbox.maxY / grid.cellSize);
+  const result = [];
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      result.push(...(grid.cells.get(`${x},${y}`) || []));
+    }
+  }
+  return [...new Map(result.map(feature => [feature.featureId, feature])).values()];
+}
+
+function spatialPickCandidatesForNearest(grid, features, point, radiusCells = 1) {
+  const fromGrid = querySpatialPickGridForNearest(grid, point, radiusCells);
+  if (!fromGrid || !fromGrid.length) {
+    return { mode: "full_scan", features: features || [] };
+  }
+  return { mode: "grid", features: fromGrid };
+}
+
 function visualStateAfterHoverSource(state, sourceId) {
   return {
     ...state,
@@ -267,4 +335,51 @@ test("label text generated correctly", () => {
   }, "spatial_pick_index_ray");
 
   assert.strictEqual(label, "123 | ray/dwg-12d5f1b6");
+});
+
+test("grid build count matches feature count", () => {
+  const grid = buildSpatialPickGridIndex([
+    { featureId: 1, center: [5, 5, 0] },
+    { featureId: 2, center: [25, 5, 0] },
+    { featureId: 3, center: [45, 5, 0] }
+  ], 20);
+
+  assert.strictEqual(grid.featureCount, 3);
+});
+
+test("grid query returns nearby candidates", () => {
+  const features = [
+    { featureId: 1, center: [5, 5, 0] },
+    { featureId: 2, center: [25, 5, 0] },
+    { featureId: 3, center: [105, 105, 0] }
+  ];
+  const grid = buildSpatialPickGridIndex(features, 20);
+  const candidates = querySpatialPickGridForNearest(grid, { x: 22, y: 7 }, 1);
+
+  assert.deepStrictEqual(candidates.map(feature => feature.featureId).sort(), [1, 2]);
+});
+
+test("grid invalid falls back to full scan", () => {
+  const features = [
+    { featureId: 1, center: [5, 5, 0] },
+    { featureId: 2, center: [25, 5, 0] }
+  ];
+
+  assert.strictEqual(spatialPickCandidatesForNearest(null, features, { x: 5, y: 5 }).mode, "full_scan");
+});
+
+test("grid result remains same as full scan", () => {
+  const features = [
+    { featureId: 1, center: [5, 5, 0] },
+    { featureId: 2, center: [25, 5, 0] },
+    { featureId: 3, center: [105, 105, 0] }
+  ];
+  const grid = buildSpatialPickGridIndex(features, 20);
+  const fromGrid = spatialPickCandidatesForNearest(grid, features, { x: 22, y: 7 }, 1);
+  const fromFullScan = spatialPickCandidatesForNearest(null, features, { x: 22, y: 7 }, 1);
+
+  assert.deepStrictEqual(
+    fromGrid.features.map(feature => feature.featureId).sort(),
+    fromFullScan.features.filter(feature => feature.featureId !== 3).map(feature => feature.featureId).sort()
+  );
 });

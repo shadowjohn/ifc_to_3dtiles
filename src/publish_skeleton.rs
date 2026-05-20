@@ -297,6 +297,7 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
     <label><input id="showPickBboxToggle" type="checkbox" checked> pick bbox</label>
     <label><input id="showCandidateCentersToggle" type="checkbox"> candidate centers</label>
     <label><input id="showPickLabelsToggle" type="checkbox" checked> labels</label>
+    <label><input id="pickIndexModeToggle" type="checkbox" checked> grid pick</label>
     <button id="flyBtn" class="btn">Zoom</button>
   </div>
   <aside id="detailPanel">
@@ -354,6 +355,7 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       runtimeFeatureCount: 0,
       runtimeMetadataFields: [],
       spatialPickIndex: null,
+      spatialPickGrid: null,
       spatialPickSources: new Map(),
       spatialPickHighlightEntity: null,
       spatialPickHoverSourceEntity: null,
@@ -375,6 +377,10 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
         rayHitCount: 0,
         rayHitDistance: null,
         fallbackMethod: "-",
+        pickIndexMode: "full_scan",
+        candidatePrefilterCount: 0,
+        finalCandidateCount: 0,
+        pickTimeMs: null,
         candidates: []
       }
     };
@@ -484,6 +490,120 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
     function pickLabelVisible() {
       return !!document.getElementById("showPickLabelsToggle")?.checked;
     }
+    function gridPoint(feature) {
+      const c = feature && feature.center;
+      if (!Array.isArray(c) || c.length < 2) return null;
+      const x = Number(c[0]);
+      const y = Number(c[1]);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+      return { x, y };
+    }
+    function gridCellKey(x, y, cellSize) {
+      return `${Math.floor(x / cellSize)},${Math.floor(y / cellSize)}`;
+    }
+    function buildSpatialPickGridIndex(index, cellSize) {
+      const features = index?.features || [];
+      const grid = {
+        valid: true,
+        cellSize: cellSize || 128,
+        featureCount: 0,
+        cells: new Map()
+      };
+      for (const feature of features) {
+        const point = gridPoint(feature);
+        if (!point) continue;
+        const key = gridCellKey(point.x, point.y, grid.cellSize);
+        if (!grid.cells.has(key)) grid.cells.set(key, []);
+        grid.cells.get(key).push(feature);
+        grid.featureCount += 1;
+      }
+      grid.valid = grid.featureCount > 0;
+      return grid;
+    }
+    function querySpatialPickGridForNearest(grid, point, radiusCells) {
+      if (!grid || !grid.valid || !point) return null;
+      const cellX = Math.floor(point.x / grid.cellSize);
+      const cellY = Math.floor(point.y / grid.cellSize);
+      const result = [];
+      for (let y = cellY - radiusCells; y <= cellY + radiusCells; y++) {
+        for (let x = cellX - radiusCells; x <= cellX + radiusCells; x++) {
+          result.push(...(grid.cells.get(`${x},${y}`) || []));
+        }
+      }
+      return result;
+    }
+    function querySpatialPickGridForRay(grid, roughBbox) {
+      if (!grid || !grid.valid || !roughBbox) return null;
+      const minX = Math.floor(roughBbox.minX / grid.cellSize);
+      const maxX = Math.floor(roughBbox.maxX / grid.cellSize);
+      const minY = Math.floor(roughBbox.minY / grid.cellSize);
+      const maxY = Math.floor(roughBbox.maxY / grid.cellSize);
+      const result = [];
+      for (let y = minY; y <= maxY; y++) {
+        for (let x = minX; x <= maxX; x++) {
+          result.push(...(grid.cells.get(`${x},${y}`) || []));
+        }
+      }
+      return [...new Map(result.map(feature => [`${feature.sourceId}:${feature.featureId}`, feature])).values()];
+    }
+    function spatialPickCandidatesForNearest(point) {
+      const features = state.spatialPickIndex?.features || [];
+      if (!document.getElementById("pickIndexModeToggle")?.checked) {
+        return { mode: "full_scan", features, prefilterCount: features.length };
+      }
+      const fromGrid = querySpatialPickGridForNearest(state.spatialPickGrid, point, 1);
+      if (!fromGrid || !fromGrid.length) {
+        return { mode: "full_scan", features, prefilterCount: features.length };
+      }
+      return { mode: "grid", features: fromGrid, prefilterCount: fromGrid.length };
+    }
+    function spatialPickCandidatesForRay(ray) {
+      const features = state.spatialPickIndex?.features || [];
+      if (!document.getElementById("pickIndexModeToggle")?.checked || !ray || !state.spatialPickGrid?.valid) {
+        return { mode: "full_scan", features, prefilterCount: features.length };
+      }
+      // 這裡只做保守粗篩；真正命中仍交給後面的 ray-AABB 精算。
+      const localEnvelope = roughRayLocalEnvelope(ray, 2500);
+      const fromGrid = querySpatialPickGridForRay(state.spatialPickGrid, localEnvelope);
+      if (!fromGrid || !fromGrid.length) {
+        return { mode: "full_scan", features, prefilterCount: features.length };
+      }
+      return { mode: "grid", features: fromGrid, prefilterCount: fromGrid.length };
+    }
+    function roughRayLocalEnvelope(ray, distance) {
+      const firstSource = state.spatialPickSources.values().next().value;
+      if (!firstSource || !firstSource.inverseModelMatrix) return null;
+      const origin = Cesium.Matrix4.multiplyByPoint(firstSource.inverseModelMatrix, ray.origin, new Cesium.Cartesian3());
+      const farWorld = Cesium.Cartesian3.add(
+        ray.origin,
+        Cesium.Cartesian3.multiplyByScalar(ray.direction, distance, new Cesium.Cartesian3()),
+        new Cesium.Cartesian3()
+      );
+      const far = Cesium.Matrix4.multiplyByPoint(firstSource.inverseModelMatrix, farWorld, new Cesium.Cartesian3());
+      const pad = distance * 0.08;
+      return {
+        minX: Math.min(origin.x, far.x) - pad,
+        maxX: Math.max(origin.x, far.x) + pad,
+        minY: Math.min(origin.y, far.y) - pad,
+        maxY: Math.max(origin.y, far.y) + pad
+      };
+    }
+    function screenClickLocalGridPoint(viewer, clickPosition) {
+      const ray = viewer.camera.getPickRay(clickPosition);
+      const firstSource = state.spatialPickSources.values().next().value;
+      if (!ray || !firstSource || !firstSource.inverseModelMatrix) return null;
+      const farWorld = Cesium.Cartesian3.add(
+        ray.origin,
+        Cesium.Cartesian3.multiplyByScalar(ray.direction, 2500, new Cesium.Cartesian3()),
+        new Cesium.Cartesian3()
+      );
+      const local = Cesium.Matrix4.multiplyByPoint(firstSource.inverseModelMatrix, farWorld, new Cesium.Cartesian3());
+      return { x: local.x, y: local.y };
+    }
+    function pickElapsedMs(startedAt) {
+      if (!Number.isFinite(startedAt)) return null;
+      return Math.max(0, performance.now() - startedAt);
+    }
     function renderPickDebugPanel() {
       const debug = state.pickDebug;
       const summary = document.getElementById("pickDebugSummary");
@@ -501,7 +621,11 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
           `candidate count: ${formatNumber(debug.candidateCount)}`,
           `ray hit count: ${formatNumber(debug.rayHitCount)}`,
           `ray hit distance: ${formatNumber(debug.rayHitDistance)}`,
-          `fallback method: ${escapeHtml(debug.fallbackMethod || "-")}`
+          `fallback method: ${escapeHtml(debug.fallbackMethod || "-")}`,
+          `pickIndexMode: ${escapeHtml(debug.pickIndexMode || "full_scan")}`,
+          `candidatePrefilterCount: ${formatNumber(debug.candidatePrefilterCount)}`,
+          `finalCandidateCount: ${formatNumber(debug.finalCandidateCount)}`,
+          `pickTimeMs: ${formatNumber(debug.pickTimeMs)}`
         ].join("<br>");
       }
       if (list) {
@@ -952,11 +1076,14 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
         state.spatialPickIndex = index;
         state.spatialPickSources.clear();
         for (const source of (index.sources || [])) {
+          const modelMatrix = Cesium.Matrix4.fromArray(source.modelMatrix);
           state.spatialPickSources.set(source.sourceId, {
             ...source,
-            modelMatrix: Cesium.Matrix4.fromArray(source.modelMatrix)
+            modelMatrix,
+            inverseModelMatrix: Cesium.Matrix4.inverse(modelMatrix, new Cesium.Matrix4())
           });
         }
+        state.spatialPickGrid = buildSpatialPickGridIndex(index, 128);
         return index;
       } catch (err) {
         state.pickMode = "miss";
@@ -1148,6 +1275,7 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
     function setupPickHandler(viewer) {
       const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
       handler.setInputAction((movement) => {
+        const pickStartedAt = performance.now();
         const thresholdPx = pickThresholdPx();
         updatePickDebug({
           clickX: movement.position.x,
@@ -1161,6 +1289,10 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
           rayHitCount: 0,
           rayHitDistance: null,
           fallbackMethod: "-",
+          pickIndexMode: document.getElementById("pickIndexModeToggle")?.checked ? "grid" : "full_scan",
+          candidatePrefilterCount: 0,
+          finalCandidateCount: 0,
+          pickTimeMs: null,
           candidates: []
         });
         const picked = viewer.scene.pick(movement.position);
@@ -1204,7 +1336,7 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
             return;
           }
         }
-        const rayPick = spatialRayPickFeature(viewer, movement.position);
+        const rayPick = spatialRayPickFeature(viewer, movement.position, pickStartedAt);
         if (rayPick) {
           showSpatialPickFeatureDetail(rayPick, "spatial_pick_index_ray");
           if (document.getElementById("showPickBboxToggle").checked) {
@@ -1214,7 +1346,7 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
           }
           return;
         }
-        const fallback = nearestSpatialPickFeature(viewer, movement.position, thresholdPx);
+        const fallback = nearestSpatialPickFeature(viewer, movement.position, thresholdPx, pickStartedAt);
         if (fallback) {
           showSpatialPickFeatureDetail(fallback, "spatial_pick_index");
           if (document.getElementById("showPickBboxToggle").checked) {
@@ -1228,10 +1360,10 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
       return handler;
     }
-    function nearestSpatialPickFeature(viewer, clickPosition, thresholdPx) {
-      const features = state.spatialPickIndex?.features || [];
+    function nearestSpatialPickFeature(viewer, clickPosition, thresholdPx, pickStartedAt) {
+      const candidateSource = spatialPickCandidatesForNearest(screenClickLocalGridPoint(viewer, clickPosition));
       const candidates = [];
-      for (const feature of features) {
+      for (const feature of candidateSource.features) {
         const world = spatialPickFeatureWorldCenter(feature);
         if (!world) continue;
         const screen = Cesium.SceneTransforms.worldToWindowCoordinates
@@ -1251,19 +1383,24 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
         selectedFeatureId: ranked.hit?.featureId ?? null,
         pickSource: ranked.hit ? "spatial_pick_index" : "miss",
         interactionSelection: ranked.hit ? "spatial_pick_index" : "miss",
-        fallbackMethod: ranked.hit ? "nearest_center" : "miss"
+        fallbackMethod: ranked.hit ? "nearest_center" : "miss",
+        pickIndexMode: candidateSource.mode,
+        candidatePrefilterCount: candidateSource.prefilterCount,
+        finalCandidateCount: candidates.length,
+        pickTimeMs: pickElapsedMs(pickStartedAt)
       });
       drawCandidateCenters(viewer, ranked.topCandidates);
       return ranked.hit;
     }
-    function spatialRayPickFeature(viewer, clickPosition) {
+    function spatialRayPickFeature(viewer, clickPosition, pickStartedAt) {
       const ray = viewer.camera.getPickRay(clickPosition);
       if (!ray) {
         updatePickDebug({ fallbackMethod: "ray_unavailable" });
         return null;
       }
+      const candidateSource = spatialPickCandidatesForRay(ray);
       const hits = [];
-      for (const feature of (state.spatialPickIndex?.features || [])) {
+      for (const feature of candidateSource.features) {
         const aabb = spatialPickFeatureWorldAabb(feature);
         if (!aabb) continue;
         const distance = rayIntersectsAabb(ray.origin, ray.direction, aabb.min, aabb.max);
@@ -1277,7 +1414,11 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
         selectedFeatureId: ranked.hit?.featureId ?? state.pickDebug.selectedFeatureId,
         pickSource: ranked.hit ? "spatial_pick_index_ray" : state.pickDebug.pickSource,
         interactionSelection: ranked.hit ? "spatial_pick_index_ray" : state.pickDebug.interactionSelection,
-        fallbackMethod: ranked.hit ? "ray_vs_bbox" : "nearest_center"
+        fallbackMethod: ranked.hit ? "ray_vs_bbox" : "nearest_center",
+        pickIndexMode: candidateSource.mode,
+        candidatePrefilterCount: candidateSource.prefilterCount,
+        finalCandidateCount: hits.length,
+        pickTimeMs: pickElapsedMs(pickStartedAt)
       });
       return ranked.hit;
     }
@@ -1575,6 +1716,11 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
         if (state.spatialPickHighlightEntity?.label) {
           state.spatialPickHighlightEntity.label.show = pickLabelVisible();
         }
+      });
+      document.getElementById("pickIndexModeToggle").addEventListener("change", () => {
+        updatePickDebug({
+          pickIndexMode: document.getElementById("pickIndexModeToggle").checked ? "grid" : "full_scan"
+        });
       });
       document.getElementById("flyBtn").addEventListener("click", () => viewer.zoomTo(viewer.entities));
       setupPickHandler(viewer);
