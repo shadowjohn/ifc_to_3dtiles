@@ -256,6 +256,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\run_phase1h_runtime_publis
 ```text
 out\inspect_tamkang\publish\runtime_manifest.json
 out\inspect_tamkang\publish\runtime_budget_report.json
+out\inspect_tamkang\publish\spatial_pick_index.json
 out\inspect_tamkang\publish\runtime_metadata\dwg-12d5f1b6.json
 out\inspect_tamkang\publish\runtime\dwg-12d5f1b6\runtime.glb
 out\inspect_tamkang\publish\runtime\dwg-12d5f1b6\runtime_metadata.json
@@ -269,6 +270,7 @@ out\inspect_tamkang\publish\runtime\dwg-12d5f1b6\runtime_pick.json
 - Phase 1H geometry 是 entity bbox proxy GLB，只用來驗證 approved gate、source-aware rendering、minimal metadata 與 Cesium loading。
 - runtime metadata 只保留 `feature_id`、`source_id`、`explode_group_key`、`ifc_type`、`material_id`；完整 CAD/IFC 查詢仍回 inspect DB / QA manifests。
 - `runtime_pick.json` 只存 bbox picking index，不是屬性資料 source of truth。
+- `spatial_pick_index.json` 是 publish root 的 runtime-only pick index，先供後續 Cesium hybrid pick fallback 使用；它使用 local bbox，不修改 GLB、不塞 invisible mesh。
 
 ## Verification
 

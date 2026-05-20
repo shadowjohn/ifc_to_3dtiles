@@ -516,3 +516,29 @@
   - 讀 `runtime_pick.json` 建透明 pick boxes
   - 點 runtime feature 顯示 minimal metadata
   - bbox / AOI / duplicate / outlier QA overlays 繼續可用。
+
+### Phase 1G-C Runtime Pick Index Backend
+
+- 新增 backend-only `publish/spatial_pick_index.json`：
+  - `version`
+  - `crs`
+  - `sources`
+  - `features`
+  - `warnings`
+- 每個 feature 保留 runtime pick fallback 需要的輕量欄位：
+  - `featureId`
+  - `sourceId`
+  - `layer`
+  - `name`
+  - `category`
+  - `bbox`
+  - `center`
+  - `radius`
+  - `metadataRef`
+- `spatial_pick_index.json` 使用 `local` bbox，搭配每個 source 的 `origin_epsg3826`、`origin_wgs84`、`model_matrix`，為後續 Cesium ray-vs-bbox fallback 做準備。
+- 若 feature 缺 bbox，會寫入 `warnings` 並跳過該 feature，不中斷 publish。
+- `runtime_budget_report.json` 補：
+  - `pick_index_generated`
+  - `pick_index_feature_count`
+  - `pick_index_warnings`
+- 本階段不改 viewer click 行為、不改 GLB geometry、不塞 invisible mesh。

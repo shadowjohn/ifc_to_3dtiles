@@ -76,6 +76,12 @@ pub struct RuntimePickFeature {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RuntimeBudgetReport {
     pub runtime_version: u32,
+    #[serde(rename = "pickIndexGenerated")]
+    pub pick_index_generated: bool,
+    #[serde(rename = "pickIndexFeatureCount")]
+    pub pick_index_feature_count: usize,
+    #[serde(rename = "pickIndexWarnings")]
+    pub pick_index_warnings: Vec<String>,
     pub sources: Vec<RuntimeBudgetSource>,
 }
 

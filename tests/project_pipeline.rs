@@ -33,7 +33,12 @@ use ifc_to_3dtiles::{
         validate_runtime_metadata_fields,
     },
     runtime_publish::{
-        RuntimeSourceBuildSummary, build_runtime_budget_report, build_runtime_manifest,
+        RuntimeSourceBuildSummary, build_runtime_budget_report,
+        build_runtime_budget_report_with_pick_index, build_runtime_manifest,
+    },
+    spatial_pick::{
+        SpatialPickFeatureInput, SpatialPickMetadataRef, SpatialPickSourceInput,
+        build_spatial_pick_index,
     },
     spatial_qa::{SpatialQaAoi, build_spatial_qa_manifest, render_spatial_qa_review_summary},
 };
@@ -1714,6 +1719,30 @@ fn phase1h_runtime_budget_counts_geometry_file_and_metadata_size() {
 }
 
 #[test]
+fn phase1gc_runtime_budget_report_records_spatial_pick_index_status() {
+    let report = build_runtime_budget_report_with_pick_index(
+        vec![ifc_to_3dtiles::runtime_metadata::RuntimeBudgetSource {
+            source_id: "dwg-12d5f1b6".to_string(),
+            triangle_count: 15_768,
+            vertex_count: 47_304,
+            runtime_metadata_bytes: 192_000,
+            bbox_volume: 1_234_567.0,
+            geometry_file_size: 4_200_000,
+        }],
+        1_314,
+        vec!["feature 9 missing bbox".to_string()],
+    );
+
+    assert!(report.pick_index_generated);
+    assert_eq!(report.pick_index_feature_count, 1_314);
+    assert_eq!(report.pick_index_warnings.len(), 1);
+    let json = serde_json::to_string(&report).expect("runtime budget json");
+    assert!(json.contains("\"pickIndexGenerated\""));
+    assert!(json.contains("\"pickIndexFeatureCount\""));
+    assert!(json.contains("\"pickIndexWarnings\""));
+}
+
+#[test]
 fn phase1h_publish_viewer_has_runtime_geometry_toggle_and_pick_handlers() {
     let html = render_publish_viewer_html();
 
@@ -1728,6 +1757,157 @@ fn phase1h_publish_viewer_has_runtime_geometry_toggle_and_pick_handlers() {
     assert!(html.contains("explode_group_key"));
     assert!(html.contains("ifc_type"));
     assert!(html.contains("material_id"));
+}
+
+#[test]
+fn phase1gc_spatial_pick_index_serializes_runtime_only_schema_with_local_bbox() {
+    let index = build_spatial_pick_index(
+        "local",
+        &[SpatialPickSourceInput {
+            source_id: "dwg-12d5f1b6".to_string(),
+            origin_epsg3826: [100.0, 200.0, 0.0],
+            origin_wgs84: [121.4, 25.1, 0.0],
+            model_matrix: [
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+        }],
+        &[SpatialPickFeatureInput {
+            feature_id: 123,
+            source_id: "dwg-12d5f1b6".to_string(),
+            layer: "A-WALL".to_string(),
+            name: Some("Wall 001".to_string()),
+            category: "IfcWall".to_string(),
+            bbox: Some([101.0, 202.0, 3.0, 111.0, 212.0, 13.0]),
+            metadata_ref: SpatialPickMetadataRef {
+                global_id: Some("g-001".to_string()),
+                express_id: Some(123),
+            },
+        }],
+    );
+
+    assert_eq!(index.version, 1);
+    assert_eq!(index.crs, "local");
+    assert_eq!(index.sources.len(), 1);
+    assert_eq!(index.features.len(), 1);
+    assert_eq!(index.features[0].feature_id, 123);
+    assert_eq!(index.features[0].source_id, "dwg-12d5f1b6");
+    assert_eq!(index.features[0].layer, "A-WALL");
+    assert_eq!(index.features[0].category, "IfcWall");
+    assert_eq!(index.features[0].bbox, [1.0, 2.0, 3.0, 11.0, 12.0, 13.0]);
+    assert_eq!(index.features[0].center, [6.0, 7.0, 8.0]);
+    assert!(index.features[0].radius > 8.6 && index.features[0].radius < 8.7);
+    let json = serde_json::to_string(&index).expect("spatial pick json");
+    assert!(json.contains("\"featureId\""));
+    assert!(json.contains("\"sourceId\""));
+    assert!(json.contains("\"metadataRef\""));
+    assert!(!json.contains("psets_json"));
+}
+
+#[test]
+fn phase1gc_spatial_pick_index_skips_missing_bbox_and_records_warning() {
+    let index = build_spatial_pick_index(
+        "local",
+        &[SpatialPickSourceInput {
+            source_id: "dwg-12d5f1b6".to_string(),
+            origin_epsg3826: [0.0, 0.0, 0.0],
+            origin_wgs84: [121.4, 25.1, 0.0],
+            model_matrix: [
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+        }],
+        &[
+            SpatialPickFeatureInput {
+                feature_id: 7,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "A-WALL".to_string(),
+                name: None,
+                category: "POLYHEDRALSURFACE".to_string(),
+                bbox: None,
+                metadata_ref: SpatialPickMetadataRef::default(),
+            },
+            SpatialPickFeatureInput {
+                feature_id: 8,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "A-WALL".to_string(),
+                name: None,
+                category: "POLYHEDRALSURFACE".to_string(),
+                bbox: Some([3.0, 2.0, 1.0, 4.0, 5.0, 6.0]),
+                metadata_ref: SpatialPickMetadataRef::default(),
+            },
+        ],
+    );
+
+    assert_eq!(index.features.len(), 1);
+    assert_eq!(index.features[0].feature_id, 8);
+    assert!(
+        index
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("feature 7 missing bbox"))
+    );
+}
+
+#[test]
+fn phase1gc_spatial_pick_index_feature_count_matches_runtime_metadata_count() {
+    let runtime_features = vec![
+        RuntimeFeatureGeometry {
+            feature_id: 10,
+            source_id: "dwg-12d5f1b6".to_string(),
+            layer: "電梯軌道".to_string(),
+            geometry_type: "POLYHEDRALSURFACE".to_string(),
+            material_id: "default".to_string(),
+            bbox: [292140.0, 2785380.0, 90.0, 292141.0, 2785381.0, 91.0],
+        },
+        RuntimeFeatureGeometry {
+            feature_id: 11,
+            source_id: "dwg-12d5f1b6".to_string(),
+            layer: "預埋件".to_string(),
+            geometry_type: "GEOMETRYCOLLECTION".to_string(),
+            material_id: "default".to_string(),
+            bbox: [292142.0, 2785382.0, 90.0, 292143.0, 2785383.0, 91.0],
+        },
+    ];
+    let runtime = build_runtime_proxy_glb(
+        "dwg-12d5f1b6",
+        [292143.5, 2785386.4, 90.6],
+        [121.428, 25.16, 90.6],
+        &runtime_features,
+    )
+    .expect("runtime proxy");
+    let pick_features: Vec<_> = runtime_features
+        .iter()
+        .map(|feature| SpatialPickFeatureInput {
+            feature_id: feature.feature_id,
+            source_id: feature.source_id.clone(),
+            layer: feature.layer.clone(),
+            name: None,
+            category: feature.geometry_type.clone(),
+            bbox: Some(feature.bbox),
+            metadata_ref: SpatialPickMetadataRef {
+                global_id: None,
+                express_id: Some(feature.feature_id),
+            },
+        })
+        .collect();
+    let index = build_spatial_pick_index(
+        "local",
+        &[SpatialPickSourceInput {
+            source_id: "dwg-12d5f1b6".to_string(),
+            origin_epsg3826: [292143.5, 2785386.4, 90.6],
+            origin_wgs84: [121.428, 25.16, 90.6],
+            model_matrix: [
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+        }],
+        &pick_features,
+    );
+
+    assert_eq!(index.features.len(), runtime.metadata.features.len());
+    assert!(index.features.iter().all(|feature| {
+        feature.bbox[0] <= feature.bbox[3]
+            && feature.bbox[1] <= feature.bbox[4]
+            && feature.bbox[2] <= feature.bbox[5]
+    }));
 }
 
 fn review_stats<const N: usize>(

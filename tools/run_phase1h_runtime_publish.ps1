@@ -51,6 +51,7 @@ finally {
 $expected = @(
     "runtime_manifest.json",
     "runtime_budget_report.json",
+    "spatial_pick_index.json",
     "runtime_metadata\dwg-12d5f1b6.json",
     "runtime\dwg-12d5f1b6\runtime.glb",
     "runtime\dwg-12d5f1b6\runtime_metadata.json",

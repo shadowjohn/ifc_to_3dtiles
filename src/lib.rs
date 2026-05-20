@@ -20,6 +20,7 @@ pub mod runtime_metadata;
 pub mod runtime_publish;
 pub mod rvt;
 pub mod rvt_job;
+pub mod spatial_pick;
 pub mod spatial_qa;
 pub mod step;
 pub mod tiles;

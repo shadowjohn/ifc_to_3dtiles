@@ -18,6 +18,10 @@ use crate::{
         RuntimeManifestSource, RuntimeMetadataPayload, runtime_metadata_field_names,
         validate_runtime_metadata_fields,
     },
+    spatial_pick::{
+        SpatialPickFeatureInput, SpatialPickMetadataRef, SpatialPickSourceInput,
+        build_spatial_pick_index,
+    },
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -88,6 +92,8 @@ pub fn write_runtime_publish_outputs(input: &Path, output: &Path) -> Result<()> 
 
     let mut summaries = Vec::new();
     let mut budget_sources = Vec::new();
+    let mut spatial_pick_sources = Vec::new();
+    let mut spatial_pick_features = Vec::new();
     for approval in &approvals.approved.sources {
         if rejected_or_review.contains_key(&approval.source_id) {
             bail!(
@@ -120,6 +126,28 @@ pub fn write_runtime_publish_outputs(input: &Path, output: &Path) -> Result<()> 
             origin_wgs84,
             &features,
         )?;
+        spatial_pick_sources.push(SpatialPickSourceInput {
+            source_id: approval.source_id.clone(),
+            origin_epsg3826,
+            origin_wgs84,
+            model_matrix,
+        });
+        spatial_pick_features.extend(features.iter().map(|feature| SpatialPickFeatureInput {
+            feature_id: feature.feature_id,
+            source_id: feature.source_id.clone(),
+            layer: feature.layer.clone(),
+            name: None,
+            category: if feature.geometry_type.trim().is_empty() {
+                "UNKNOWN".to_string()
+            } else {
+                feature.geometry_type.trim().to_string()
+            },
+            bbox: Some(feature.bbox),
+            metadata_ref: SpatialPickMetadataRef {
+                global_id: None,
+                express_id: Some(feature.feature_id),
+            },
+        }));
         let source_dir = runtime_root.join(&approval.source_id);
         fs::create_dir_all(&source_dir)
             .with_context(|| format!("建立 runtime source 目錄失敗：{}", source_dir.display()))?;
@@ -168,12 +196,23 @@ pub fn write_runtime_publish_outputs(input: &Path, output: &Path) -> Result<()> 
     }
 
     let runtime_manifest = build_runtime_manifest(&manifest, &approvals, &summaries)?;
+    let spatial_pick_index =
+        build_spatial_pick_index("local", &spatial_pick_sources, &spatial_pick_features);
+    fs::write(
+        output.join("spatial_pick_index.json"),
+        serde_json::to_vec_pretty(&spatial_pick_index)?,
+    )
+    .with_context(|| format!("寫入 spatial_pick_index.json 失敗：{}", output.display()))?;
     fs::write(
         output.join("runtime_manifest.json"),
         serde_json::to_vec_pretty(&runtime_manifest)?,
     )
     .with_context(|| format!("寫入 runtime_manifest.json 失敗：{}", output.display()))?;
-    let budget = build_runtime_budget_report(budget_sources);
+    let budget = build_runtime_budget_report_with_pick_index(
+        budget_sources,
+        spatial_pick_index.features.len(),
+        spatial_pick_index.warnings,
+    );
     fs::write(
         output.join("runtime_budget_report.json"),
         serde_json::to_vec_pretty(&budget)?,
@@ -235,6 +274,23 @@ pub fn build_runtime_manifest(
 pub fn build_runtime_budget_report(sources: Vec<RuntimeBudgetSource>) -> RuntimeBudgetReport {
     RuntimeBudgetReport {
         runtime_version: RUNTIME_VERSION,
+        pick_index_generated: false,
+        pick_index_feature_count: 0,
+        pick_index_warnings: Vec::new(),
+        sources,
+    }
+}
+
+pub fn build_runtime_budget_report_with_pick_index(
+    sources: Vec<RuntimeBudgetSource>,
+    pick_index_feature_count: usize,
+    pick_index_warnings: Vec<String>,
+) -> RuntimeBudgetReport {
+    RuntimeBudgetReport {
+        runtime_version: RUNTIME_VERSION,
+        pick_index_generated: true,
+        pick_index_feature_count,
+        pick_index_warnings,
         sources,
     }
 }
