@@ -15,6 +15,7 @@ use ifc_to_3dtiles::{
         write_entity_inspect_db,
     },
     convert_path,
+    geometry_preview::write_geometry_preview_outputs,
     inspect::discover_sources,
     inspect_drilldown::write_drilldown_outputs,
     inspect_review::write_review_report_html,
@@ -200,6 +201,14 @@ enum Command {
         #[arg(long)]
         output: Option<PathBuf>,
     },
+    #[command(name = "geometry-preview")]
+    GeometryPreview {
+        #[arg(long)]
+        input: PathBuf,
+
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -307,6 +316,7 @@ fn run_command(command: &Command) -> Result<()> {
         } => run_inspect_drilldown(input, output, db, manifest),
         Command::PublishApproved { input, output } => run_publish_approved(input, output),
         Command::RuntimePublish { input, output } => run_runtime_publish(input, output),
+        Command::GeometryPreview { input, output } => run_geometry_preview(input, output),
     }
 }
 
@@ -491,6 +501,26 @@ fn run_runtime_publish(input: &Path, output: &Option<PathBuf>) -> Result<()> {
     println!(
         "{}",
         output_path.join("runtime_budget_report.json").display()
+    );
+    Ok(())
+}
+
+fn run_geometry_preview(input: &Path, output: &Option<PathBuf>) -> Result<()> {
+    let output_path = output.clone().unwrap_or_else(|| input.join("publish"));
+    write_geometry_preview_outputs(input, &output_path)?;
+    println!(
+        "{}",
+        output_path
+            .join("geometry_preview")
+            .join("geometry_publish_report.json")
+            .display()
+    );
+    println!(
+        "{}",
+        output_path
+            .join("geometry_preview")
+            .join("tileset.json")
+            .display()
     );
     Ok(())
 }

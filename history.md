@@ -542,3 +542,47 @@
   - `pick_index_feature_count`
   - `pick_index_warnings`
 - 本階段不改 viewer click 行為、不改 GLB geometry、不塞 invisible mesh。
+
+### Phase 1J Source QA Decision Workflow
+
+- `publish/index.html` 新增 runtime-only source QA decision workflow：
+  - `Approve`
+  - `Reject`
+  - `Needs Review`
+  - `Alternative Route`
+  - reviewer note
+  - browser download `source_qa_decisions.json`
+- 決策結果不回寫 `qa/approved_sources.json`、`publish/sources_manifest.json` 或 geometry publish gate。
+- `tools/verify_index_page.ps1` 的 `runtime_qa_report.json` 補決策統計：
+  - `approvedCount`
+  - `rejectedCount`
+  - `needsReviewCount`
+  - `alternativeRouteCount`
+- DGN / alternative route source 在 viewer 預設歸為 `Alternative Route`，避免和一般人工複查混在一起。
+
+### Phase 1K Minimal Geometry Preview
+
+- 新增 approved-only 最小幾何 preview pipeline：
+  - CLI：`ifc_to_3dtiles geometry-preview --input out\inspect_tamkang --output out\inspect_tamkang\publish`
+  - wrapper：`tools/run_phase1k_geometry_preview.ps1`
+- 新增 Rust `geometry_preview` core：
+  - 只讀 `qa/approved_sources.json` 進入 preview。
+  - 使用 `project_inspect.db` 的 entity bbox / geometry type。
+  - `LINESTRING` / polyline 類型產生細 bbox prism。
+  - `POLYGON` / `POLYHEDRALSURFACE` / face 類型產生簡化 bbox volume mesh。
+  - 不做材質 fidelity、不做 LOD、不做壓縮、不塞完整 BIM/CAD metadata。
+- 輸出：
+  - `publish/geometry_preview/raw.glb`
+  - `publish/geometry_preview/tile.glb`
+  - `publish/geometry_preview/tileset.json`
+  - `publish/geometry_preview/geometry_publish_report.json`
+- 本次 approved source `dwg-12d5f1b6 / 主橋塔.dwg` preview 統計：
+  - feature：1,314
+  - line feature：35
+  - surface feature：1,279
+  - triangle：15,768
+  - raw/tile GLB：約 1.9MB
+- `publish/index.html` 新增預設開啟的 `minimal geometry preview` toggle：
+  - 載入 `geometry_preview/raw.glb`
+  - QA bbox / AOI / rejected / needs review / duplicate / outlier overlay 繼續可開關。
+  - `spatial_pick_index.json` 與 hybrid pick flow 不變。

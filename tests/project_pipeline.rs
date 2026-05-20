@@ -8,6 +8,9 @@ use ifc_to_3dtiles::{
     },
     cad_metadata::{CadHierarchyDump, CadLevel, CadMaterial, CadModel, CadReference},
     fingerprint::{GeometryFingerprint, duplicate_candidate_score},
+    geometry_preview::{
+        GeometryPreviewFeature, build_geometry_preview_tileset_json, build_minimal_geometry_preview,
+    },
     georef::{
         Aoi, Bounds2, BoundsSummary, SourceTransform, classify_source_scale, decide_source_status,
     },
@@ -1978,6 +1981,80 @@ fn phase1j_js_pick_accuracy_tests_cover_source_decision_export() {
     assert!(script.contains("source QA decision export preserves required fields"));
     assert!(script.contains("source QA decision counts decisions"));
     assert!(script.contains("runtime QA report includes decision counts"));
+}
+
+#[test]
+fn phase1k_preview_mesh_builds_line_and_surface_geometry() {
+    let output = build_minimal_geometry_preview(
+        "dwg-12d5f1b6",
+        [292100.0, 2785200.0, 0.0],
+        [121.42, 25.15, 0.0],
+        [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ],
+        &[
+            GeometryPreviewFeature {
+                feature_id: 1,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "0".to_string(),
+                geometry_type: "LINESTRING".to_string(),
+                bbox: [292100.0, 2785200.0, 10.0, 292110.0, 2785200.0, 10.0],
+            },
+            GeometryPreviewFeature {
+                feature_id: 2,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "PireA".to_string(),
+                geometry_type: "POLYHEDRALSURFACE".to_string(),
+                bbox: [292120.0, 2785210.0, 0.0, 292130.0, 2785220.0, 30.0],
+            },
+        ],
+    )
+    .expect("minimal preview");
+
+    assert_eq!(&output.glb[0..4], b"glTF");
+    assert!(output.mesh.triangle_count() > 0);
+    assert_eq!(output.report.feature_count, 2);
+    assert_eq!(output.report.line_feature_count, 1);
+    assert_eq!(output.report.surface_feature_count, 1);
+    assert_eq!(output.report.source_count, 1);
+}
+
+#[test]
+fn phase1k_geometry_preview_tileset_references_tile_glb() {
+    let tileset = build_geometry_preview_tileset_json(
+        [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 100.0, 200.0, 300.0, 1.0,
+        ],
+        [0.0, 0.0, 0.0, 20.0, 10.0, 6.0],
+    );
+    let json = serde_json::to_string(&tileset).expect("tileset json");
+
+    assert!(json.contains("\"version\":\"1.1\""));
+    assert!(json.contains("\"uri\":\"tile.glb\""));
+    assert!(json.contains("\"geometricError\":0"));
+}
+
+#[test]
+fn phase1k_publish_viewer_has_minimal_geometry_preview_toggle() {
+    let html = render_publish_viewer_html();
+
+    assert!(html.contains("geometryPreviewToggle"));
+    assert!(html.contains("geometry_preview/geometry_publish_report.json"));
+    assert!(html.contains("geometry_preview/tileset.json"));
+    assert!(html.contains("loadGeometryPreview"));
+    assert!(html.contains("minimal geometry preview"));
+}
+
+#[test]
+fn phase1k_cli_and_script_expose_geometry_preview_publish() {
+    let main_rs = std::fs::read_to_string("src/main.rs").expect("main.rs");
+    let script =
+        std::fs::read_to_string("tools/run_phase1k_geometry_preview.ps1").unwrap_or_default();
+
+    assert!(main_rs.contains("GeometryPreview"));
+    assert!(main_rs.contains("geometry-preview"));
+    assert!(script.contains("geometry-preview"));
+    assert!(script.contains("geometry_publish_report.json"));
 }
 
 #[test]

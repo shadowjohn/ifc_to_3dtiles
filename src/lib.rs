@@ -6,6 +6,7 @@ pub mod convert;
 pub mod crs;
 pub mod fingerprint;
 pub mod geometry;
+pub mod geometry_preview;
 pub mod georef;
 pub mod glb;
 pub mod inspect;

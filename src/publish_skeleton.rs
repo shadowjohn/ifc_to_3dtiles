@@ -283,6 +283,7 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
   <div id="missingCesium">找不到同層 Cesium-1.141，請把 Cesium 放在 publish/Cesium-1.141 或改用正確相對路徑。</div>
   <div id="cesiumContainer"></div>
   <div id="toolbar">
+    <label><input id="geometryPreviewToggle" type="checkbox" checked> minimal geometry preview</label>
     <label><input id="approvedGeometryToggle" type="checkbox"> approved geometry</label>
     <label><input id="approvedToggle" type="checkbox" checked> approved only</label>
     <label><input id="rejectedToggle" type="checkbox"> rejected bbox</label>
@@ -346,7 +347,10 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       spatialQa: "spatial_qa_manifest.json",
       runtimeManifest: "runtime_manifest.json",
       spatialPick: "spatial_pick_index.json",
-      sourceQaDecisions: "source_qa_decisions.json"
+      sourceQaDecisions: "source_qa_decisions.json",
+      geometryPreviewReport: "geometry_preview/geometry_publish_report.json",
+      geometryPreviewTileset: "geometry_preview/tileset.json",
+      geometryPreviewGlb: "geometry_preview/raw.glb"
     };
     const state = {
       approved: [],
@@ -365,6 +369,10 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       runtimeLoading: false,
       runtimeFeatureCount: 0,
       runtimeMetadataFields: [],
+      geometryPreviewModel: null,
+      geometryPreviewReport: null,
+      geometryPreviewLoaded: false,
+      geometryPreviewLoading: false,
       spatialPickIndex: null,
       spatialPickGrid: null,
       spatialPickSources: new Map(),
@@ -1184,8 +1192,10 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
         });
       }
       setRuntimeVisible(document.getElementById("approvedGeometryToggle").checked && state.runtimeLoaded);
+      setGeometryPreviewVisible(document.getElementById("geometryPreviewToggle").checked && state.geometryPreviewLoaded);
       status([
         "basemap: EMAP5 WMTS",
+        `minimal geometry preview: ${state.geometryPreviewLoaded ? "loaded" : "unloaded"}`,
         `approved geometry: ${state.runtimeLoaded ? state.runtimeModels.length : 0}`,
         `approved only: ${state.approved.length}`,
         `rejected bbox: ${state.rejected.length}`,
@@ -1270,6 +1280,52 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       for (const entry of state.runtimeModels) entry.model.show = visible;
       for (const entity of state.runtimePickEntities) entity.show = visible;
       updateRuntimeDebug();
+    }
+    function setGeometryPreviewVisible(visible) {
+      if (state.geometryPreviewModel) state.geometryPreviewModel.show = visible;
+    }
+    async function loadGeometryPreview(viewer) {
+      if (state.geometryPreviewLoaded || state.geometryPreviewLoading) {
+        setGeometryPreviewVisible(true);
+        return;
+      }
+      state.geometryPreviewLoading = true;
+      try {
+        state.geometryPreviewReport = await fetchRuntimeJson(DATA_FILES.geometryPreviewReport);
+        const modelMatrix = Cesium.Matrix4.fromArray(state.geometryPreviewReport.model_matrix);
+        const model = Cesium.Model.fromGltfAsync
+          ? await Cesium.Model.fromGltfAsync({
+              url: DATA_FILES.geometryPreviewGlb,
+              modelMatrix,
+              allowPicking: false,
+              color: Cesium.Color.WHITE,
+              colorBlendMode: Cesium.ColorBlendMode.MIX,
+              colorBlendAmount: 0.0
+            })
+          : Cesium.Model.fromGltf({
+              url: DATA_FILES.geometryPreviewGlb,
+              modelMatrix,
+              allowPicking: false
+            });
+        if (!Cesium.Model.fromGltfAsync && model.readyPromise) await model.readyPromise;
+        model.show = true;
+        viewer.scene.primitives.add(model);
+        state.geometryPreviewModel = model;
+        state.geometryPreviewLoaded = true;
+        refresh(viewer);
+      } catch (err) {
+        document.getElementById("geometryPreviewToggle").checked = false;
+        status("minimal geometry preview 載入失敗；請先執行 tools/run_phase1k_geometry_preview.ps1。\n" + formatError(err));
+      } finally {
+        state.geometryPreviewLoading = false;
+      }
+    }
+    async function toggleGeometryPreview(viewer) {
+      if (document.getElementById("geometryPreviewToggle").checked) {
+        await loadGeometryPreview(viewer);
+      } else {
+        setGeometryPreviewVisible(false);
+      }
     }
     function runtimeMaterial(feature, alpha) {
       const color = feature.explode_group_key && feature.explode_group_key.includes("電梯")
@@ -1858,6 +1914,7 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       state.approved = approved.sources || [];
       state.rejected = (overlays.sources || []).filter(s => s.approval_decision === "rejected");
       state.needs_review = (overlays.sources || []).filter(s => s.approval_decision === "needs_review");
+      document.getElementById("geometryPreviewToggle").addEventListener("change", () => toggleGeometryPreview(viewer));
       document.getElementById("approvedGeometryToggle").addEventListener("change", () => toggleRuntimeGeometry(viewer));
       document.getElementById("approvedToggle").addEventListener("change", () => refresh(viewer));
       document.getElementById("rejectedToggle").addEventListener("change", () => refresh(viewer));
@@ -1894,6 +1951,7 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       renderSourceList();
       renderPickDebugPanel();
       refresh(viewer);
+      await toggleGeometryPreview(viewer);
       if (state.approved[0]) showSourceDetail(state.approved[0].source_id, "approved");
       if (state.entities.length) viewer.zoomTo(viewer.entities);
     }
