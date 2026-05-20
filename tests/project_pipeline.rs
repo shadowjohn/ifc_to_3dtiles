@@ -1842,6 +1842,41 @@ fn phase1gf_js_pick_accuracy_tests_cover_ray_bbox_cases() {
 }
 
 #[test]
+fn phase1gg_publish_viewer_has_visual_explainability_controls_and_states() {
+    let html = render_publish_viewer_html();
+
+    assert!(html.contains("visualLegend"));
+    assert!(html.contains("QA source bbox"));
+    assert!(html.contains("picked bbox"));
+    assert!(html.contains("ray candidate"));
+    assert!(html.contains("nearest candidate"));
+    assert!(html.contains("rejected bbox"));
+    assert!(html.contains("needs review bbox"));
+    assert!(html.contains("showPickLabelsToggle"));
+    assert!(html.contains("visualSelection"));
+    assert!(html.contains("interactionSelection"));
+    assert!(html.contains("bboxVisualSource"));
+    assert!(html.contains("sourceQaBboxStyle"));
+    assert!(html.contains("selectedPickBboxStyle"));
+    assert!(html.contains("candidateBboxStyle"));
+    assert!(html.contains("aoiBboxStyle"));
+    assert!(html.contains("hoverSourceBbox"));
+    assert!(html.contains("hoverCandidateBbox"));
+    assert!(html.contains("formatPickLabelText"));
+}
+
+#[test]
+fn phase1gg_js_pick_accuracy_tests_cover_visual_explainability() {
+    let script = std::fs::read_to_string("tools/test_phase1g_pick_accuracy.js")
+        .expect("Phase 1G-G JS test script");
+
+    assert!(script.contains("hover source sets highlight state"));
+    assert!(script.contains("selected pick overrides hover style"));
+    assert!(script.contains("miss keeps source QA visual state"));
+    assert!(script.contains("label text generated correctly"));
+}
+
+#[test]
 fn phase1gc_spatial_pick_index_serializes_runtime_only_schema_with_local_bbox() {
     let index = build_spatial_pick_index(
         "local",

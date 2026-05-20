@@ -71,6 +71,39 @@ function pickWithRayThenNearest(rayHits, nearestCandidates, thresholdPx) {
   };
 }
 
+function visualStateAfterHoverSource(state, sourceId) {
+  return {
+    ...state,
+    hoverSourceId: sourceId,
+    visualSelection: state.selectedPickFeatureId
+      ? state.visualSelection
+      : `source_qa:${sourceId}`,
+    bboxVisualSource: state.selectedPickFeatureId ? state.bboxVisualSource : "source_qa_hover"
+  };
+}
+
+function visualStateAfterPick(state, feature, pickSource) {
+  return {
+    ...state,
+    selectedPickFeatureId: feature.featureId,
+    visualSelection: `pick:${feature.sourceId}:${feature.featureId}`,
+    interactionSelection: pickSource,
+    bboxVisualSource: pickSource === "spatial_pick_index_ray" ? "pick_fallback_ray" : "pick_fallback_nearest"
+  };
+}
+
+function visualStateAfterMiss(state) {
+  return {
+    ...state,
+    interactionSelection: "miss"
+  };
+}
+
+function formatPickLabelText(feature, pickSource) {
+  const status = pickSource === "spatial_pick_index_ray" ? "ray" : "nearest";
+  return `${feature.featureId} | ${status}/${feature.sourceId}`;
+}
+
 function test(name, fn) {
   try {
     fn();
@@ -185,4 +218,53 @@ test("invalid bbox skipped", () => {
 
   assert.strictEqual(distance, null);
   assert.strictEqual(ranked.hit.featureId, 2);
+});
+
+test("hover source sets highlight state", () => {
+  const next = visualStateAfterHoverSource({
+    selectedPickFeatureId: null,
+    visualSelection: "none",
+    bboxVisualSource: "none"
+  }, "dwg-12d5f1b6");
+
+  assert.strictEqual(next.hoverSourceId, "dwg-12d5f1b6");
+  assert.strictEqual(next.visualSelection, "source_qa:dwg-12d5f1b6");
+  assert.strictEqual(next.bboxVisualSource, "source_qa_hover");
+});
+
+test("selected pick overrides hover style", () => {
+  const picked = visualStateAfterPick({
+    selectedPickFeatureId: null,
+    visualSelection: "source_qa:dwg-12d5f1b6",
+    bboxVisualSource: "source_qa_hover"
+  }, {
+    sourceId: "dwg-12d5f1b6",
+    featureId: 99
+  }, "spatial_pick_index_ray");
+  const hovered = visualStateAfterHoverSource(picked, "dwg-850173d8");
+
+  assert.strictEqual(hovered.hoverSourceId, "dwg-850173d8");
+  assert.strictEqual(hovered.visualSelection, "pick:dwg-12d5f1b6:99");
+  assert.strictEqual(hovered.bboxVisualSource, "pick_fallback_ray");
+});
+
+test("miss keeps source QA visual state", () => {
+  const next = visualStateAfterMiss({
+    visualSelection: "source_qa:dwg-12d5f1b6",
+    interactionSelection: "spatial_pick_index",
+    bboxVisualSource: "source_qa_hover"
+  });
+
+  assert.strictEqual(next.interactionSelection, "miss");
+  assert.strictEqual(next.visualSelection, "source_qa:dwg-12d5f1b6");
+  assert.strictEqual(next.bboxVisualSource, "source_qa_hover");
+});
+
+test("label text generated correctly", () => {
+  const label = formatPickLabelText({
+    sourceId: "dwg-12d5f1b6",
+    featureId: 123
+  }, "spatial_pick_index_ray");
+
+  assert.strictEqual(label, "123 | ray/dwg-12d5f1b6");
 });
