@@ -299,6 +299,18 @@ Phase 1L 會把同一份診斷報告同步寫到 `publish\geometry_diagnostic_re
 
 QA viewer 可用 `bad geometry only`、`bbox mismatch`、`outlier geometry`、NaN、huge bbox、tiny bbox、degenerate、transform mismatch 等 filter 快速定位壞 feature。`runtime_qa_report.json` 也會統計 bad / mismatch / NaN / outlier geometry counts。
 
+Phase 1M 會再輸出 `publish\geometry_transform_diff_report.json`，針對 bbox mismatch / transform mismatch / far away feature 做 detailed diff，包含 center delta、size ratio、diagonal ratio、overlap ratio、possibleCause histogram 與 farAwayFeatureIds。這階段仍只診斷，不修 tiny bbox、不改 viewer UI。
+
+Phase 1N 會先清掉 minimal geometry preview 的退化噪音：tiny / zero-area / near-zero feature 會分類成 `skip`、`keep_as_point_marker`、`inflate_for_debug_only`、`keep_raw`。`geometry_publish_report.json` 會新增 `skipped_tiny_feature_count`、`debug_marker_count`、`degenerate_skipped_count`、`debug_inflated_feature_count`；`geometry_diagnostic_report.json` 每筆 feature 會新增 `cleanupAction` 與 `meshExported`，讓 debug inflation 不再被誤判為 transform mismatch。
+
+Phase 2A 會改善 minimal geometry preview 的可視性，但仍維持單一 GLB。`geometry_publish_report.json` 會新增 `visual_category_counts`、`line_width_exaggeration`、`surface_shading_mode`、`double_side_debug_available`；viewer 會顯示 Visual Preview controls 與 triangles / lines / skipped / markers / category stats。可用下列指令產 screenshot baseline：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\run_phase2a_preview_screenshot.ps1
+```
+
+輸出在 `out\inspect_tamkang\publish\screenshots\phase2a_preview.png` 與 `phase2a_visual_report.json`。第一版只做 baseline artifact，不做 pixel diff。
+
 ## Verification
 
 ```powershell

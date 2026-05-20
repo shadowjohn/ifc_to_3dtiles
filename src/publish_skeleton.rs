@@ -234,6 +234,7 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
     html, body, #cesiumContainer { width:100%; height:100%; margin:0; overflow:hidden; background:#101418; color:#e8eef5; font-family:"Segoe UI", Arial, sans-serif; }
     #toolbar { position:absolute; z-index:2; top:12px; left:12px; background:rgba(16,20,24,.92); border:1px solid #2b3642; border-radius:8px; padding:10px 12px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
     #toolbar label { display:flex; gap:6px; align-items:center; white-space:nowrap; }
+    #visualPreviewPanel { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:6px 8px; border:1px solid #334150; border-radius:6px; background:rgba(24,34,43,.72); }
     #status { position:absolute; z-index:2; right:12px; bottom:12px; max-width:520px; max-height:40vh; overflow:auto; background:rgba(16,20,24,.92); border:1px solid #2b3642; border-radius:8px; padding:10px 12px; white-space:pre-wrap; }
     #detailPanel { position:absolute; z-index:2; top:12px; right:12px; width:min(390px, calc(100vw - 24px)); max-height:calc(100vh - 96px); overflow:auto; background:rgba(16,20,24,.94); border:1px solid #2b3642; border-radius:8px; padding:12px; box-shadow:0 16px 40px rgba(0,0,0,.38); }
     #sourceListPanel { position:absolute; z-index:2; top:72px; left:12px; width:min(360px, calc(100vw - 24px)); max-height:calc(100vh - 150px); overflow:auto; background:rgba(16,20,24,.94); border:1px solid #2b3642; border-radius:8px; padding:12px; box-shadow:0 16px 40px rgba(0,0,0,.30); }
@@ -284,6 +285,14 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
   <div id="cesiumContainer"></div>
   <div id="toolbar">
     <label><input id="geometryPreviewToggle" type="checkbox" checked> minimal geometry preview</label>
+    <div id="visualPreviewPanel">
+      <label><input id="previewSurfacesToggle" type="checkbox" checked> surfaces</label>
+      <label><input id="previewLinesToggle" type="checkbox" checked> lines</label>
+      <label><input id="previewMarkersToggle" type="checkbox" checked> markers</label>
+      <label><input id="previewQaBboxToggle" type="checkbox" checked> QA bbox</label>
+      <label><input id="previewPickOverlayToggle" type="checkbox" checked> pick overlay</label>
+      <label><input id="doubleSideDebugToggle" type="checkbox"> double-side debug</label>
+    </div>
     <label><input id="badGeometryOnlyToggle" type="checkbox"> bad geometry only</label>
     <label><input id="bboxMismatchToggle" type="checkbox"> bbox mismatch</label>
     <label><input id="outlierGeometryToggle" type="checkbox"> outlier geometry</label>
@@ -326,6 +335,8 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
     <h2>Source QA</h2>
     <input id="qaSearch" type="search" placeholder="搜尋 source / status / layer">
     <div id="qaSummary" class="muted">loading</div>
+    <h3>Geometry Preview</h3>
+    <pre id="geometryPreviewStats" class="mono muted">preview stats unloaded</pre>
     <div class="qa-actions">
       <button id="duplicateDrillBtn" class="btn">Duplicate</button>
       <button id="outlierListBtn" class="btn">Outliers</button>
@@ -520,6 +531,10 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
     }
     function pickLabelVisible() {
       return !!document.getElementById("showPickLabelsToggle")?.checked;
+    }
+    function pickOverlayVisible() {
+      return !!document.getElementById("showPickBboxToggle")?.checked
+        && !!document.getElementById("previewPickOverlayToggle")?.checked;
     }
     function gridPoint(feature) {
       const c = feature && feature.center;
@@ -1273,6 +1288,30 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       const node = document.getElementById("runtimeDebug");
       if (node) node.textContent = runtimeDebugText();
     }
+    function updateGeometryPreviewStats(report) {
+      const node = document.getElementById("geometryPreviewStats");
+      if (!node) return;
+      if (!report) {
+        node.textContent = "preview stats unloaded";
+        return;
+      }
+      const categories = report.visual_category_counts || {};
+      const categoryText = Object.keys(categories)
+        .sort()
+        .map(key => `${key}:${categories[key]}`)
+        .join("  ") || "-";
+      node.textContent = [
+        `triangles: ${report.triangle_count ?? 0}`,
+        `surfaces: ${report.surface_feature_count ?? 0}`,
+        `lines: ${report.line_feature_count ?? 0}`,
+        `skipped: ${report.skipped_tiny_feature_count ?? 0}`,
+        `debug markers: ${report.debug_marker_count ?? 0}`,
+        `debug inflated: ${report.debug_inflated_feature_count ?? 0}`,
+        `line width x${report.line_width_exaggeration ?? 1}`,
+        `shading: ${report.surface_shading_mode || "-"}`,
+        `visual_category_counts: ${categoryText}`
+      ].join("\n");
+    }
     function rankSpatialPickCandidates(candidates, thresholdPx) {
       const valid = (candidates || [])
         .filter(candidate =>
@@ -1298,9 +1337,22 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
     }
     function setGeometryPreviewVisible(visible) {
       const badOnly = document.getElementById("badGeometryOnlyToggle")?.checked;
-      if (state.geometryPreviewModel) state.geometryPreviewModel.show = visible && !badOnly;
+      const hasVisibleGroup = !!(
+        document.getElementById("previewSurfacesToggle")?.checked
+        || document.getElementById("previewLinesToggle")?.checked
+        || document.getElementById("previewMarkersToggle")?.checked
+      );
+      if (state.geometryPreviewModel) {
+        state.geometryPreviewModel.show = visible && !badOnly && hasVisibleGroup;
+        const doubleSide = !!document.getElementById("doubleSideDebugToggle")?.checked;
+        if ("backFaceCulling" in state.geometryPreviewModel) {
+          state.geometryPreviewModel.backFaceCulling = !doubleSide;
+        }
+      }
+      updateGeometryPreviewStats(state.geometryPreviewReport);
     }
     function geometryDiagnosticEnabled() {
+      if (!document.getElementById("previewQaBboxToggle")?.checked) return false;
       return !!(
         document.getElementById("badGeometryOnlyToggle")?.checked
         || document.getElementById("bboxMismatchToggle")?.checked
@@ -1469,6 +1521,7 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       state.geometryPreviewLoading = true;
       try {
         state.geometryPreviewReport = await fetchRuntimeJson(DATA_FILES.geometryPreviewReport);
+        updateGeometryPreviewStats(state.geometryPreviewReport);
         const modelMatrix = Cesium.Matrix4.fromArray(state.geometryPreviewReport.model_matrix);
         const model = Cesium.Model.fromGltfAsync
           ? await Cesium.Model.fromGltfAsync({
@@ -1727,7 +1780,7 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
         const rayPick = spatialRayPickFeature(viewer, movement.position, pickStartedAt);
         if (rayPick) {
           showSpatialPickFeatureDetail(rayPick, "spatial_pick_index_ray");
-          if (document.getElementById("showPickBboxToggle").checked) {
+          if (pickOverlayVisible()) {
             drawSpatialPickBbox(viewer, rayPick);
           } else {
             clearSpatialPickHighlight(viewer);
@@ -1737,7 +1790,7 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
         const fallback = nearestSpatialPickFeature(viewer, movement.position, thresholdPx, pickStartedAt);
         if (fallback) {
           showSpatialPickFeatureDetail(fallback, "spatial_pick_index");
-          if (document.getElementById("showPickBboxToggle").checked) {
+          if (pickOverlayVisible()) {
             drawSpatialPickBbox(viewer, fallback);
           } else {
             clearSpatialPickHighlight(viewer);
@@ -2103,6 +2156,14 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       state.rejected = (overlays.sources || []).filter(s => s.approval_decision === "rejected");
       state.needs_review = (overlays.sources || []).filter(s => s.approval_decision === "needs_review");
       document.getElementById("geometryPreviewToggle").addEventListener("change", () => toggleGeometryPreview(viewer));
+      document.getElementById("previewSurfacesToggle").addEventListener("change", () => setGeometryPreviewVisible(document.getElementById("geometryPreviewToggle").checked && state.geometryPreviewLoaded));
+      document.getElementById("previewLinesToggle").addEventListener("change", () => setGeometryPreviewVisible(document.getElementById("geometryPreviewToggle").checked && state.geometryPreviewLoaded));
+      document.getElementById("previewMarkersToggle").addEventListener("change", () => setGeometryPreviewVisible(document.getElementById("geometryPreviewToggle").checked && state.geometryPreviewLoaded));
+      document.getElementById("previewQaBboxToggle").addEventListener("change", () => refresh(viewer));
+      document.getElementById("previewPickOverlayToggle").addEventListener("change", () => {
+        if (!document.getElementById("previewPickOverlayToggle").checked) clearSpatialPickHighlight(viewer);
+      });
+      document.getElementById("doubleSideDebugToggle").addEventListener("change", () => setGeometryPreviewVisible(document.getElementById("geometryPreviewToggle").checked && state.geometryPreviewLoaded));
       document.getElementById("badGeometryOnlyToggle").addEventListener("change", () => refresh(viewer));
       document.getElementById("bboxMismatchToggle").addEventListener("change", () => refresh(viewer));
       document.getElementById("outlierGeometryToggle").addEventListener("change", () => refresh(viewer));

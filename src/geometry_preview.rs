@@ -19,6 +19,10 @@ use crate::{
 
 const LINE_THICKNESS_M: f64 = 0.18;
 const SURFACE_MIN_THICKNESS_M: f64 = 0.35;
+const LINE_WIDTH_EXAGGERATION: f64 = 4.0;
+const TINY_LINE_LENGTH_M: f64 = 0.5;
+const TINY_SURFACE_AREA_M2: f64 = 0.05;
+const DEBUG_MARKER_SIZE_M: f64 = 0.6;
 const DIAGNOSTIC_CENTER_TOLERANCE_M: f64 = 0.5;
 const DIAGNOSTIC_SIZE_RATIO_TOLERANCE: f64 = 10.0;
 const DIAGNOSTIC_SOURCE_MARGIN_M: f64 = 50.0;
@@ -51,6 +55,14 @@ pub struct GeometryPublishReport {
     pub line_feature_count: usize,
     pub surface_feature_count: usize,
     pub fallback_feature_count: usize,
+    pub skipped_tiny_feature_count: usize,
+    pub debug_marker_count: usize,
+    pub degenerate_skipped_count: usize,
+    pub debug_inflated_feature_count: usize,
+    pub visual_category_counts: BTreeMap<String, usize>,
+    pub line_width_exaggeration: f64,
+    pub surface_shading_mode: String,
+    pub double_side_debug_available: bool,
     pub vertex_count: usize,
     pub triangle_count: usize,
     pub origin_epsg3826: [f64; 3],
@@ -100,6 +112,8 @@ pub struct GeometryDiagnosticFeature {
     pub source_id: String,
     pub layer: String,
     pub category: String,
+    pub cleanup_action: String,
+    pub mesh_exported: bool,
     pub vertex_count: usize,
     pub triangle_count: usize,
     pub bbox: [f64; 6],
@@ -135,11 +149,100 @@ pub struct GeometryDiagnosticFeature {
     pub reasons: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeometryTransformDiffReport {
+    pub report_type: String,
+    pub generated_at: String,
+    pub report_version: u32,
+    pub transform_diff_feature_count: usize,
+    pub mismatch_feature_count: usize,
+    pub far_away_feature_count: usize,
+    pub possible_cause_histogram: BTreeMap<String, usize>,
+    pub far_away_feature_ids: Vec<i64>,
+    pub features: Vec<GeometryTransformDiffFeature>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeometryTransformDiffFeature {
+    pub feature_id: i64,
+    pub source: String,
+    pub source_id: String,
+    pub layer: String,
+    pub category: String,
+    #[serde(rename = "geometryBBox")]
+    pub geometry_bbox: [f64; 6],
+    #[serde(rename = "pickBBox")]
+    pub pick_bbox: [f64; 6],
+    pub geometry_center: [f64; 3],
+    pub pick_center: [f64; 3],
+    pub center_delta: [f64; 3],
+    pub center_distance: f64,
+    pub geometry_size: [f64; 3],
+    pub pick_size: [f64; 3],
+    #[serde(rename = "sizeRatioXYZ")]
+    pub size_ratio_xyz: [f64; 3],
+    pub diagonal_ratio: f64,
+    pub overlap_ratio: f64,
+    pub possible_cause: String,
+    pub distance_from_scene_center: Option<f64>,
+    pub nearest_normal_feature_distance: Option<f64>,
+    pub source_offset_candidate: Option<[f64; 3]>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PreviewKind {
     Line,
     Surface,
     Fallback,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreviewCleanupAction {
+    Skip,
+    KeepAsPointMarker,
+    InflateForDebugOnly,
+    KeepRaw,
+}
+
+impl PreviewCleanupAction {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Skip => "skip",
+            Self::KeepAsPointMarker => "keep_as_point_marker",
+            Self::InflateForDebugOnly => "inflate_for_debug_only",
+            Self::KeepRaw => "keep_raw",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum VisualCategory {
+    Wall,
+    Slab,
+    Beam,
+    Column,
+    Annotation,
+    Linework,
+    Marker,
+    Unknown,
+}
+
+impl VisualCategory {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Wall => "wall",
+            Self::Slab => "slab",
+            Self::Beam => "beam",
+            Self::Column => "column",
+            Self::Annotation => "annotation",
+            Self::Linework => "linework",
+            Self::Marker => "marker",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 
 pub fn build_minimal_geometry_preview(
@@ -161,6 +264,11 @@ pub fn build_minimal_geometry_preview(
     let mut line_feature_count = 0;
     let mut surface_feature_count = 0;
     let mut fallback_feature_count = 0;
+    let mut skipped_tiny_feature_count = 0;
+    let mut debug_marker_count = 0;
+    let mut degenerate_skipped_count = 0;
+    let mut debug_inflated_feature_count = 0;
+    let mut visual_category_counts = BTreeMap::new();
 
     for (batch_id, feature) in features.iter().enumerate() {
         if source_id != "*" && feature.source_id != source_id {
@@ -170,38 +278,42 @@ pub fn build_minimal_geometry_preview(
             );
         }
         source_ids.insert(feature.source_id.clone());
-        match preview_kind(feature) {
+        let kind = preview_kind(feature);
+        let cleanup_action = preview_cleanup_action(feature);
+        let visual_category = visual_category(feature, kind, cleanup_action);
+        *visual_category_counts
+            .entry(visual_category.as_str().to_string())
+            .or_insert(0) += 1;
+        match kind {
             PreviewKind::Line => {
                 line_feature_count += 1;
-                append_preview_box(
-                    &mut mesh,
-                    expand_bbox(feature.bbox, LINE_THICKNESS_M)?,
-                    origin_epsg3826,
-                    batch_id as u16,
-                    [1.0, 0.72, 0.20, 1.0],
-                );
             }
             PreviewKind::Surface => {
                 surface_feature_count += 1;
-                append_preview_box(
-                    &mut mesh,
-                    expand_bbox(feature.bbox, SURFACE_MIN_THICKNESS_M)?,
-                    origin_epsg3826,
-                    batch_id as u16,
-                    [0.35, 0.78, 1.0, 1.0],
-                );
             }
             PreviewKind::Fallback => {
                 fallback_feature_count += 1;
-                append_preview_box(
-                    &mut mesh,
-                    expand_bbox(feature.bbox, SURFACE_MIN_THICKNESS_M)?,
-                    origin_epsg3826,
-                    batch_id as u16,
-                    [0.72, 0.72, 0.72, 1.0],
-                );
             }
         }
+
+        let Some(bbox) = effective_preview_bbox(feature, cleanup_action)? else {
+            skipped_tiny_feature_count += 1;
+            degenerate_skipped_count += 1;
+            continue;
+        };
+        let color = match cleanup_action {
+            PreviewCleanupAction::Skip => unreachable!("skip already returned None"),
+            PreviewCleanupAction::KeepAsPointMarker => {
+                debug_marker_count += 1;
+                visual_category_color(visual_category)
+            }
+            PreviewCleanupAction::InflateForDebugOnly => {
+                debug_inflated_feature_count += 1;
+                visual_category_color(visual_category)
+            }
+            PreviewCleanupAction::KeepRaw => visual_category_color(visual_category),
+        };
+        append_preview_box(&mut mesh, bbox, origin_epsg3826, batch_id as u16, color);
     }
 
     ensure!(!mesh.is_empty(), "geometry preview mesh is empty");
@@ -211,6 +323,7 @@ pub fn build_minimal_geometry_preview(
         "preview": "minimal_geometry_preview",
         "feature_count": features.len(),
         "source_ids": approved_source_ids.clone(),
+        "visual_category_counts": visual_category_counts.clone(),
         "note": "Entity bbox proxy preview; not production geometry fidelity"
     });
     let glb = build_glb_with_extras(&mesh, Some(extras))?;
@@ -223,6 +336,14 @@ pub fn build_minimal_geometry_preview(
         line_feature_count,
         surface_feature_count,
         fallback_feature_count,
+        skipped_tiny_feature_count,
+        debug_marker_count,
+        degenerate_skipped_count,
+        debug_inflated_feature_count,
+        visual_category_counts,
+        line_width_exaggeration: LINE_WIDTH_EXAGGERATION,
+        surface_shading_mode: "category_color_with_normals".to_string(),
+        double_side_debug_available: true,
         vertex_count: mesh.positions.len(),
         triangle_count: mesh.triangle_count(),
         origin_epsg3826,
@@ -346,6 +467,63 @@ pub fn build_geometry_diagnostic_report(
     })
 }
 
+pub fn build_geometry_transform_diff_report(
+    diagnostic: &GeometryDiagnosticReport,
+) -> Result<GeometryTransformDiffReport> {
+    let normal_centers: Vec<[f64; 3]> = diagnostic
+        .features
+        .iter()
+        .filter(|feature| {
+            feature.problem_category == "none"
+                && !feature.bbox_tolerance_exceeded
+                && !feature.outlier_geometry
+        })
+        .map(|feature| feature.center)
+        .collect();
+    let source_center = bbox_center(diagnostic.source_bbox);
+    let mut features = Vec::new();
+    let mut possible_cause_histogram = BTreeMap::new();
+    let mut far_away_feature_ids = Vec::new();
+    let mut mismatch_feature_count = 0;
+
+    for feature in &diagnostic.features {
+        let include = feature.bbox_tolerance_exceeded
+            || feature.outlier_geometry
+            || feature.problem_flags.iter().any(|flag| {
+                flag == "bbox_mismatch" || flag == "transform_mismatch" || flag == "far_away"
+            });
+        if !include {
+            continue;
+        }
+        if feature.bbox_tolerance_exceeded {
+            mismatch_feature_count += 1;
+        }
+        if feature.outlier_geometry || feature.problem_flags.iter().any(|flag| flag == "far_away") {
+            far_away_feature_ids.push(feature.feature_id);
+        }
+        let diff = transform_diff_feature(feature, source_center, &normal_centers);
+        *possible_cause_histogram
+            .entry(diff.possible_cause.clone())
+            .or_insert(0) += 1;
+        features.push(diff);
+    }
+
+    Ok(GeometryTransformDiffReport {
+        report_type: "geometryTransformDiffReport".to_string(),
+        generated_at: chrono_like_now(),
+        report_version: 1,
+        transform_diff_feature_count: features.len(),
+        mismatch_feature_count,
+        far_away_feature_count: far_away_feature_ids.len(),
+        possible_cause_histogram,
+        far_away_feature_ids,
+        features,
+        warnings: vec![
+            "diagnostics only; Phase 1M does not modify geometry or viewer behavior".to_string(),
+        ],
+    })
+}
+
 pub fn write_geometry_preview_outputs(input: &Path, output: &Path) -> Result<()> {
     let preview_dir = output.join("geometry_preview");
     fs::create_dir_all(&preview_dir)
@@ -417,6 +595,7 @@ pub fn write_geometry_preview_outputs(input: &Path, output: &Path) -> Result<()>
         merged_bbox,
         &features,
     )?;
+    let transform_diff = build_geometry_transform_diff_report(&diagnostic)?;
 
     fs::write(preview_dir.join("raw.glb"), &preview.glb)
         .with_context(|| "寫入 raw.glb 失敗".to_string())?;
@@ -445,6 +624,11 @@ pub fn write_geometry_preview_outputs(input: &Path, output: &Path) -> Result<()>
         serde_json::to_vec_pretty(&diagnostic)?,
     )
     .with_context(|| "寫入 publish root geometry_diagnostic_report.json 失敗".to_string())?;
+    fs::write(
+        output.join("geometry_transform_diff_report.json"),
+        serde_json::to_vec_pretty(&transform_diff)?,
+    )
+    .with_context(|| "寫入 geometry_transform_diff_report.json 失敗".to_string())?;
 
     Ok(())
 }
@@ -485,6 +669,139 @@ fn expand_bbox(bbox: [f64; 6], min_thickness: f64) -> Result<[f64; 6]> {
     Ok(out)
 }
 
+fn preview_cleanup_action(feature: &GeometryPreviewFeature) -> PreviewCleanupAction {
+    if !feature.bbox.iter().all(|value| value.is_finite()) {
+        return PreviewCleanupAction::Skip;
+    }
+    let bbox = normalize_bbox(feature.bbox);
+    let size = bbox_size(bbox);
+    let diagonal = bbox_diagonal(bbox);
+    let mut sorted_size = size;
+    sorted_size.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let has_debug_value = has_meaningful_debug_metadata(feature);
+
+    match preview_kind(feature) {
+        PreviewKind::Line => {
+            if diagonal < TINY_LINE_LENGTH_M {
+                if has_debug_value {
+                    PreviewCleanupAction::KeepAsPointMarker
+                } else {
+                    PreviewCleanupAction::Skip
+                }
+            } else if size.iter().any(|axis| *axis < LINE_THICKNESS_M) {
+                PreviewCleanupAction::InflateForDebugOnly
+            } else {
+                PreviewCleanupAction::KeepRaw
+            }
+        }
+        PreviewKind::Surface | PreviewKind::Fallback => {
+            let surface_area_hint = sorted_size[1] * sorted_size[2];
+            if surface_area_hint < TINY_SURFACE_AREA_M2 {
+                if has_debug_value {
+                    PreviewCleanupAction::KeepAsPointMarker
+                } else {
+                    PreviewCleanupAction::Skip
+                }
+            } else if size.iter().any(|axis| *axis < SURFACE_MIN_THICKNESS_M) {
+                PreviewCleanupAction::InflateForDebugOnly
+            } else {
+                PreviewCleanupAction::KeepRaw
+            }
+        }
+    }
+}
+
+fn has_meaningful_debug_metadata(feature: &GeometryPreviewFeature) -> bool {
+    let layer = feature.layer.trim();
+    !layer.is_empty() && layer != "0"
+}
+
+fn effective_preview_bbox(
+    feature: &GeometryPreviewFeature,
+    action: PreviewCleanupAction,
+) -> Result<Option<[f64; 6]>> {
+    let kind = preview_kind(feature);
+    let min_thickness = match kind {
+        PreviewKind::Line => LINE_THICKNESS_M,
+        PreviewKind::Surface | PreviewKind::Fallback => SURFACE_MIN_THICKNESS_M,
+    };
+    let bbox = normalize_bbox(feature.bbox);
+    match action {
+        PreviewCleanupAction::Skip => Ok(None),
+        PreviewCleanupAction::KeepAsPointMarker => {
+            Ok(Some(marker_bbox(bbox_center(bbox), DEBUG_MARKER_SIZE_M)))
+        }
+        PreviewCleanupAction::InflateForDebugOnly => Ok(Some(expand_bbox(bbox, min_thickness)?)),
+        PreviewCleanupAction::KeepRaw => Ok(Some(expand_bbox(bbox, min_thickness)?)),
+    }
+}
+
+fn marker_bbox(center: [f64; 3], size: f64) -> [f64; 6] {
+    let half = size * 0.5;
+    [
+        center[0] - half,
+        center[1] - half,
+        center[2] - half,
+        center[0] + half,
+        center[1] + half,
+        center[2] + half,
+    ]
+}
+
+fn visual_category(
+    feature: &GeometryPreviewFeature,
+    kind: PreviewKind,
+    cleanup_action: PreviewCleanupAction,
+) -> VisualCategory {
+    let text = format!(
+        "{} {}",
+        feature.layer.to_ascii_lowercase(),
+        feature.geometry_type.to_ascii_lowercase()
+    );
+    if contains_any(
+        &text,
+        &["anno", "annotation", "text", "dim", "label", "註", "文字"],
+    ) {
+        return VisualCategory::Annotation;
+    }
+    if matches!(kind, PreviewKind::Line) {
+        return VisualCategory::Linework;
+    }
+    if contains_any(&text, &["wall", "墻", "牆"]) {
+        VisualCategory::Wall
+    } else if contains_any(&text, &["slab", "floor", "deck", "版"]) {
+        VisualCategory::Slab
+    } else if contains_any(&text, &["beam", "girder", "cable", "梁"]) {
+        VisualCategory::Beam
+    } else if contains_any(
+        &text,
+        &["column", "pier", "pile", "tower", "柱", "墩", "塔"],
+    ) {
+        VisualCategory::Column
+    } else if cleanup_action == PreviewCleanupAction::KeepAsPointMarker {
+        VisualCategory::Marker
+    } else {
+        VisualCategory::Unknown
+    }
+}
+
+fn contains_any(text: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| text.contains(needle))
+}
+
+fn visual_category_color(category: VisualCategory) -> [f32; 4] {
+    match category {
+        VisualCategory::Wall => [0.35, 0.68, 1.0, 1.0],
+        VisualCategory::Slab => [0.55, 0.78, 0.42, 1.0],
+        VisualCategory::Beam => [1.0, 0.68, 0.22, 1.0],
+        VisualCategory::Column => [0.72, 0.50, 1.0, 1.0],
+        VisualCategory::Annotation => [0.78, 0.82, 0.88, 1.0],
+        VisualCategory::Linework => [1.0, 0.78, 0.24, 1.0],
+        VisualCategory::Marker => [1.0, 0.2, 0.75, 1.0],
+        VisualCategory::Unknown => [0.68, 0.70, 0.72, 1.0],
+    }
+}
+
 fn diagnose_geometry_feature(
     source_epsg: u32,
     origin_epsg3826: [f64; 3],
@@ -493,12 +810,10 @@ fn diagnose_geometry_feature(
     feature: &GeometryPreviewFeature,
 ) -> Result<GeometryDiagnosticFeature> {
     let kind = preview_kind(feature);
-    let min_thickness = match kind {
-        PreviewKind::Line => LINE_THICKNESS_M,
-        PreviewKind::Surface | PreviewKind::Fallback => SURFACE_MIN_THICKNESS_M,
-    };
+    let cleanup_action = preview_cleanup_action(feature);
     let pick_bbox = normalize_bbox(feature.bbox);
-    let bbox = expand_bbox(pick_bbox, min_thickness)?;
+    let mesh_exported = cleanup_action != PreviewCleanupAction::Skip;
+    let bbox = effective_preview_bbox(feature, cleanup_action)?.unwrap_or(pick_bbox);
     let center = bbox_center(bbox);
     let pick_center = bbox_center(pick_bbox);
     let size = bbox_size(bbox);
@@ -514,15 +829,22 @@ fn diagnose_geometry_feature(
     let bbox_center_distance = distance3(center, pick_center);
     let bbox_size_ratio = max_axis_size_ratio(size, pick_size);
     let bbox_overlap_ratio = bbox_overlap_ratio(bbox, pick_bbox);
-    let bbox_tolerance_exceeded = bbox_center_distance > DIAGNOSTIC_CENTER_TOLERANCE_M
+    let raw_bbox_tolerance_exceeded = bbox_center_distance > DIAGNOSTIC_CENTER_TOLERANCE_M
         || bbox_size_ratio > DIAGNOSTIC_SIZE_RATIO_TOLERANCE;
-    let mismatch_level = mismatch_level(bbox_center_distance, bbox_size_ratio);
-    let has_degenerate_triangles = size.iter().any(|value| *value <= 1e-9);
-    let degenerate_triangle_count = if has_degenerate_triangles || has_nan || has_infinite {
-        12
+    let intentional_debug_geometry = cleanup_action != PreviewCleanupAction::KeepRaw;
+    let bbox_tolerance_exceeded = raw_bbox_tolerance_exceeded && !intentional_debug_geometry;
+    let mismatch_level = if intentional_debug_geometry {
+        "none".to_string()
     } else {
-        0
+        mismatch_level(bbox_center_distance, bbox_size_ratio)
     };
+    let has_degenerate_triangles = mesh_exported && size.iter().any(|value| *value <= 1e-9);
+    let degenerate_triangle_count =
+        if mesh_exported && (has_degenerate_triangles || has_nan || has_infinite) {
+            12
+        } else {
+            0
+        };
     let zero_area_triangle_count = degenerate_triangle_count;
     let duplicate_vertex_ratio = 0.0;
     let line_too_thin = matches!(kind, PreviewKind::Line)
@@ -531,8 +853,9 @@ fn diagnose_geometry_feature(
             .filter(|value| **value < LINE_THICKNESS_M)
             .count()
             >= 1;
-    let outlier_geometry =
+    let raw_outlier_geometry =
         !bbox_inside_with_margin(source_bbox, pick_bbox, DIAGNOSTIC_SOURCE_MARGIN_M);
+    let outlier_geometry = raw_outlier_geometry && !intentional_debug_geometry;
     let source_center = bbox_center(source_bbox);
     let source_diagonal = bbox_diagonal(source_bbox).max(1.0);
     let diagonal_length = bbox_diagonal(bbox);
@@ -567,6 +890,18 @@ fn diagnose_geometry_feature(
     if has_degenerate_triangles {
         reasons.push("expanded proxy bbox still has degenerate triangles".to_string());
     }
+    match cleanup_action {
+        PreviewCleanupAction::Skip => {
+            reasons.push("tiny or degenerate feature skipped from preview mesh".to_string());
+        }
+        PreviewCleanupAction::KeepAsPointMarker => {
+            reasons.push("tiny feature emitted as debug point marker".to_string());
+        }
+        PreviewCleanupAction::InflateForDebugOnly => {
+            reasons.push("near-zero feature intentionally inflated for debug preview".to_string());
+        }
+        PreviewCleanupAction::KeepRaw => {}
+    }
     if line_too_thin {
         reasons.push("source line/polyline bbox has zero or tiny thickness".to_string());
     }
@@ -592,22 +927,28 @@ fn diagnose_geometry_feature(
         ));
     }
 
-    let problem_flags = problem_flags(
-        has_nan,
-        has_infinite,
-        degenerate_triangle_count,
-        line_too_thin,
-        bbox_tolerance_exceeded,
-        outlier_geometry,
-        transform_status.as_str(),
-        diagonal_length,
-        source_diagonal,
-        distance_from_scene_center,
-        triangle_density,
-        abnormal_aspect_ratio,
-    );
+    let problem_flags = if intentional_debug_geometry {
+        cleanup_problem_flags(cleanup_action)
+    } else {
+        problem_flags(
+            has_nan,
+            has_infinite,
+            degenerate_triangle_count,
+            line_too_thin,
+            bbox_tolerance_exceeded,
+            outlier_geometry,
+            transform_status.as_str(),
+            diagonal_length,
+            source_diagonal,
+            distance_from_scene_center,
+            triangle_density,
+            abnormal_aspect_ratio,
+        )
+    };
 
-    let problem_category = if has_nan || has_infinite {
+    let problem_category = if intentional_debug_geometry {
+        "none"
+    } else if has_nan || has_infinite {
         "coordinate"
     } else if has_degenerate_triangles {
         "face"
@@ -627,8 +968,10 @@ fn diagnose_geometry_feature(
         source_id: feature.source_id.clone(),
         layer: feature.layer.clone(),
         category: feature.geometry_type.clone(),
-        vertex_count: 36,
-        triangle_count: 12,
+        cleanup_action: cleanup_action.as_str().to_string(),
+        mesh_exported,
+        vertex_count: if mesh_exported { 36 } else { 0 },
+        triangle_count: if mesh_exported { 12 } else { 0 },
         bbox,
         pick_bbox,
         bbox_wgs84: bbox_to_wgs84(source_epsg, bbox),
@@ -806,6 +1149,15 @@ fn problem_flags(
     flags
 }
 
+fn cleanup_problem_flags(action: PreviewCleanupAction) -> Vec<String> {
+    match action {
+        PreviewCleanupAction::Skip => vec!["skipped_degenerate".to_string()],
+        PreviewCleanupAction::KeepAsPointMarker => vec!["debug_marker".to_string()],
+        PreviewCleanupAction::InflateForDebugOnly => vec!["debug_inflated".to_string()],
+        PreviewCleanupAction::KeepRaw => Vec::new(),
+    }
+}
+
 fn severity_score(feature: &GeometryDiagnosticFeature) -> f64 {
     let mut score: f64 = 0.0;
     if feature.has_nan || feature.has_infinite {
@@ -857,6 +1209,170 @@ fn assign_size_percentiles(features: &mut [GeometryDiagnosticFeature]) {
             .unwrap_or(diagonals.len().saturating_sub(1));
         feature.size_percentile = (rank as f64 / denom * 100.0).clamp(0.0, 100.0);
     }
+}
+
+fn transform_diff_feature(
+    feature: &GeometryDiagnosticFeature,
+    source_center: [f64; 3],
+    normal_centers: &[[f64; 3]],
+) -> GeometryTransformDiffFeature {
+    let geometry_center = feature.center;
+    let pick_center = bbox_center(feature.pick_bbox);
+    let center_delta = [
+        geometry_center[0] - pick_center[0],
+        geometry_center[1] - pick_center[1],
+        geometry_center[2] - pick_center[2],
+    ];
+    let geometry_size = bbox_size(feature.bbox);
+    let pick_size = bbox_size(feature.pick_bbox);
+    let size_ratio_xyz = [
+        safe_ratio(geometry_size[0], pick_size[0]),
+        safe_ratio(geometry_size[1], pick_size[1]),
+        safe_ratio(geometry_size[2], pick_size[2]),
+    ];
+    let diagonal_ratio = safe_ratio(
+        bbox_diagonal(feature.bbox),
+        bbox_diagonal(feature.pick_bbox),
+    );
+    let nearest_normal_feature_distance = nearest_center_distance(pick_center, normal_centers);
+    let source_offset_candidate = if feature.outlier_geometry
+        || feature.problem_flags.iter().any(|flag| flag == "far_away")
+    {
+        if let Some(nearest) = nearest_center(pick_center, normal_centers) {
+            Some([
+                pick_center[0] - nearest[0],
+                pick_center[1] - nearest[1],
+                pick_center[2] - nearest[2],
+            ])
+        } else {
+            Some([
+                pick_center[0] - source_center[0],
+                pick_center[1] - source_center[1],
+                pick_center[2] - source_center[2],
+            ])
+        }
+    } else {
+        None
+    };
+    let possible_cause = classify_transform_diff_cause(
+        feature,
+        center_delta,
+        feature.bbox_center_distance,
+        geometry_size,
+        pick_size,
+        size_ratio_xyz,
+        diagonal_ratio,
+    );
+
+    GeometryTransformDiffFeature {
+        feature_id: feature.feature_id,
+        source: feature.source_id.clone(),
+        source_id: feature.source_id.clone(),
+        layer: feature.layer.clone(),
+        category: feature.category.clone(),
+        geometry_bbox: feature.bbox,
+        pick_bbox: feature.pick_bbox,
+        geometry_center,
+        pick_center,
+        center_delta,
+        center_distance: feature.bbox_center_distance,
+        geometry_size,
+        pick_size,
+        size_ratio_xyz,
+        diagonal_ratio,
+        overlap_ratio: feature.bbox_overlap_ratio,
+        possible_cause,
+        distance_from_scene_center: Some(feature.distance_from_scene_center),
+        nearest_normal_feature_distance,
+        source_offset_candidate,
+    }
+}
+
+fn classify_transform_diff_cause(
+    feature: &GeometryDiagnosticFeature,
+    center_delta: [f64; 3],
+    center_distance: f64,
+    geometry_size: [f64; 3],
+    pick_size: [f64; 3],
+    size_ratio_xyz: [f64; 3],
+    diagonal_ratio: f64,
+) -> String {
+    if feature.problem_flags.iter().any(|flag| flag == "tiny_bbox") {
+        return "tiny_bbox_noise".to_string();
+    }
+    if feature.outlier_geometry || feature.problem_flags.iter().any(|flag| flag == "far_away") {
+        return "source_offset_missing".to_string();
+    }
+    if center_delta[0].abs() < 0.25 && center_delta[1].abs() < 0.25 && center_delta[2].abs() > 0.5 {
+        return "z_offset".to_string();
+    }
+    if is_scale_mismatch(size_ratio_xyz, diagonal_ratio) {
+        return "scale_mismatch".to_string();
+    }
+    if looks_like_axis_swap(geometry_size, pick_size) {
+        return "axis_swap".to_string();
+    }
+    if looks_like_sign_flip(center_delta, center_distance) {
+        return "sign_flip".to_string();
+    }
+    if center_distance > DIAGNOSTIC_CENTER_TOLERANCE_M && diagonal_ratio < 2.0 {
+        return "local_world_offset".to_string();
+    }
+    "unknown".to_string()
+}
+
+fn safe_ratio(a: f64, b: f64) -> f64 {
+    let left = a.abs().max(0.001);
+    let right = b.abs().max(0.001);
+    left / right
+}
+
+fn is_scale_mismatch(size_ratio_xyz: [f64; 3], diagonal_ratio: f64) -> bool {
+    let avg = (size_ratio_xyz[0] + size_ratio_xyz[1] + size_ratio_xyz[2]) / 3.0;
+    let spread = size_ratio_xyz
+        .iter()
+        .map(|ratio| (ratio - avg).abs())
+        .fold(0.0_f64, f64::max);
+    (diagonal_ratio > 1.5 || diagonal_ratio < 0.67) && spread < avg.abs().max(1.0) * 0.35
+}
+
+fn looks_like_axis_swap(geometry_size: [f64; 3], pick_size: [f64; 3]) -> bool {
+    let direct_error = axis_size_error(geometry_size, pick_size);
+    let swaps = [
+        [pick_size[1], pick_size[0], pick_size[2]],
+        [pick_size[2], pick_size[1], pick_size[0]],
+        [pick_size[0], pick_size[2], pick_size[1]],
+    ];
+    swaps
+        .iter()
+        .any(|candidate| axis_size_error(geometry_size, *candidate) < direct_error * 0.5)
+}
+
+fn axis_size_error(a: [f64; 3], b: [f64; 3]) -> f64 {
+    (0..3)
+        .map(|axis| (a[axis].abs().max(0.001) - b[axis].abs().max(0.001)).abs())
+        .sum()
+}
+
+fn looks_like_sign_flip(center_delta: [f64; 3], center_distance: f64) -> bool {
+    center_distance > 1.0
+        && center_delta
+            .iter()
+            .filter(|delta| delta.abs() > DIAGNOSTIC_CENTER_TOLERANCE_M)
+            .count()
+            == 1
+}
+
+fn nearest_center(point: [f64; 3], centers: &[[f64; 3]]) -> Option<[f64; 3]> {
+    centers.iter().copied().min_by(|a, b| {
+        distance3(point, *a)
+            .partial_cmp(&distance3(point, *b))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    })
+}
+
+fn nearest_center_distance(point: [f64; 3], centers: &[[f64; 3]]) -> Option<f64> {
+    nearest_center(point, centers).map(|center| distance3(point, center))
 }
 
 fn bbox_inside_with_margin(container: [f64; 6], bbox: [f64; 6], margin: f64) -> bool {

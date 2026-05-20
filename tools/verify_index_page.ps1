@@ -333,6 +333,30 @@ function Get-GeometryDiagnosticCounts {
   }
 }
 
+function Get-GeometryTransformDiffSummary {
+  param([string]$PublishDir)
+
+  $diffPath = Join-Path $PublishDir "geometry_transform_diff_report.json"
+  if (-not (Test-Path -LiteralPath $diffPath)) {
+    return [pscustomobject]@{
+      transformDiffFeatureCount = 0
+      possibleCauseHistogram = @{}
+      farAwayFeatureIds = @()
+      geometryTransformDiffReportPresent = $false
+      geometryTransformDiffReportSource = ""
+    }
+  }
+
+  $doc = Get-Content -LiteralPath $diffPath -Raw | ConvertFrom-Json
+  return [pscustomobject]@{
+    transformDiffFeatureCount = [int]($doc.transformDiffFeatureCount ?? 0)
+    possibleCauseHistogram = $doc.possibleCauseHistogram
+    farAwayFeatureIds = @($doc.farAwayFeatureIds)
+    geometryTransformDiffReportPresent = $true
+    geometryTransformDiffReportSource = $diffPath
+  }
+}
+
 function New-RuntimeQaReport {
   param(
     [string]$PublishDir
@@ -408,6 +432,7 @@ function New-RuntimeQaReport {
   $allPass = ($sampleRay -and $sampleNearest -and $sampleMiss -and $grid.Valid -and $missingFunctions.Count -eq 0)
   $decisionCounts = Get-SourceQaDecisionCounts -PublishDir $PublishDir
   $geometryDiagnosticCounts = Get-GeometryDiagnosticCounts -PublishDir $PublishDir
+  $transformDiffSummary = Get-GeometryTransformDiffSummary -PublishDir $PublishDir
 
   $report = [pscustomobject]@{
     generatedAt = (Get-Date).ToString("o")
@@ -435,6 +460,11 @@ function New-RuntimeQaReport {
     outlierGeometryCount = $geometryDiagnosticCounts.outlierGeometryCount
     geometryDiagnosticReportPresent = $geometryDiagnosticCounts.geometryDiagnosticReportPresent
     geometryDiagnosticReportSource = $geometryDiagnosticCounts.geometryDiagnosticReportSource
+    transformDiffFeatureCount = $transformDiffSummary.transformDiffFeatureCount
+    possibleCauseHistogram = $transformDiffSummary.possibleCauseHistogram
+    farAwayFeatureIds = $transformDiffSummary.farAwayFeatureIds
+    geometryTransformDiffReportPresent = $transformDiffSummary.geometryTransformDiffReportPresent
+    geometryTransformDiffReportSource = $transformDiffSummary.geometryTransformDiffReportSource
     pass = [bool]$allPass
     ManualChecklist = @(
       "source hover highlight",

@@ -646,3 +646,92 @@
   - `NaNGeometryCount`
   - `outlierGeometryCount`
 - 本階段仍只定位問題，不修 geometry、不改 publish schema。
+
+### Phase 1M Geometry Transform Diagnosis
+
+- 新增 transform diff report，先診斷、不修 geometry：
+  - `publish/geometry_transform_diff_report.json`
+- 只納入 Phase 1L 標出的 bbox mismatch / transform mismatch / far away feature。
+- 每筆 diff 保留：
+  - `geometryBBox`
+  - `pickBBox`
+  - `geometryCenter`
+  - `pickCenter`
+  - `centerDelta`
+  - `centerDistance`
+  - `geometrySize`
+  - `pickSize`
+  - `sizeRatioXYZ`
+  - `diagonalRatio`
+  - `overlapRatio`
+  - `possibleCause`
+- `possibleCause` 目前分類：
+  - `local_world_offset`
+  - `axis_swap`
+  - `sign_flip`
+  - `scale_mismatch`
+  - `z_offset`
+  - `source_offset_missing`
+  - `tiny_bbox_noise`
+  - `unknown`
+- far away feature 會額外輸出：
+  - `distanceFromSceneCenter`
+  - `nearestNormalFeatureDistance`
+  - `sourceOffsetCandidate`
+- `runtime_qa_report.json` 補：
+  - `transformDiffFeatureCount`
+  - `possibleCauseHistogram`
+  - `farAwayFeatureIds`
+- 本階段不修 tiny bbox、不改 viewer UI。
+
+### Phase 1N Degenerate Geometry Cleanup
+
+- minimal geometry preview 對 tiny / zero-area / near-zero feature 加入 cleanup classification：
+  - `skip`
+  - `keep_as_point_marker`
+  - `inflate_for_debug_only`
+  - `keep_raw`
+- preview publish safety：
+  - 過短 line / layer `0` noise 不輸出 mesh。
+  - tiny surface 但仍有 layer metadata 者，改輸出 debug marker。
+  - 長線但 bbox 近零者，只做 debug-only inflation，不再當作 transform mismatch。
+- `geometry_publish_report.json` 補：
+  - `skipped_tiny_feature_count`
+  - `debug_marker_count`
+  - `degenerate_skipped_count`
+  - `debug_inflated_feature_count`
+- `geometry_diagnostic_report.json` 每個 feature 補：
+  - `cleanupAction`
+  - `meshExported`
+- Phase 1N 的重點是降低 preview 診斷噪音；正式 schema、spatial pick schema、viewer UI 皆不改。
+
+### Phase 2A Visual Geometry Quality
+
+- 採用 C 版：Visual + QA baseline。
+- minimal geometry preview 仍維持單一 GLB，不先拆 surfaces / lines / markers 多包。
+- Rust preview 端新增 rule-based visual category：
+  - `wall`
+  - `slab`
+  - `beam`
+  - `column`
+  - `annotation`
+  - `linework`
+  - `marker`
+  - `unknown`
+- `geometry_publish_report.json` 補：
+  - `visual_category_counts`
+  - `line_width_exaggeration`
+  - `surface_shading_mode`
+  - `double_side_debug_available`
+- viewer 新增 Visual Preview 控制與 stats：
+  - surfaces / lines / markers
+  - QA bbox
+  - pick overlay
+  - double-side debug
+  - triangle / line / skipped / marker / inflated / category histogram
+- 新增 screenshot baseline 工具：
+  - `tools/run_phase2a_preview_screenshot.ps1`
+  - `tools/phase2a_preview_screenshot.mjs`
+  - 輸出 `publish/screenshots/phase2a_preview.png`
+  - 輸出 `publish/screenshots/phase2a_visual_report.json`
+- 本階段先產可重跑的視覺基準，不做 pixel diff，不修正式 CAD geometry。

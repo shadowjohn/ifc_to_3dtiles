@@ -10,7 +10,8 @@ use ifc_to_3dtiles::{
     fingerprint::{GeometryFingerprint, duplicate_candidate_score},
     geometry_preview::{
         GeometryPreviewFeature, build_geometry_diagnostic_report,
-        build_geometry_preview_tileset_json, build_minimal_geometry_preview,
+        build_geometry_preview_tileset_json, build_geometry_transform_diff_report,
+        build_minimal_geometry_preview,
     },
     georef::{
         Aoi, Bounds2, BoundsSummary, SourceTransform, classify_source_scale, decide_source_status,
@@ -2088,13 +2089,14 @@ fn phase1k_fix_diagnostic_report_classifies_line_bbox_and_bbox_mismatch() {
     .expect("geometry diagnostic report");
 
     assert_eq!(report.feature_count, 2);
-    assert_eq!(report.bad_feature_count, 1);
-    assert_eq!(report.bbox_mismatch_count, 1);
-    assert_eq!(report.category_counts.get("line"), Some(&1));
+    assert_eq!(report.bad_feature_count, 0);
+    assert_eq!(report.bbox_mismatch_count, 0);
+    assert_eq!(report.category_counts.get("none"), Some(&2));
     assert_eq!(report.features[0].vertex_count, 36);
     assert_eq!(report.features[0].triangle_count, 12);
-    assert!(report.features[0].bbox_tolerance_exceeded);
-    assert_eq!(report.features[0].problem_category, "line");
+    assert!(!report.features[0].bbox_tolerance_exceeded);
+    assert_eq!(report.features[0].cleanup_action, "inflate_for_debug_only");
+    assert_eq!(report.features[0].problem_category, "none");
     assert_eq!(report.features[1].problem_category, "none");
 }
 
@@ -2189,13 +2191,17 @@ fn phase1l_geometry_diagnostic_report_includes_extended_metrics() {
     assert_eq!(line.zero_area_triangle_count, 0);
     assert!(line.duplicate_vertex_ratio >= 0.0);
     assert!(line.bbox_overlap_ratio > 0.0);
-    assert_ne!(line.mismatch_level, "none");
+    assert_eq!(line.mismatch_level, "none");
     assert!(line.distance_from_scene_center > 0.0);
     assert!(line.size_percentile >= 0.0 && line.size_percentile <= 100.0);
     assert!(line.triangle_density > 0.0);
     assert!(line.abnormal_aspect_ratio >= 1.0);
-    assert!(line.severity_score > 0.0);
-    assert!(line.problem_flags.iter().any(|flag| flag == "tiny_bbox"));
+    assert_eq!(line.cleanup_action, "inflate_for_debug_only");
+    assert!(
+        line.problem_flags
+            .iter()
+            .any(|flag| flag == "debug_inflated")
+    );
     assert!(json.contains("\"diagonalLength\""));
     assert!(json.contains("\"bboxOverlapRatio\""));
     assert!(json.contains("\"mismatchLevel\""));
@@ -2237,6 +2243,329 @@ fn phase1l_verify_script_reports_geometry_diagnostic_counts() {
     assert!(script.contains("bboxMismatchCount"));
     assert!(script.contains("NaNGeometryCount"));
     assert!(script.contains("outlierGeometryCount"));
+}
+
+#[test]
+fn phase1m_transform_diff_report_classifies_tiny_bbox_and_far_away() {
+    let diagnostic = build_geometry_diagnostic_report(
+        3826,
+        [292100.0, 2785200.0, 0.0],
+        [121.42, 25.15, 0.0],
+        [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ],
+        [292100.0, 2785200.0, 0.0, 292130.0, 2785220.0, 30.0],
+        &[
+            GeometryPreviewFeature {
+                feature_id: 1,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "A-LINE".to_string(),
+                geometry_type: "LINESTRING".to_string(),
+                bbox: [292100.0, 2785200.0, 10.0, 292110.0, 2785200.0, 10.0],
+            },
+            GeometryPreviewFeature {
+                feature_id: 2,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "Pier".to_string(),
+                geometry_type: "POLYHEDRALSURFACE".to_string(),
+                bbox: [292120.0, 2785210.0, 0.0, 292130.0, 2785220.0, 30.0],
+            },
+            GeometryPreviewFeature {
+                feature_id: 3,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "FarAway".to_string(),
+                geometry_type: "POLYHEDRALSURFACE".to_string(),
+                bbox: [293500.0, 2786900.0, 0.0, 293520.0, 2786920.0, 20.0],
+            },
+        ],
+    )
+    .expect("diagnostic report");
+    let diff = build_geometry_transform_diff_report(&diagnostic).expect("transform diff");
+
+    assert_eq!(diff.transform_diff_feature_count, 1);
+    assert_eq!(diff.mismatch_feature_count, 0);
+    assert_eq!(diff.far_away_feature_count, 1);
+    assert_eq!(diff.far_away_feature_ids, vec![3]);
+    assert_eq!(
+        diff.possible_cause_histogram.get("source_offset_missing"),
+        Some(&1)
+    );
+    let far = diff
+        .features
+        .iter()
+        .find(|feature| feature.feature_id == 3)
+        .expect("far away diff");
+    assert!(far.nearest_normal_feature_distance.unwrap() > 1000.0);
+    assert!(far.source_offset_candidate.unwrap()[0].abs() > 1000.0);
+}
+
+#[test]
+fn phase1m_transform_diff_report_serializes_required_fields() {
+    let diagnostic = build_geometry_diagnostic_report(
+        3826,
+        [292100.0, 2785200.0, 0.0],
+        [121.42, 25.15, 0.0],
+        [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ],
+        [292100.0, 2785200.0, 0.0, 292130.0, 2785220.0, 30.0],
+        &[GeometryPreviewFeature {
+            feature_id: 9,
+            source_id: "dwg-12d5f1b6".to_string(),
+            layer: "FarAway".to_string(),
+            geometry_type: "POLYHEDRALSURFACE".to_string(),
+            bbox: [293500.0, 2786900.0, 0.0, 293520.0, 2786920.0, 20.0],
+        }],
+    )
+    .expect("diagnostic report");
+    let diff = build_geometry_transform_diff_report(&diagnostic).expect("transform diff");
+    let json = serde_json::to_string(&diff).expect("diff json");
+
+    assert!(json.contains("\"geometryTransformDiffReport\""));
+    assert!(json.contains("\"geometryBBox\""));
+    assert!(json.contains("\"pickBBox\""));
+    assert!(json.contains("\"centerDelta\""));
+    assert!(json.contains("\"sizeRatioXYZ\""));
+    assert!(json.contains("\"diagonalRatio\""));
+    assert!(json.contains("\"overlapRatio\""));
+    assert!(json.contains("\"possibleCause\""));
+}
+
+#[test]
+fn phase1m_writer_and_verify_script_report_transform_diff_summary() {
+    let source = std::fs::read_to_string("src/geometry_preview.rs").expect("geometry preview rs");
+    let script =
+        std::fs::read_to_string("tools/verify_index_page.ps1").expect("verify_index_page.ps1");
+
+    assert!(source.contains("geometry_transform_diff_report.json"));
+    assert!(script.contains("geometry_transform_diff_report.json"));
+    assert!(script.contains("transformDiffFeatureCount"));
+    assert!(script.contains("possibleCauseHistogram"));
+    assert!(script.contains("farAwayFeatureIds"));
+}
+
+#[test]
+fn phase1n_preview_cleanup_skips_tiny_noise_and_keeps_debug_markers() {
+    let output = build_minimal_geometry_preview(
+        "*",
+        [292100.0, 2785200.0, 0.0],
+        [121.42, 25.15, 0.0],
+        [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ],
+        &[
+            GeometryPreviewFeature {
+                feature_id: 1,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "0".to_string(),
+                geometry_type: "LINESTRING".to_string(),
+                bbox: [292100.0, 2785200.0, 10.0, 292100.01, 2785200.01, 10.0],
+            },
+            GeometryPreviewFeature {
+                feature_id: 2,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "Anchor".to_string(),
+                geometry_type: "POLYHEDRALSURFACE".to_string(),
+                bbox: [292101.0, 2785201.0, 10.0, 292101.001, 2785201.001, 10.0],
+            },
+            GeometryPreviewFeature {
+                feature_id: 3,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "Cable".to_string(),
+                geometry_type: "LINESTRING".to_string(),
+                bbox: [292110.0, 2785202.0, 10.0, 292130.0, 2785202.0, 10.0],
+            },
+        ],
+    )
+    .expect("cleanup preview");
+
+    assert_eq!(output.report.feature_count, 3);
+    assert_eq!(output.report.skipped_tiny_feature_count, 1);
+    assert_eq!(output.report.debug_marker_count, 1);
+    assert_eq!(output.report.degenerate_skipped_count, 1);
+    assert!(output.report.debug_inflated_feature_count >= 1);
+    assert_eq!(output.mesh.triangle_count(), 24);
+}
+
+#[test]
+fn phase1n_diagnostics_ignore_intentional_debug_inflation_as_transform_mismatch() {
+    let diagnostic = build_geometry_diagnostic_report(
+        3826,
+        [292100.0, 2785200.0, 0.0],
+        [121.42, 25.15, 0.0],
+        [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ],
+        [292090.0, 2785190.0, 0.0, 292140.0, 2785210.0, 20.0],
+        &[
+            GeometryPreviewFeature {
+                feature_id: 1,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "0".to_string(),
+                geometry_type: "LINESTRING".to_string(),
+                bbox: [292100.0, 2785200.0, 10.0, 292100.01, 2785200.01, 10.0],
+            },
+            GeometryPreviewFeature {
+                feature_id: 2,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "Anchor".to_string(),
+                geometry_type: "POLYHEDRALSURFACE".to_string(),
+                bbox: [292101.0, 2785201.0, 10.0, 292101.001, 2785201.001, 10.0],
+            },
+            GeometryPreviewFeature {
+                feature_id: 3,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "Cable".to_string(),
+                geometry_type: "LINESTRING".to_string(),
+                bbox: [292110.0, 2785202.0, 10.0, 292130.0, 2785202.0, 10.0],
+            },
+        ],
+    )
+    .expect("diagnostic report");
+    let diff = build_geometry_transform_diff_report(&diagnostic).expect("transform diff");
+
+    assert_eq!(diagnostic.bbox_mismatch_count, 0);
+    assert_eq!(diagnostic.outlier_geometry_count, 0);
+    assert_eq!(diff.transform_diff_feature_count, 0);
+    assert_eq!(diagnostic.features[0].cleanup_action, "skip");
+    assert_eq!(
+        diagnostic.features[1].cleanup_action,
+        "keep_as_point_marker"
+    );
+    assert_eq!(
+        diagnostic.features[2].cleanup_action,
+        "inflate_for_debug_only"
+    );
+    assert!(
+        diagnostic.features[2]
+            .problem_flags
+            .iter()
+            .any(|flag| flag == "debug_inflated")
+    );
+}
+
+#[test]
+fn phase1n_reports_expose_cleanup_counts() {
+    let source = std::fs::read_to_string("src/geometry_preview.rs").expect("geometry preview rs");
+
+    assert!(source.contains("skipped_tiny_feature_count"));
+    assert!(source.contains("debug_marker_count"));
+    assert!(source.contains("degenerate_skipped_count"));
+    assert!(source.contains("cleanup_action"));
+}
+
+#[test]
+fn phase2a_preview_report_counts_visual_categories_and_quality_settings() {
+    let output = build_minimal_geometry_preview(
+        "*",
+        [292100.0, 2785200.0, 0.0],
+        [121.42, 25.15, 0.0],
+        [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ],
+        &[
+            GeometryPreviewFeature {
+                feature_id: 1,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "A-WALL".to_string(),
+                geometry_type: "POLYHEDRALSURFACE".to_string(),
+                bbox: [292100.0, 2785200.0, 0.0, 292110.0, 2785210.0, 4.0],
+            },
+            GeometryPreviewFeature {
+                feature_id: 2,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "Cable-Line".to_string(),
+                geometry_type: "LINESTRING".to_string(),
+                bbox: [292100.0, 2785200.0, 8.0, 292130.0, 2785200.0, 8.0],
+            },
+            GeometryPreviewFeature {
+                feature_id: 3,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "Anno-Text".to_string(),
+                geometry_type: "POINT".to_string(),
+                bbox: [292105.0, 2785205.0, 2.0, 292105.0, 2785205.0, 2.0],
+            },
+        ],
+    )
+    .expect("visual preview");
+
+    assert_eq!(output.report.visual_category_counts.get("wall"), Some(&1));
+    assert_eq!(
+        output.report.visual_category_counts.get("linework"),
+        Some(&1)
+    );
+    assert_eq!(
+        output.report.visual_category_counts.get("annotation"),
+        Some(&1)
+    );
+    assert!(output.report.line_width_exaggeration >= 1.0);
+    assert_eq!(
+        output.report.surface_shading_mode,
+        "category_color_with_normals"
+    );
+    assert!(output.report.double_side_debug_available);
+}
+
+#[test]
+fn phase2a_preview_mesh_uses_category_specific_colors() {
+    let output = build_minimal_geometry_preview(
+        "*",
+        [0.0, 0.0, 0.0],
+        [121.42, 25.15, 0.0],
+        [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ],
+        &[
+            GeometryPreviewFeature {
+                feature_id: 1,
+                source_id: "s".to_string(),
+                layer: "A-WALL".to_string(),
+                geometry_type: "POLYHEDRALSURFACE".to_string(),
+                bbox: [0.0, 0.0, 0.0, 4.0, 4.0, 3.0],
+            },
+            GeometryPreviewFeature {
+                feature_id: 2,
+                source_id: "s".to_string(),
+                layer: "Cable-Line".to_string(),
+                geometry_type: "LINESTRING".to_string(),
+                bbox: [10.0, 0.0, 0.0, 20.0, 0.0, 0.0],
+            },
+        ],
+    )
+    .expect("preview colors");
+
+    let first_color = output.mesh.colors[0];
+    let second_feature_color = output.mesh.colors[36];
+    assert_ne!(first_color, second_feature_color);
+}
+
+#[test]
+fn phase2a_publish_viewer_has_visual_quality_controls_and_stats() {
+    let html = render_publish_viewer_html();
+
+    assert!(html.contains("visualPreviewPanel"));
+    assert!(html.contains("previewSurfacesToggle"));
+    assert!(html.contains("previewLinesToggle"));
+    assert!(html.contains("previewMarkersToggle"));
+    assert!(html.contains("previewQaBboxToggle"));
+    assert!(html.contains("previewPickOverlayToggle"));
+    assert!(html.contains("doubleSideDebugToggle"));
+    assert!(html.contains("updateGeometryPreviewStats"));
+    assert!(html.contains("visual_category_counts"));
+}
+
+#[test]
+fn phase2a_screenshot_baseline_scripts_exist_and_write_expected_artifacts() {
+    let ps1 =
+        std::fs::read_to_string("tools/run_phase2a_preview_screenshot.ps1").unwrap_or_default();
+    let mjs = std::fs::read_to_string("tools/phase2a_preview_screenshot.mjs").unwrap_or_default();
+
+    assert!(ps1.contains("phase2a_preview_screenshot.mjs"));
+    assert!(ps1.contains("phase2a_preview.png"));
+    assert!(ps1.contains("phase2a_visual_report.json"));
+    assert!(mjs.contains("phase2a_preview.png"));
+    assert!(mjs.contains("phase2a_visual_report.json"));
+    assert!(mjs.contains("geometryPreviewToggle"));
 }
 
 #[test]
