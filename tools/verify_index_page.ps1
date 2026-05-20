@@ -302,6 +302,37 @@ function Get-SourceQaDecisionCounts {
   }
 }
 
+function Get-GeometryDiagnosticCounts {
+  param([string]$PublishDir)
+
+  $diagnosticPath = Join-Path $PublishDir "geometry_diagnostic_report.json"
+  if (-not (Test-Path -LiteralPath $diagnosticPath)) {
+    $diagnosticPath = Join-Path $PublishDir "geometry_preview\geometry_diagnostic_report.json"
+  }
+  if (-not (Test-Path -LiteralPath $diagnosticPath)) {
+    return [pscustomobject]@{
+      badGeometryCount = 0
+      bboxMismatchCount = 0
+      NaNGeometryCount = 0
+      outlierGeometryCount = 0
+      geometryDiagnosticReportPresent = $false
+      geometryDiagnosticReportSource = ""
+    }
+  }
+
+  $doc = Get-Content -LiteralPath $diagnosticPath -Raw | ConvertFrom-Json
+  $features = @($doc.features)
+  $nanCount = @($features | Where-Object { $_.hasNaN -eq $true -or $_.hasInfinite -eq $true }).Count
+  return [pscustomobject]@{
+    badGeometryCount = [int]($doc.badFeatureCount ?? 0)
+    bboxMismatchCount = [int]($doc.bboxMismatchCount ?? 0)
+    NaNGeometryCount = [int]$nanCount
+    outlierGeometryCount = [int]($doc.outlierGeometryCount ?? 0)
+    geometryDiagnosticReportPresent = $true
+    geometryDiagnosticReportSource = $diagnosticPath
+  }
+}
+
 function New-RuntimeQaReport {
   param(
     [string]$PublishDir
@@ -360,7 +391,11 @@ function New-RuntimeQaReport {
     "formatPickLabelText",
     "buildSourceQaDecisionsExport",
     "exportSourceQaDecisions",
-    "setSourceQaDecision"
+    "setSourceQaDecision",
+    "loadGeometryDiagnosticReport",
+    "diagnosticFeatureMatchesToggles",
+    "diagnosticSeverityColor",
+    "drawDiagnosticPickBboxCompare"
   )
   $missingFunctions = @($requiredFunctions | Where-Object { $publishHtml -notlike "*$_*" })
   if ($missingFunctions.Count -gt 0) {
@@ -372,6 +407,7 @@ function New-RuntimeQaReport {
   $max = ($times | Measure-Object -Maximum).Maximum
   $allPass = ($sampleRay -and $sampleNearest -and $sampleMiss -and $grid.Valid -and $missingFunctions.Count -eq 0)
   $decisionCounts = Get-SourceQaDecisionCounts -PublishDir $PublishDir
+  $geometryDiagnosticCounts = Get-GeometryDiagnosticCounts -PublishDir $PublishDir
 
   $report = [pscustomobject]@{
     generatedAt = (Get-Date).ToString("o")
@@ -393,6 +429,12 @@ function New-RuntimeQaReport {
     alternativeRouteCount = $decisionCounts.alternativeRouteCount
     sourceQaDecisionExportPresent = $decisionCounts.sourceQaDecisionExportPresent
     sourceQaDecisionSource = $decisionCounts.sourceQaDecisionSource
+    badGeometryCount = $geometryDiagnosticCounts.badGeometryCount
+    bboxMismatchCount = $geometryDiagnosticCounts.bboxMismatchCount
+    NaNGeometryCount = $geometryDiagnosticCounts.NaNGeometryCount
+    outlierGeometryCount = $geometryDiagnosticCounts.outlierGeometryCount
+    geometryDiagnosticReportPresent = $geometryDiagnosticCounts.geometryDiagnosticReportPresent
+    geometryDiagnosticReportSource = $geometryDiagnosticCounts.geometryDiagnosticReportSource
     pass = [bool]$allPass
     ManualChecklist = @(
       "source hover highlight",

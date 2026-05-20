@@ -284,6 +284,15 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
   <div id="cesiumContainer"></div>
   <div id="toolbar">
     <label><input id="geometryPreviewToggle" type="checkbox" checked> minimal geometry preview</label>
+    <label><input id="badGeometryOnlyToggle" type="checkbox"> bad geometry only</label>
+    <label><input id="bboxMismatchToggle" type="checkbox"> bbox mismatch</label>
+    <label><input id="outlierGeometryToggle" type="checkbox"> outlier geometry</label>
+    <label><input id="severityHeatToggle" type="checkbox" checked> severity heat</label>
+    <label><input id="nanGeometryToggle" type="checkbox"> NaN only</label>
+    <label><input id="hugeBboxToggle" type="checkbox"> huge bbox</label>
+    <label><input id="tinyBboxToggle" type="checkbox"> tiny bbox</label>
+    <label><input id="degenerateGeometryToggle" type="checkbox"> degenerate</label>
+    <label><input id="transformMismatchToggle" type="checkbox"> transform mismatch</label>
     <label><input id="approvedGeometryToggle" type="checkbox"> approved geometry</label>
     <label><input id="approvedToggle" type="checkbox" checked> approved only</label>
     <label><input id="rejectedToggle" type="checkbox"> rejected bbox</label>
@@ -350,7 +359,8 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       sourceQaDecisions: "source_qa_decisions.json",
       geometryPreviewReport: "geometry_preview/geometry_publish_report.json",
       geometryPreviewTileset: "geometry_preview/tileset.json",
-      geometryPreviewGlb: "geometry_preview/raw.glb"
+      geometryPreviewGlb: "geometry_preview/raw.glb",
+      geometryDiagnosticReport: "geometry_diagnostic_report.json"
     };
     const state = {
       approved: [],
@@ -371,6 +381,8 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       runtimeMetadataFields: [],
       geometryPreviewModel: null,
       geometryPreviewReport: null,
+      geometryDiagnosticReport: null,
+      geometryDiagnosticEntities: [],
       geometryPreviewLoaded: false,
       geometryPreviewLoading: false,
       spatialPickIndex: null,
@@ -1193,9 +1205,12 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       }
       setRuntimeVisible(document.getElementById("approvedGeometryToggle").checked && state.runtimeLoaded);
       setGeometryPreviewVisible(document.getElementById("geometryPreviewToggle").checked && state.geometryPreviewLoaded);
+      refreshGeometryDiagnosticOverlay(viewer);
+      const diagnostic = state.geometryDiagnosticReport;
       status([
         "basemap: EMAP5 WMTS",
         `minimal geometry preview: ${state.geometryPreviewLoaded ? "loaded" : "unloaded"}`,
+        `geometry diagnostics: ${diagnostic ? diagnostic.badFeatureCount || 0 : "unloaded"} bad / ${diagnostic ? diagnostic.bboxMismatchCount || 0 : "unloaded"} mismatch`,
         `approved geometry: ${state.runtimeLoaded ? state.runtimeModels.length : 0}`,
         `approved only: ${state.approved.length}`,
         `rejected bbox: ${state.rejected.length}`,
@@ -1282,7 +1297,169 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       updateRuntimeDebug();
     }
     function setGeometryPreviewVisible(visible) {
-      if (state.geometryPreviewModel) state.geometryPreviewModel.show = visible;
+      const badOnly = document.getElementById("badGeometryOnlyToggle")?.checked;
+      if (state.geometryPreviewModel) state.geometryPreviewModel.show = visible && !badOnly;
+    }
+    function geometryDiagnosticEnabled() {
+      return !!(
+        document.getElementById("badGeometryOnlyToggle")?.checked
+        || document.getElementById("bboxMismatchToggle")?.checked
+        || document.getElementById("outlierGeometryToggle")?.checked
+        || document.getElementById("nanGeometryToggle")?.checked
+        || document.getElementById("hugeBboxToggle")?.checked
+        || document.getElementById("tinyBboxToggle")?.checked
+        || document.getElementById("degenerateGeometryToggle")?.checked
+        || document.getElementById("transformMismatchToggle")?.checked
+      );
+    }
+    async function loadGeometryDiagnosticReport() {
+      if (state.geometryDiagnosticReport || location.protocol === "file:") return state.geometryDiagnosticReport;
+      try {
+        state.geometryDiagnosticReport = await fetchRuntimeJson(DATA_FILES.geometryDiagnosticReport);
+      } catch (err) {
+        status("geometry diagnostic report 載入失敗；請先執行 tools/run_phase1k_geometry_preview.ps1。\n" + formatError(err));
+      }
+      return state.geometryDiagnosticReport;
+    }
+    function clearGeometryDiagnosticOverlay(viewer) {
+      if (!viewer) return;
+      for (const entity of state.geometryDiagnosticEntities) viewer.entities.remove(entity);
+      state.geometryDiagnosticEntities = [];
+    }
+    function diagnosticFeatureMatchesToggles(feature) {
+      if (document.getElementById("badGeometryOnlyToggle")?.checked && feature.problemCategory !== "none") return true;
+      if (document.getElementById("bboxMismatchToggle")?.checked && feature.bboxToleranceExceeded) return true;
+      if (document.getElementById("outlierGeometryToggle")?.checked && feature.outlierGeometry) return true;
+      if (document.getElementById("nanGeometryToggle")?.checked && (feature.hasNaN || feature.hasInfinite || (feature.problemFlags || []).includes("nan") || (feature.problemFlags || []).includes("infinite"))) return true;
+      if (document.getElementById("hugeBboxToggle")?.checked && (feature.problemFlags || []).includes("huge_bbox")) return true;
+      if (document.getElementById("tinyBboxToggle")?.checked && (feature.problemFlags || []).includes("tiny_bbox")) return true;
+      if (document.getElementById("degenerateGeometryToggle")?.checked && (feature.degenerateTriangleCount > 0 || feature.zeroAreaTriangleCount > 0 || (feature.problemFlags || []).includes("degenerate"))) return true;
+      if (document.getElementById("transformMismatchToggle")?.checked && (feature.transformStatus !== "ok" || feature.mismatchLevel !== "none" || (feature.problemFlags || []).includes("transform_mismatch"))) return true;
+      return false;
+    }
+    function diagnosticSeverityColor(score) {
+      const value = Math.max(0, Math.min(100, Number(score || 0)));
+      if (value >= 75) return Cesium.Color.RED;
+      if (value >= 45) return Cesium.Color.ORANGE;
+      if (value >= 20) return Cesium.Color.YELLOW;
+      return Cesium.Color.LIME;
+    }
+    function diagnosticFeatureStyle(feature) {
+      if (document.getElementById("severityHeatToggle")?.checked) {
+        return { color: diagnosticSeverityColor(feature.severityScore), width: Math.max(2, Math.min(5, 1 + Number(feature.severityScore || 0) / 28)), label: `severity ${Math.round(Number(feature.severityScore || 0))}` };
+      }
+      if (feature.outlierGeometry) return { color: Cesium.Color.MAGENTA, width: 3, label: "outlier" };
+      if (feature.bboxToleranceExceeded) return { color: Cesium.Color.RED, width: 3, label: "bbox mismatch" };
+      if (feature.problemCategory !== "none") return { color: Cesium.Color.YELLOW, width: 2, label: feature.problemCategory };
+      return { color: Cesium.Color.WHITE, width: 1, label: "ok" };
+    }
+    function updateGeometryDiagnosticStatusLine(report) {
+      const node = document.getElementById("status");
+      if (!node || !report) return;
+      const line = `geometry diagnostics: ${report.badFeatureCount || 0} bad / ${report.bboxMismatchCount || 0} mismatch`;
+      node.textContent = node.textContent.replace(/geometry diagnostics: .*/, line);
+    }
+    function diagnosticBboxPolylinePositions(feature, fieldName = "bboxWgs84") {
+      const b = feature[fieldName];
+      if (!Array.isArray(b) || b.length !== 6 || !b.every(Number.isFinite)) return null;
+      const corners = [
+        [b[0], b[1], b[2]], [b[3], b[1], b[2]], [b[3], b[4], b[2]], [b[0], b[4], b[2]],
+        [b[0], b[1], b[5]], [b[3], b[1], b[5]], [b[3], b[4], b[5]], [b[0], b[4], b[5]]
+      ].map(point => Cesium.Cartesian3.fromDegrees(point[0], point[1], point[2]));
+      const edgeIndices = [0,1, 1,2, 2,3, 3,0, 4,5, 5,6, 6,7, 7,4, 0,4, 1,5, 2,6, 3,7];
+      return edgeIndices.map(index => corners[index]);
+    }
+    function drawDiagnosticPickBboxCompare(viewer, feature) {
+      if (!feature.bboxToleranceExceeded && !document.getElementById("bboxMismatchToggle")?.checked) return;
+      const positions = diagnosticBboxPolylinePositions(feature, "pickBboxWgs84");
+      if (!positions) return;
+      state.geometryDiagnosticEntities.push(viewer.entities.add({
+        name: `pick bbox compare ${feature.sourceId} FID ${feature.featureId}`,
+        polyline: {
+          positions,
+          width: 2,
+          material: Cesium.Color.CYAN.withAlpha(0.92)
+        },
+        properties: {
+          qa_kind: "geometry_diagnostic",
+          source_id: feature.sourceId,
+          feature_id: feature.featureId
+        }
+      }));
+    }
+    function diagnosticLabelPosition(feature) {
+      const center = feature.centerWgs84;
+      if (!Array.isArray(center) || center.length !== 3 || !center.every(Number.isFinite)) return null;
+      return Cesium.Cartesian3.fromDegrees(center[0], center[1], center[2]);
+    }
+    async function refreshGeometryDiagnosticOverlay(viewer) {
+      clearGeometryDiagnosticOverlay(viewer);
+      setGeometryPreviewVisible(document.getElementById("geometryPreviewToggle").checked && state.geometryPreviewLoaded);
+      if (!geometryDiagnosticEnabled()) return;
+      const report = await loadGeometryDiagnosticReport();
+      if (!report || !Array.isArray(report.features)) return;
+      updateGeometryDiagnosticStatusLine(report);
+      report.features
+        .filter(diagnosticFeatureMatchesToggles)
+        .slice(0, 2000)
+        .forEach((feature, index) => {
+          const positions = diagnosticBboxPolylinePositions(feature);
+          if (!positions) return;
+          const style = diagnosticFeatureStyle(feature);
+          const labelPosition = diagnosticLabelPosition(feature);
+          state.geometryDiagnosticEntities.push(viewer.entities.add({
+            name: `geometry diagnostic ${feature.sourceId} FID ${feature.featureId}`,
+            position: labelPosition || positions[0],
+            polyline: {
+              positions,
+              width: style.width,
+              material: style.color.withAlpha(0.92)
+            },
+            label: {
+              text: `${feature.featureId} | ${style.label}`,
+              show: pickLabelVisible(),
+              font: "12px Segoe UI",
+              fillColor: style.color,
+              outlineColor: Cesium.Color.BLACK,
+              outlineWidth: 2,
+              style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+              pixelOffset: new Cesium.Cartesian2(0, -14),
+              disableDepthTestDistance: Number.POSITIVE_INFINITY
+            },
+            properties: {
+              qa_kind: "geometry_diagnostic",
+              diagnostic_index: index,
+              source_id: feature.sourceId,
+              feature_id: feature.featureId
+            }
+          }));
+          drawDiagnosticPickBboxCompare(viewer, feature);
+        });
+    }
+    function showGeometryDiagnosticDetail(feature) {
+      document.getElementById("detailPanel").innerHTML = `
+        <h2>Geometry Diagnostic</h2>
+        <p><b>source</b> <span class="mono">${escapeHtml(feature.sourceId)}</span></p>
+        <p><b>featureId</b> <span class="mono">${escapeHtml(feature.featureId)}</span></p>
+        <p><b>layer</b> ${escapeHtml(feature.layer || "-")}</p>
+        <p><b>category</b> ${escapeHtml(feature.category || "-")}</p>
+        <p><b>problem</b> ${escapeHtml(feature.problemCategory || "none")}</p>
+        <p><b>severity</b> ${formatNumber(feature.severityScore)} · <b>mismatch</b> ${escapeHtml(feature.mismatchLevel || "none")}</p>
+        <p><b>vertex / triangle</b> ${escapeHtml(feature.vertexCount)} / ${escapeHtml(feature.triangleCount)}</p>
+        <p><b>normal</b> ${escapeHtml(feature.normalStatus)} · <b>transform</b> ${escapeHtml(feature.transformStatus)}</p>
+        <p><b>degenerate / zero area</b> ${escapeHtml(feature.degenerateTriangleCount || 0)} / ${escapeHtml(feature.zeroAreaTriangleCount || 0)}</p>
+        <p><b>diagonal</b> ${formatNumber(feature.diagonalLength)} m · <b>scene center distance</b> ${formatNumber(feature.distanceFromSceneCenter)} m</p>
+        <p><b>size percentile</b> ${formatNumber(feature.sizePercentile)} · <b>triangle density</b> ${formatNumber(feature.triangleDensity)}</p>
+        <p><b>aspect ratio</b> ${formatNumber(feature.abnormalAspectRatio)} · <b>duplicate vertex ratio</b> ${formatNumber(feature.duplicateVertexRatio)}</p>
+        <p><b>bbox center distance</b> ${formatNumber(feature.bboxCenterDistance)} m</p>
+        <p><b>bbox size ratio</b> ${formatNumber(feature.bboxSizeRatio)} · <b>overlap</b> ${formatNumber(feature.bboxOverlapRatio)}</p>
+        <p><b>bbox mismatch</b> ${feature.bboxToleranceExceeded ? "yes" : "no"} · <b>outlier</b> ${feature.outlierGeometry ? "yes" : "no"}</p>
+        <p><b>flags</b> ${(feature.problemFlags || []).map(flag => `<span class="pill">${escapeHtml(flag)}</span>`).join("") || "-"}</p>
+        <p class="mono">geometry bbox: ${escapeHtml(JSON.stringify(feature.bbox || null))}</p>
+        <p class="mono">pick bbox: ${escapeHtml(JSON.stringify(feature.pickBbox || null))}</p>
+        <h3>Reasons</h3>
+        <ul>${(feature.reasons || []).map(reason => `<li>${escapeHtml(reason)}</li>`).join("") || "<li>none</li>"}</ul>
+      `;
     }
     async function loadGeometryPreview(viewer) {
       if (state.geometryPreviewLoaded || state.geometryPreviewLoading) {
@@ -1519,6 +1696,17 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
             const index = Number(propValue(entity, "outlier_index"));
             const outlier = state.spatialQa?.outliers?.[index];
             if (outlier) showOutlierDetail(outlier);
+            refresh(viewer);
+            return;
+          } else if (kind === "geometry_diagnostic") {
+            state.pickMode = "cesium_pick";
+            const sourceId = String(propValue(entity, "source_id"));
+            const featureId = String(propValue(entity, "feature_id"));
+            const feature = (state.geometryDiagnosticReport?.features || [])
+              .find(item => String(item.sourceId) === sourceId && String(item.featureId) === featureId);
+            updatePickDebug({ pickSource: "cesium_pick", interactionSelection: "cesium_pick", selectedFeatureId: featureId, fallbackMethod: "cesium_pick", visualSelection: `geometry_diagnostic:${sourceId}:${featureId}`, bboxVisualSource: "geometry_diagnostic" });
+            clearSpatialPickHighlight(viewer);
+            if (feature) showGeometryDiagnosticDetail(feature);
             refresh(viewer);
             return;
           } else if (kind === "aoi") {
@@ -1915,6 +2103,15 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       state.rejected = (overlays.sources || []).filter(s => s.approval_decision === "rejected");
       state.needs_review = (overlays.sources || []).filter(s => s.approval_decision === "needs_review");
       document.getElementById("geometryPreviewToggle").addEventListener("change", () => toggleGeometryPreview(viewer));
+      document.getElementById("badGeometryOnlyToggle").addEventListener("change", () => refresh(viewer));
+      document.getElementById("bboxMismatchToggle").addEventListener("change", () => refresh(viewer));
+      document.getElementById("outlierGeometryToggle").addEventListener("change", () => refresh(viewer));
+      document.getElementById("severityHeatToggle").addEventListener("change", () => refresh(viewer));
+      document.getElementById("nanGeometryToggle").addEventListener("change", () => refresh(viewer));
+      document.getElementById("hugeBboxToggle").addEventListener("change", () => refresh(viewer));
+      document.getElementById("tinyBboxToggle").addEventListener("change", () => refresh(viewer));
+      document.getElementById("degenerateGeometryToggle").addEventListener("change", () => refresh(viewer));
+      document.getElementById("transformMismatchToggle").addEventListener("change", () => refresh(viewer));
       document.getElementById("approvedGeometryToggle").addEventListener("change", () => toggleRuntimeGeometry(viewer));
       document.getElementById("approvedToggle").addEventListener("change", () => refresh(viewer));
       document.getElementById("rejectedToggle").addEventListener("change", () => refresh(viewer));

@@ -586,3 +586,63 @@
   - 載入 `geometry_preview/raw.glb`
   - QA bbox / AOI / rejected / needs review / duplicate / outlier overlay 繼續可開關。
   - `spatial_pick_index.json` 與 hybrid pick flow 不變。
+
+### Phase 1K-Fix Bad Geometry Triage
+
+- 新增 bad geometry diagnostic report，不急著修模型，先分類幾何問題來源：
+  - 座標 / transform 可疑
+  - face / degenerate triangle
+  - line / polyline 太細或零厚度
+  - source outlier
+  - geometry bbox 與 pick bbox mismatch
+- `geometry-preview` 會同步輸出：
+  - `publish/geometry_preview/geometry_diagnostic_report.json`
+- 每個 published preview feature 記錄：
+  - `vertexCount`
+  - `triangleCount`
+  - `bbox`
+  - `pickBBox`
+  - `center`
+  - `size`
+  - `hasNaN`
+  - `hasDegenerateTriangles`
+  - `normalStatus`
+  - `transformStatus`
+  - `bboxCenterDistance`
+  - `bboxSizeRatio`
+  - `problemCategory`
+- `publish/index.html` 新增診斷 overlay：
+  - `bad geometry only`
+  - `bbox mismatch`
+  - `outlier geometry`
+- 本階段只做驗屍與可視化，不修改正式 publish schema、不修 geometry、不改 spatial pick schema。
+
+### Phase 1L Geometry Diagnostics
+
+- 將 1K-Fix 擴成正式 geometry diagnostics pipeline，root publish 也會輸出：
+  - `publish/geometry_diagnostic_report.json`
+  - 舊路徑 `publish/geometry_preview/geometry_diagnostic_report.json` 保留相容。
+- 每個 feature 診斷欄位補強：
+  - `diagonalLength`
+  - `hasInfinite`
+  - `degenerateTriangleCount`
+  - `zeroAreaTriangleCount`
+  - `duplicateVertexRatio`
+  - `bboxOverlapRatio`
+  - `mismatchLevel`
+  - `distanceFromSceneCenter`
+  - `sizePercentile`
+  - `triangleDensity`
+  - `abnormalAspectRatio`
+  - `severityScore`
+  - `problemFlags`
+- Viewer diagnostics overlay 補：
+  - severity heat color
+  - geometry bbox vs pick bbox compare：geometry bbox 依 severity 上色，pick bbox 用 cyan。
+  - filters：NaN、huge bbox、tiny bbox、degenerate、transform mismatch。
+- `runtime_qa_report.json` 補 geometry diagnostics summary：
+  - `badGeometryCount`
+  - `bboxMismatchCount`
+  - `NaNGeometryCount`
+  - `outlierGeometryCount`
+- 本階段仍只定位問題，不修 geometry、不改 publish schema。

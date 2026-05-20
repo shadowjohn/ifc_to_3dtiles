@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs,
     path::Path,
 };
@@ -19,6 +19,11 @@ use crate::{
 
 const LINE_THICKNESS_M: f64 = 0.18;
 const SURFACE_MIN_THICKNESS_M: f64 = 0.35;
+const DIAGNOSTIC_CENTER_TOLERANCE_M: f64 = 0.5;
+const DIAGNOSTIC_SIZE_RATIO_TOLERANCE: f64 = 10.0;
+const DIAGNOSTIC_SOURCE_MARGIN_M: f64 = 50.0;
+const DIAGNOSTIC_TINY_AXIS_M: f64 = 0.18;
+const DIAGNOSTIC_HIGH_TRIANGLE_DENSITY: f64 = 10_000.0;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GeometryPreviewFeature {
@@ -57,6 +62,77 @@ pub struct GeometryPublishReport {
     pub tileset_path: String,
     pub geometry_file_size: u64,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeometryDiagnosticReport {
+    pub generated_at: String,
+    pub diagnostic_version: u32,
+    pub source_count: usize,
+    pub feature_count: usize,
+    pub bad_feature_count: usize,
+    pub bbox_mismatch_count: usize,
+    pub outlier_geometry_count: usize,
+    pub category_counts: BTreeMap<String, usize>,
+    pub tolerances: GeometryDiagnosticTolerances,
+    pub source_bbox: [f64; 6],
+    pub source_bbox_wgs84: Option<[f64; 6]>,
+    pub origin_epsg3826: [f64; 3],
+    pub origin_wgs84: [f64; 3],
+    pub model_matrix_finite: bool,
+    pub features: Vec<GeometryDiagnosticFeature>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeometryDiagnosticTolerances {
+    pub center_distance_m: f64,
+    pub size_ratio: f64,
+    pub source_margin_m: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeometryDiagnosticFeature {
+    pub feature_id: i64,
+    pub source_id: String,
+    pub layer: String,
+    pub category: String,
+    pub vertex_count: usize,
+    pub triangle_count: usize,
+    pub bbox: [f64; 6],
+    pub pick_bbox: [f64; 6],
+    pub bbox_wgs84: Option<[f64; 6]>,
+    pub pick_bbox_wgs84: Option<[f64; 6]>,
+    pub center: [f64; 3],
+    pub center_wgs84: Option<[f64; 3]>,
+    pub size: [f64; 3],
+    pub diagonal_length: f64,
+    #[serde(rename = "hasNaN")]
+    pub has_nan: bool,
+    pub has_infinite: bool,
+    pub has_degenerate_triangles: bool,
+    pub degenerate_triangle_count: usize,
+    pub zero_area_triangle_count: usize,
+    pub duplicate_vertex_ratio: f64,
+    pub normal_status: String,
+    pub transform_status: String,
+    pub bbox_center_distance: f64,
+    pub bbox_size_ratio: f64,
+    pub bbox_overlap_ratio: f64,
+    pub bbox_tolerance_exceeded: bool,
+    pub mismatch_level: String,
+    pub outlier_geometry: bool,
+    pub distance_from_scene_center: f64,
+    pub size_percentile: f64,
+    pub triangle_density: f64,
+    pub abnormal_aspect_ratio: f64,
+    pub severity_score: f64,
+    pub problem_category: String,
+    pub problem_flags: Vec<String>,
+    pub reasons: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,6 +269,83 @@ pub fn build_geometry_preview_tileset_json(model_matrix: [f64; 16], local_bbox: 
     })
 }
 
+pub fn build_geometry_diagnostic_report(
+    source_epsg: u32,
+    origin_epsg3826: [f64; 3],
+    origin_wgs84: [f64; 3],
+    model_matrix: [f64; 16],
+    source_bbox: [f64; 6],
+    features: &[GeometryPreviewFeature],
+) -> Result<GeometryDiagnosticReport> {
+    ensure!(
+        !features.is_empty(),
+        "geometry diagnostic report has no features"
+    );
+
+    let model_matrix_finite = model_matrix.iter().all(|value| value.is_finite());
+    let mut category_counts = BTreeMap::new();
+    let mut diagnostic_features = Vec::with_capacity(features.len());
+    let mut bad_feature_count = 0;
+    let mut bbox_mismatch_count = 0;
+    let mut outlier_geometry_count = 0;
+    let mut source_ids = BTreeSet::new();
+    let source_bbox = normalize_bbox(source_bbox);
+
+    for feature in features {
+        source_ids.insert(feature.source_id.clone());
+        let diagnostic = diagnose_geometry_feature(
+            source_epsg,
+            origin_epsg3826,
+            model_matrix_finite,
+            source_bbox,
+            feature,
+        )?;
+        if diagnostic.problem_category != "none" {
+            bad_feature_count += 1;
+        }
+        if diagnostic.bbox_tolerance_exceeded {
+            bbox_mismatch_count += 1;
+        }
+        if diagnostic.outlier_geometry {
+            outlier_geometry_count += 1;
+        }
+        *category_counts
+            .entry(diagnostic.problem_category.clone())
+            .or_insert(0) += 1;
+        diagnostic_features.push(diagnostic);
+    }
+    assign_size_percentiles(&mut diagnostic_features);
+    for feature in &mut diagnostic_features {
+        feature.severity_score = severity_score(feature);
+    }
+
+    Ok(GeometryDiagnosticReport {
+        generated_at: chrono_like_now(),
+        diagnostic_version: 1,
+        source_count: source_ids.len(),
+        feature_count: diagnostic_features.len(),
+        bad_feature_count,
+        bbox_mismatch_count,
+        outlier_geometry_count,
+        category_counts,
+        tolerances: GeometryDiagnosticTolerances {
+            center_distance_m: DIAGNOSTIC_CENTER_TOLERANCE_M,
+            size_ratio: DIAGNOSTIC_SIZE_RATIO_TOLERANCE,
+            source_margin_m: DIAGNOSTIC_SOURCE_MARGIN_M,
+        },
+        source_bbox,
+        source_bbox_wgs84: bbox_to_wgs84(source_epsg, source_bbox),
+        origin_epsg3826,
+        origin_wgs84,
+        model_matrix_finite,
+        features: diagnostic_features,
+        warnings: vec![
+            "diagnostic report classifies proxy preview geometry; it does not repair CAD/BIM geometry"
+                .to_string(),
+        ],
+    })
+}
+
 pub fn write_geometry_preview_outputs(input: &Path, output: &Path) -> Result<()> {
     let preview_dir = output.join("geometry_preview");
     fs::create_dir_all(&preview_dir)
@@ -256,6 +409,14 @@ pub fn write_geometry_preview_outputs(input: &Path, output: &Path) -> Result<()>
         model_matrix,
         &features,
     )?;
+    let diagnostic = build_geometry_diagnostic_report(
+        manifest.source_epsg,
+        origin_epsg3826,
+        origin_wgs84,
+        model_matrix,
+        merged_bbox,
+        &features,
+    )?;
 
     fs::write(preview_dir.join("raw.glb"), &preview.glb)
         .with_context(|| "寫入 raw.glb 失敗".to_string())?;
@@ -274,6 +435,16 @@ pub fn write_geometry_preview_outputs(input: &Path, output: &Path) -> Result<()>
         serde_json::to_vec_pretty(&preview.report)?,
     )
     .with_context(|| "寫入 geometry_publish_report.json 失敗".to_string())?;
+    fs::write(
+        preview_dir.join("geometry_diagnostic_report.json"),
+        serde_json::to_vec_pretty(&diagnostic)?,
+    )
+    .with_context(|| "寫入 geometry_diagnostic_report.json 失敗".to_string())?;
+    fs::write(
+        output.join("geometry_diagnostic_report.json"),
+        serde_json::to_vec_pretty(&diagnostic)?,
+    )
+    .with_context(|| "寫入 publish root geometry_diagnostic_report.json 失敗".to_string())?;
 
     Ok(())
 }
@@ -312,6 +483,407 @@ fn expand_bbox(bbox: [f64; 6], min_thickness: f64) -> Result<[f64; 6]> {
         }
     }
     Ok(out)
+}
+
+fn diagnose_geometry_feature(
+    source_epsg: u32,
+    origin_epsg3826: [f64; 3],
+    model_matrix_finite: bool,
+    source_bbox: [f64; 6],
+    feature: &GeometryPreviewFeature,
+) -> Result<GeometryDiagnosticFeature> {
+    let kind = preview_kind(feature);
+    let min_thickness = match kind {
+        PreviewKind::Line => LINE_THICKNESS_M,
+        PreviewKind::Surface | PreviewKind::Fallback => SURFACE_MIN_THICKNESS_M,
+    };
+    let pick_bbox = normalize_bbox(feature.bbox);
+    let bbox = expand_bbox(pick_bbox, min_thickness)?;
+    let center = bbox_center(bbox);
+    let pick_center = bbox_center(pick_bbox);
+    let size = bbox_size(bbox);
+    let pick_size = bbox_size(pick_bbox);
+    let has_nan = bbox
+        .iter()
+        .chain(pick_bbox.iter())
+        .any(|value| value.is_nan());
+    let has_infinite = bbox
+        .iter()
+        .chain(pick_bbox.iter())
+        .any(|value| value.is_infinite());
+    let bbox_center_distance = distance3(center, pick_center);
+    let bbox_size_ratio = max_axis_size_ratio(size, pick_size);
+    let bbox_overlap_ratio = bbox_overlap_ratio(bbox, pick_bbox);
+    let bbox_tolerance_exceeded = bbox_center_distance > DIAGNOSTIC_CENTER_TOLERANCE_M
+        || bbox_size_ratio > DIAGNOSTIC_SIZE_RATIO_TOLERANCE;
+    let mismatch_level = mismatch_level(bbox_center_distance, bbox_size_ratio);
+    let has_degenerate_triangles = size.iter().any(|value| *value <= 1e-9);
+    let degenerate_triangle_count = if has_degenerate_triangles || has_nan || has_infinite {
+        12
+    } else {
+        0
+    };
+    let zero_area_triangle_count = degenerate_triangle_count;
+    let duplicate_vertex_ratio = 0.0;
+    let line_too_thin = matches!(kind, PreviewKind::Line)
+        && pick_size
+            .iter()
+            .filter(|value| **value < LINE_THICKNESS_M)
+            .count()
+            >= 1;
+    let outlier_geometry =
+        !bbox_inside_with_margin(source_bbox, pick_bbox, DIAGNOSTIC_SOURCE_MARGIN_M);
+    let source_center = bbox_center(source_bbox);
+    let source_diagonal = bbox_diagonal(source_bbox).max(1.0);
+    let diagonal_length = bbox_diagonal(bbox);
+    let distance_from_scene_center = distance3(center, source_center);
+    let volume = bbox_volume(bbox).max(0.001);
+    let triangle_density = 12.0 / volume;
+    let abnormal_aspect_ratio = aspect_ratio(size);
+    let local_center = local_point(center, origin_epsg3826);
+    let transform_status = if has_nan || has_infinite || !model_matrix_finite {
+        "non_finite".to_string()
+    } else if local_center.iter().any(|value| value.abs() > 100_000.0) {
+        "large_local_coordinates".to_string()
+    } else {
+        "ok".to_string()
+    };
+    let normal_status = if has_degenerate_triangles || has_nan || has_infinite {
+        "degenerate".to_string()
+    } else {
+        "ok".to_string()
+    };
+
+    let mut reasons = Vec::new();
+    if has_nan {
+        reasons.push("coordinate contains NaN value".to_string());
+    }
+    if has_infinite {
+        reasons.push("coordinate contains infinite value".to_string());
+    }
+    if !model_matrix_finite {
+        reasons.push("model matrix contains non-finite value".to_string());
+    }
+    if has_degenerate_triangles {
+        reasons.push("expanded proxy bbox still has degenerate triangles".to_string());
+    }
+    if line_too_thin {
+        reasons.push("source line/polyline bbox has zero or tiny thickness".to_string());
+    }
+    if bbox_tolerance_exceeded {
+        reasons.push(format!(
+            "geometry bbox differs from pick bbox beyond tolerance: center={:.3}m ratio={:.3}",
+            bbox_center_distance, bbox_size_ratio
+        ));
+    }
+    if outlier_geometry {
+        reasons.push("feature bbox is outside approved source bbox margin".to_string());
+    }
+    if abnormal_aspect_ratio > 100.0 {
+        reasons.push(format!(
+            "feature bbox has abnormal aspect ratio {:.3}",
+            abnormal_aspect_ratio
+        ));
+    }
+    if triangle_density > DIAGNOSTIC_HIGH_TRIANGLE_DENSITY {
+        reasons.push(format!(
+            "feature triangle density is high: {:.3} triangles/m3",
+            triangle_density
+        ));
+    }
+
+    let problem_flags = problem_flags(
+        has_nan,
+        has_infinite,
+        degenerate_triangle_count,
+        line_too_thin,
+        bbox_tolerance_exceeded,
+        outlier_geometry,
+        transform_status.as_str(),
+        diagonal_length,
+        source_diagonal,
+        distance_from_scene_center,
+        triangle_density,
+        abnormal_aspect_ratio,
+    );
+
+    let problem_category = if has_nan || has_infinite {
+        "coordinate"
+    } else if has_degenerate_triangles {
+        "face"
+    } else if transform_status != "ok" || (bbox_tolerance_exceeded && !line_too_thin) {
+        "transform"
+    } else if line_too_thin {
+        "line"
+    } else if outlier_geometry {
+        "source"
+    } else {
+        "none"
+    }
+    .to_string();
+
+    Ok(GeometryDiagnosticFeature {
+        feature_id: feature.feature_id,
+        source_id: feature.source_id.clone(),
+        layer: feature.layer.clone(),
+        category: feature.geometry_type.clone(),
+        vertex_count: 36,
+        triangle_count: 12,
+        bbox,
+        pick_bbox,
+        bbox_wgs84: bbox_to_wgs84(source_epsg, bbox),
+        pick_bbox_wgs84: bbox_to_wgs84(source_epsg, pick_bbox),
+        center,
+        center_wgs84: point_to_wgs84(source_epsg, center),
+        size,
+        diagonal_length,
+        has_nan,
+        has_infinite,
+        has_degenerate_triangles,
+        degenerate_triangle_count,
+        zero_area_triangle_count,
+        duplicate_vertex_ratio,
+        normal_status,
+        transform_status,
+        bbox_center_distance,
+        bbox_size_ratio,
+        bbox_overlap_ratio,
+        bbox_tolerance_exceeded,
+        mismatch_level,
+        outlier_geometry,
+        distance_from_scene_center,
+        size_percentile: 0.0,
+        triangle_density,
+        abnormal_aspect_ratio,
+        severity_score: 0.0,
+        problem_category,
+        problem_flags,
+        reasons,
+    })
+}
+
+fn normalize_bbox(mut bbox: [f64; 6]) -> [f64; 6] {
+    for axis in 0..3 {
+        if bbox[axis + 3] < bbox[axis] {
+            bbox.swap(axis, axis + 3);
+        }
+    }
+    bbox
+}
+
+fn bbox_size(bbox: [f64; 6]) -> [f64; 3] {
+    [
+        (bbox[3] - bbox[0]).abs(),
+        (bbox[4] - bbox[1]).abs(),
+        (bbox[5] - bbox[2]).abs(),
+    ]
+}
+
+fn bbox_diagonal(bbox: [f64; 6]) -> f64 {
+    distance3([bbox[0], bbox[1], bbox[2]], [bbox[3], bbox[4], bbox[5]])
+}
+
+fn bbox_volume(bbox: [f64; 6]) -> f64 {
+    let size = bbox_size(bbox);
+    size[0].max(0.0) * size[1].max(0.0) * size[2].max(0.0)
+}
+
+fn bbox_overlap_ratio(a: [f64; 6], b: [f64; 6]) -> f64 {
+    let mut overlap_volume = 1.0;
+    for axis in 0..3 {
+        let min = a[axis].max(b[axis]);
+        let max = a[axis + 3].min(b[axis + 3]);
+        let overlap = if max > min {
+            max - min
+        } else if (max - min).abs() <= 1e-9
+            && b[axis] >= a[axis] - 1e-9
+            && b[axis] <= a[axis + 3] + 1e-9
+        {
+            0.001
+        } else {
+            0.0
+        };
+        overlap_volume *= overlap;
+    }
+    let union_volume = bbox_volume(a).max(0.001) + bbox_volume(b).max(0.001) - overlap_volume;
+    if union_volume <= 0.0 {
+        0.0
+    } else {
+        (overlap_volume / union_volume).clamp(0.0, 1.0)
+    }
+}
+
+fn aspect_ratio(size: [f64; 3]) -> f64 {
+    let max_size = size.iter().copied().fold(0.0_f64, f64::max).max(0.001);
+    let min_size = size
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, f64::min)
+        .max(0.001);
+    max_size / min_size
+}
+
+fn distance3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let dx = a[0] - b[0];
+    let dy = a[1] - b[1];
+    let dz = a[2] - b[2];
+    (dx * dx + dy * dy + dz * dz).sqrt()
+}
+
+fn max_axis_size_ratio(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let mut max_ratio: f64 = 1.0;
+    for axis in 0..3 {
+        let left = a[axis].abs().max(0.001);
+        let right = b[axis].abs().max(0.001);
+        max_ratio = max_ratio.max(left / right).max(right / left);
+    }
+    max_ratio
+}
+
+fn mismatch_level(center_distance: f64, size_ratio: f64) -> String {
+    if center_distance > 10.0 || size_ratio > 100.0 {
+        "critical"
+    } else if center_distance > 2.0 || size_ratio > 25.0 {
+        "high"
+    } else if center_distance > DIAGNOSTIC_CENTER_TOLERANCE_M
+        || size_ratio > DIAGNOSTIC_SIZE_RATIO_TOLERANCE
+    {
+        "medium"
+    } else {
+        "none"
+    }
+    .to_string()
+}
+
+fn problem_flags(
+    has_nan: bool,
+    has_infinite: bool,
+    degenerate_triangle_count: usize,
+    line_too_thin: bool,
+    bbox_tolerance_exceeded: bool,
+    outlier_geometry: bool,
+    transform_status: &str,
+    diagonal_length: f64,
+    source_diagonal: f64,
+    distance_from_scene_center: f64,
+    triangle_density: f64,
+    abnormal_aspect_ratio: f64,
+) -> Vec<String> {
+    let mut flags = Vec::new();
+    if has_nan {
+        flags.push("nan".to_string());
+    }
+    if has_infinite {
+        flags.push("infinite".to_string());
+    }
+    if degenerate_triangle_count > 0 {
+        flags.push("degenerate".to_string());
+    }
+    if line_too_thin || diagonal_length < DIAGNOSTIC_TINY_AXIS_M {
+        flags.push("tiny_bbox".to_string());
+    }
+    if diagonal_length > source_diagonal * 0.5 || diagonal_length > 500.0 {
+        flags.push("huge_bbox".to_string());
+    }
+    if bbox_tolerance_exceeded {
+        flags.push("bbox_mismatch".to_string());
+        flags.push("transform_mismatch".to_string());
+    }
+    if outlier_geometry || distance_from_scene_center > source_diagonal * 0.75 {
+        flags.push("far_away".to_string());
+    }
+    if transform_status != "ok" {
+        flags.push("transform_mismatch".to_string());
+    }
+    if triangle_density > DIAGNOSTIC_HIGH_TRIANGLE_DENSITY {
+        flags.push("high_triangle_density".to_string());
+    }
+    if abnormal_aspect_ratio > 100.0 {
+        flags.push("abnormal_aspect_ratio".to_string());
+    }
+    flags.sort();
+    flags.dedup();
+    flags
+}
+
+fn severity_score(feature: &GeometryDiagnosticFeature) -> f64 {
+    let mut score: f64 = 0.0;
+    if feature.has_nan || feature.has_infinite {
+        score += 100.0;
+    }
+    if feature.degenerate_triangle_count > 0 {
+        score += 60.0;
+    }
+    if feature.mismatch_level == "critical" {
+        score += 55.0;
+    } else if feature.mismatch_level == "high" {
+        score += 40.0;
+    } else if feature.mismatch_level == "medium" {
+        score += 25.0;
+    }
+    if feature.outlier_geometry {
+        score += 45.0;
+    }
+    if feature.problem_flags.iter().any(|flag| flag == "tiny_bbox") {
+        score += 20.0;
+    }
+    if feature.problem_flags.iter().any(|flag| flag == "huge_bbox") {
+        score += 35.0;
+    }
+    if feature.triangle_density > DIAGNOSTIC_HIGH_TRIANGLE_DENSITY {
+        score += 35.0;
+    }
+    if feature.abnormal_aspect_ratio > 100.0 {
+        score += 20.0;
+    }
+    score.clamp(0.0, 100.0)
+}
+
+fn assign_size_percentiles(features: &mut [GeometryDiagnosticFeature]) {
+    if features.is_empty() {
+        return;
+    }
+    let mut diagonals: Vec<f64> = features
+        .iter()
+        .map(|feature| feature.diagonal_length)
+        .filter(|value| value.is_finite())
+        .collect();
+    diagonals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let denom = (diagonals.len().saturating_sub(1)).max(1) as f64;
+    for feature in features {
+        let rank = diagonals
+            .iter()
+            .position(|value| *value >= feature.diagonal_length)
+            .unwrap_or(diagonals.len().saturating_sub(1));
+        feature.size_percentile = (rank as f64 / denom * 100.0).clamp(0.0, 100.0);
+    }
+}
+
+fn bbox_inside_with_margin(container: [f64; 6], bbox: [f64; 6], margin: f64) -> bool {
+    bbox[0] >= container[0] - margin
+        && bbox[1] >= container[1] - margin
+        && bbox[2] >= container[2] - margin
+        && bbox[3] <= container[3] + margin
+        && bbox[4] <= container[4] + margin
+        && bbox[5] <= container[5] + margin
+}
+
+fn bbox_to_wgs84(source_epsg: u32, bbox: [f64; 6]) -> Option<[f64; 6]> {
+    let p0 = project_to_wgs84(source_epsg, bbox[0], bbox[1]).ok()?;
+    let p1 = project_to_wgs84(source_epsg, bbox[3], bbox[4]).ok()?;
+    Some([
+        p0.lon_deg.min(p1.lon_deg),
+        p0.lat_deg.min(p1.lat_deg),
+        bbox[2],
+        p0.lon_deg.max(p1.lon_deg),
+        p0.lat_deg.max(p1.lat_deg),
+        bbox[5],
+    ])
+}
+
+fn point_to_wgs84(source_epsg: u32, point: [f64; 3]) -> Option<[f64; 3]> {
+    let p = project_to_wgs84(source_epsg, point[0], point[1]).ok()?;
+    Some([p.lon_deg, p.lat_deg, point[2]])
 }
 
 fn append_preview_box(

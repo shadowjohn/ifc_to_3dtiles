@@ -272,6 +272,33 @@ out\inspect_tamkang\publish\runtime\dwg-12d5f1b6\runtime_pick.json
 - `runtime_pick.json` 只存 bbox picking index，不是屬性資料 source of truth。
 - `spatial_pick_index.json` 是 publish root 的 runtime-only pick index，先供後續 Cesium hybrid pick fallback 使用；它使用 local bbox，不修改 GLB、不塞 invisible mesh。
 
+Phase 1K 建立 approved-only minimal geometry preview 與 bad geometry triage：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\run_phase1k_geometry_preview.ps1
+```
+
+主要輸出：
+
+```text
+out\inspect_tamkang\publish\geometry_preview\raw.glb
+out\inspect_tamkang\publish\geometry_preview\tile.glb
+out\inspect_tamkang\publish\geometry_preview\tileset.json
+out\inspect_tamkang\publish\geometry_preview\geometry_publish_report.json
+out\inspect_tamkang\publish\geometry_preview\geometry_diagnostic_report.json
+```
+
+`geometry_diagnostic_report.json` 只做 bad geometry triage：比對 geometry bbox / pick bbox，標出 line 太細、bbox mismatch、outlier、face/transform 可疑，方便先判斷「爛在哪」，不修 geometry、不改 publish schema。
+
+Phase 1L 會把同一份診斷報告同步寫到 `publish\geometry_diagnostic_report.json`，並補強欄位：
+
+- `bboxOverlapRatio` / `mismatchLevel`
+- `distanceFromSceneCenter` / `sizePercentile`
+- `triangleDensity` / `abnormalAspectRatio`
+- `severityScore` / `problemFlags`
+
+QA viewer 可用 `bad geometry only`、`bbox mismatch`、`outlier geometry`、NaN、huge bbox、tiny bbox、degenerate、transform mismatch 等 filter 快速定位壞 feature。`runtime_qa_report.json` 也會統計 bad / mismatch / NaN / outlier geometry counts。
+
 ## Verification
 
 ```powershell

@@ -9,7 +9,8 @@ use ifc_to_3dtiles::{
     cad_metadata::{CadHierarchyDump, CadLevel, CadMaterial, CadModel, CadReference},
     fingerprint::{GeometryFingerprint, duplicate_candidate_score},
     geometry_preview::{
-        GeometryPreviewFeature, build_geometry_preview_tileset_json, build_minimal_geometry_preview,
+        GeometryPreviewFeature, build_geometry_diagnostic_report,
+        build_geometry_preview_tileset_json, build_minimal_geometry_preview,
     },
     georef::{
         Aoi, Bounds2, BoundsSummary, SourceTransform, classify_source_scale, decide_source_status,
@@ -2055,6 +2056,187 @@ fn phase1k_cli_and_script_expose_geometry_preview_publish() {
     assert!(main_rs.contains("geometry-preview"));
     assert!(script.contains("geometry-preview"));
     assert!(script.contains("geometry_publish_report.json"));
+}
+
+#[test]
+fn phase1k_fix_diagnostic_report_classifies_line_bbox_and_bbox_mismatch() {
+    let report = build_geometry_diagnostic_report(
+        3826,
+        [292100.0, 2785200.0, 0.0],
+        [121.42, 25.15, 0.0],
+        [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ],
+        [292100.0, 2785200.0, 0.0, 292130.0, 2785220.0, 30.0],
+        &[
+            GeometryPreviewFeature {
+                feature_id: 1,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "A-LINE".to_string(),
+                geometry_type: "LINESTRING".to_string(),
+                bbox: [292100.0, 2785200.0, 10.0, 292110.0, 2785200.0, 10.0],
+            },
+            GeometryPreviewFeature {
+                feature_id: 2,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "Pier".to_string(),
+                geometry_type: "POLYHEDRALSURFACE".to_string(),
+                bbox: [292120.0, 2785210.0, 0.0, 292130.0, 2785220.0, 30.0],
+            },
+        ],
+    )
+    .expect("geometry diagnostic report");
+
+    assert_eq!(report.feature_count, 2);
+    assert_eq!(report.bad_feature_count, 1);
+    assert_eq!(report.bbox_mismatch_count, 1);
+    assert_eq!(report.category_counts.get("line"), Some(&1));
+    assert_eq!(report.features[0].vertex_count, 36);
+    assert_eq!(report.features[0].triangle_count, 12);
+    assert!(report.features[0].bbox_tolerance_exceeded);
+    assert_eq!(report.features[0].problem_category, "line");
+    assert_eq!(report.features[1].problem_category, "none");
+}
+
+#[test]
+fn phase1k_fix_diagnostic_report_serializes_required_fields() {
+    let report = build_geometry_diagnostic_report(
+        3826,
+        [292100.0, 2785200.0, 0.0],
+        [121.42, 25.15, 0.0],
+        [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ],
+        [292100.0, 2785200.0, 0.0, 292130.0, 2785220.0, 30.0],
+        &[GeometryPreviewFeature {
+            feature_id: 7,
+            source_id: "dwg-12d5f1b6".to_string(),
+            layer: "Pier".to_string(),
+            geometry_type: "POLYHEDRALSURFACE".to_string(),
+            bbox: [292120.0, 2785210.0, 0.0, 292130.0, 2785220.0, 30.0],
+        }],
+    )
+    .expect("geometry diagnostic report");
+    let json = serde_json::to_string(&report).expect("diagnostic json");
+
+    assert!(json.contains("\"diagnosticVersion\":1"));
+    assert!(json.contains("\"vertexCount\":36"));
+    assert!(json.contains("\"triangleCount\":12"));
+    assert!(json.contains("\"hasNaN\""));
+    assert!(json.contains("\"hasDegenerateTriangles\""));
+    assert!(json.contains("\"normalStatus\""));
+    assert!(json.contains("\"transformStatus\""));
+    assert!(json.contains("\"bboxCenterDistance\""));
+    assert!(json.contains("\"bboxSizeRatio\""));
+    assert!(json.contains("\"problemCategory\""));
+}
+
+#[test]
+fn phase1k_fix_publish_viewer_has_bad_geometry_triage_toggles() {
+    let html = render_publish_viewer_html();
+
+    assert!(html.contains("badGeometryOnlyToggle"));
+    assert!(html.contains("bboxMismatchToggle"));
+    assert!(html.contains("outlierGeometryToggle"));
+    assert!(html.contains("geometry_diagnostic_report.json"));
+    assert!(html.contains("loadGeometryDiagnosticReport"));
+    assert!(html.contains("refreshGeometryDiagnosticOverlay"));
+    assert!(html.contains("showGeometryDiagnosticDetail"));
+}
+
+#[test]
+fn phase1k_fix_script_mentions_diagnostic_report() {
+    let script =
+        std::fs::read_to_string("tools/run_phase1k_geometry_preview.ps1").unwrap_or_default();
+
+    assert!(script.contains("geometry_diagnostic_report.json"));
+}
+
+#[test]
+fn phase1l_geometry_diagnostic_report_includes_extended_metrics() {
+    let report = build_geometry_diagnostic_report(
+        3826,
+        [292100.0, 2785200.0, 0.0],
+        [121.42, 25.15, 0.0],
+        [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ],
+        [292100.0, 2785200.0, 0.0, 292130.0, 2785220.0, 30.0],
+        &[
+            GeometryPreviewFeature {
+                feature_id: 1,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "A-LINE".to_string(),
+                geometry_type: "LINESTRING".to_string(),
+                bbox: [292100.0, 2785200.0, 10.0, 292110.0, 2785200.0, 10.0],
+            },
+            GeometryPreviewFeature {
+                feature_id: 2,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "Pier".to_string(),
+                geometry_type: "POLYHEDRALSURFACE".to_string(),
+                bbox: [292120.0, 2785210.0, 0.0, 292130.0, 2785220.0, 30.0],
+            },
+        ],
+    )
+    .expect("geometry diagnostic report");
+    let line = &report.features[0];
+    let json = serde_json::to_string(&report).expect("diagnostic json");
+
+    assert!(line.diagonal_length > 10.0);
+    assert!(!line.has_infinite);
+    assert_eq!(line.degenerate_triangle_count, 0);
+    assert_eq!(line.zero_area_triangle_count, 0);
+    assert!(line.duplicate_vertex_ratio >= 0.0);
+    assert!(line.bbox_overlap_ratio > 0.0);
+    assert_ne!(line.mismatch_level, "none");
+    assert!(line.distance_from_scene_center > 0.0);
+    assert!(line.size_percentile >= 0.0 && line.size_percentile <= 100.0);
+    assert!(line.triangle_density > 0.0);
+    assert!(line.abnormal_aspect_ratio >= 1.0);
+    assert!(line.severity_score > 0.0);
+    assert!(line.problem_flags.iter().any(|flag| flag == "tiny_bbox"));
+    assert!(json.contains("\"diagonalLength\""));
+    assert!(json.contains("\"bboxOverlapRatio\""));
+    assert!(json.contains("\"mismatchLevel\""));
+    assert!(json.contains("\"distanceFromSceneCenter\""));
+    assert!(json.contains("\"triangleDensity\""));
+    assert!(json.contains("\"severityScore\""));
+}
+
+#[test]
+fn phase1l_geometry_diagnostic_report_is_written_at_publish_root() {
+    let source = std::fs::read_to_string("src/geometry_preview.rs").expect("geometry preview rs");
+
+    assert!(source.contains("output.join(\"geometry_diagnostic_report.json\")"));
+    assert!(source.contains("preview_dir.join(\"geometry_diagnostic_report.json\")"));
+}
+
+#[test]
+fn phase1l_publish_viewer_has_geometry_diagnostic_filters_and_compare_overlay() {
+    let html = render_publish_viewer_html();
+
+    assert!(html.contains("nanGeometryToggle"));
+    assert!(html.contains("hugeBboxToggle"));
+    assert!(html.contains("tinyBboxToggle"));
+    assert!(html.contains("degenerateGeometryToggle"));
+    assert!(html.contains("transformMismatchToggle"));
+    assert!(html.contains("severityHeatToggle"));
+    assert!(html.contains("geometry_diagnostic_report.json"));
+    assert!(html.contains("diagnosticSeverityColor"));
+    assert!(html.contains("drawDiagnosticPickBboxCompare"));
+}
+
+#[test]
+fn phase1l_verify_script_reports_geometry_diagnostic_counts() {
+    let script =
+        std::fs::read_to_string("tools/verify_index_page.ps1").expect("verify_index_page.ps1");
+
+    assert!(script.contains("geometry_diagnostic_report.json"));
+    assert!(script.contains("badGeometryCount"));
+    assert!(script.contains("bboxMismatchCount"));
+    assert!(script.contains("NaNGeometryCount"));
+    assert!(script.contains("outlierGeometryCount"));
 }
 
 #[test]
