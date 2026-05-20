@@ -771,3 +771,14 @@
   - `semanticRulesVersion`
 - viewer 補 semantic legend / category filter / strict-vs-suggested mode；GLB 顏色使用 `suggestedCategory`。
 - 本階段不改 source approval gate、不改 geometry transform、不改 spatial pick / diagnostics schema。
+
+### Phase 2B Guardrail
+
+- 新增 `tools/check_semantic_guardrail.ps1`。
+- `tools/verify_index_page.ps1` 會先執行 guardrail。
+- guardrail 掃描 `src/**/*.rs`，禁止 production Rust 出現個案 source/layer 關鍵字。
+- 個案語意允許留在 tests、docs、或本機 `config/semantic_rules.local.json`。
+- 移除 production 既有個案詞：
+  - duplicate recommendation 改為 generic entity-count 策略。
+  - QA outlier drilldown 改為挑選 raw bbox diagonal 最大的 source。
+  - runtime group 顏色改成 hash-based，不看特定 layer 名稱。

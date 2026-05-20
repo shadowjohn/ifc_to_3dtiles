@@ -321,6 +321,8 @@ Phase 2B 會把 preview semantic classification 改成雙軌：
 
 `geometry_publish_report.json` 會新增 `strict_category_counts`、`suggested_category_counts`、`strict_semantic_coverage`、`suggested_semantic_coverage`、`strict_unknown_ratio`、`suggested_unknown_ratio`、`category_confidence_histogram`、`semanticRulesSource`、`semanticRulesVersion`。GLB 顏色使用 `suggestedCategory`，但不改 source approval gate、不改 transform / pick / diagnostics pipeline。
 
+Phase 2B Guardrail 會在 `tools\verify_index_page.ps1` 內執行 `tools\check_semantic_guardrail.ps1`，掃描 `src/**/*.rs`，禁止 production Rust 出現個案 source/layer 關鍵字。個案語意只能放在 tests、docs 或本機 `config\semantic_rules.local.json`。
+
 ## Verification
 
 ```powershell

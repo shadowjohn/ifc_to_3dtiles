@@ -1004,7 +1004,7 @@ fn inspect_review_can_build_report_from_sqlite_and_manifest() {
 }
 
 #[test]
-fn phase1e_duplicate_compare_recommends_monitoring_source_over_main_bridge_duplicate() {
+fn phase1e_duplicate_compare_recommends_larger_source_over_duplicate() {
     let monitor = review_stats(
         "djb-m-su-dwg-0c82de78",
         [-2344516.9, 2784696.2, -40.2, 292398.9, 3730959.0, 169.78],
@@ -1033,7 +1033,7 @@ fn phase1e_duplicate_compare_recommends_monitoring_source_over_main_bridge_dupli
     assert!(pair.score > 0.9);
     assert_eq!(pair.retain_source_id, "djb-m-su-dwg-0c82de78");
     assert_eq!(pair.reject_source_id, "dwg-850173d8");
-    assert!(pair.recommendation_reason.contains("完整監測交付主檔"));
+    assert!(pair.recommendation_reason.contains("entity count 較高"));
     assert!(pair.layer_count_diff.contains_key("_CIVIL_CONSTRUCTION"));
 }
 
@@ -2817,6 +2817,36 @@ fn phase2b_semantic_rules_are_configurable_not_project_hardcoded() {
 }
 
 #[test]
+fn phase2b_guardrail_blocks_project_terms_in_production_rust() {
+    let script = std::fs::read_to_string("tools/check_semantic_guardrail.ps1")
+        .expect("semantic guardrail script");
+    let verify =
+        std::fs::read_to_string("tools/verify_index_page.ps1").expect("verify_index_page.ps1");
+
+    assert!(script.contains("src/**/*.rs"));
+    assert!(script.contains("淡江"));
+    assert!(script.contains("主橋"));
+    assert!(script.contains("管理中心"));
+    assert!(script.contains("電梯"));
+    assert!(script.contains("監測"));
+    assert!(script.contains("P130"));
+    assert!(script.contains("semantic_rules.local.json"));
+    assert!(verify.contains("check_semantic_guardrail.ps1"));
+
+    for forbidden in ["淡江", "主橋", "管理中心", "電梯", "監測", "P130"] {
+        for entry in walkdir_like("src") {
+            if entry.ends_with(".rs") {
+                let text = std::fs::read_to_string(&entry).expect("read rust source");
+                assert!(
+                    !text.contains(forbidden),
+                    "production Rust code contains project-specific term {forbidden} in {entry}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn phase2b_publish_viewer_has_semantic_legend_filter_and_suggested_default() {
     let html = render_publish_viewer_html();
 
@@ -3406,4 +3436,24 @@ fn phase1f_decision(
         reason: reason.to_string(),
         duplicate_of: duplicate_of.map(str::to_string),
     }
+}
+
+fn walkdir_like(root: &str) -> Vec<String> {
+    fn visit(path: &std::path::Path, out: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                visit(&path, out);
+            } else {
+                out.push(path.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    visit(std::path::Path::new(root), &mut out);
+    out
 }

@@ -6,6 +6,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+$semanticGuardrailScript = Join-Path $ProjectRoot "tools\check_semantic_guardrail.ps1"
+if (Test-Path -LiteralPath $semanticGuardrailScript) {
+  pwsh -NoProfile -ExecutionPolicy Bypass -File $semanticGuardrailScript -ProjectRoot $ProjectRoot
+}
+
 function Assert-FileContains {
   param(
     [string]$Path,

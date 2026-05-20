@@ -152,8 +152,7 @@ pub fn compare_duplicate_pair(
     source_b: &CadEntityStats,
 ) -> DuplicatePairCompare {
     let score = duplicate_review_score(source_a, source_b);
-    let a_preferred = source_a_name.contains("監測")
-        || (!source_b_name.contains("監測") && source_a.entity_count >= source_b.entity_count);
+    let a_preferred = source_a.entity_count >= source_b.entity_count;
     let (retain_id, retain_name, reject_id, reject_name) = if a_preferred {
         (
             source_a.source_id.clone(),
@@ -169,11 +168,9 @@ pub fn compare_duplicate_pair(
             source_a_name.to_string(),
         )
     };
-    let recommendation_reason = if retain_name.contains("監測") {
-        "兩者 bbox/layer/entity 高度重疊；保留名稱較像完整監測交付主檔的 source，另一筆先列 rejected duplicate candidate".to_string()
-    } else {
-        "兩者 bbox/layer/entity 高度重疊；保留 entity count 較高的 source，另一筆先列 rejected duplicate candidate".to_string()
-    };
+    let recommendation_reason =
+        "兩者 bbox/layer/entity 高度重疊；保留 entity count 較高的 source，另一筆先列 rejected duplicate candidate"
+            .to_string();
 
     DuplicatePairCompare {
         source_a_id: source_a.source_id.clone(),
@@ -354,21 +351,18 @@ pub fn write_drilldown_outputs(
     )
     .with_context(|| format!("寫入 duplicate_pairs 失敗：{}", duplicate_path.display()))?;
 
-    let outlier_report = if let Some(center_source) = manifest
-        .sources
-        .iter()
-        .find(|source| source.original_file_name == "管理中心_全.dwg")
-    {
-        let records = read_entity_bbox_records(&conn, &center_source.id)?;
-        Some(detect_entity_outliers(
-            &center_source.id,
-            &center_source.original_file_name,
-            &records,
-            10,
-        ))
-    } else {
-        None
-    };
+    let outlier_report =
+        if let Some(center_source) = select_outlier_drilldown_source(&manifest, &stats) {
+            let records = read_entity_bbox_records(&conn, &center_source.id)?;
+            Some(detect_entity_outliers(
+                &center_source.id,
+                &center_source.original_file_name,
+                &records,
+                10,
+            ))
+        } else {
+            None
+        };
     let outlier_path = output_dir.join("entity_outliers.json");
     fs::write(&outlier_path, serde_json::to_vec_pretty(&outlier_report)?)
         .with_context(|| format!("寫入 entity_outliers 失敗：{}", outlier_path.display()))?;
@@ -401,6 +395,37 @@ pub fn write_drilldown_outputs(
         )
     })?;
     Ok(())
+}
+
+fn select_outlier_drilldown_source<'a>(
+    manifest: &'a ProjectManifest,
+    stats: &HashMap<String, CadEntityStats>,
+) -> Option<&'a crate::project::SourceRecord> {
+    manifest
+        .sources
+        .iter()
+        .filter(|source| stats.contains_key(&source.id))
+        .max_by(|left, right| {
+            let left_score = stats
+                .get(&left.id)
+                .map(outlier_drilldown_score)
+                .unwrap_or_default();
+            let right_score = stats
+                .get(&right.id)
+                .map(outlier_drilldown_score)
+                .unwrap_or_default();
+            left_score
+                .partial_cmp(&right_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+}
+
+fn outlier_drilldown_score(stats: &CadEntityStats) -> f64 {
+    let bbox = stats.raw_bbox;
+    let dx = (bbox[3] - bbox[0]).abs();
+    let dy = (bbox[4] - bbox[1]).abs();
+    let dz = (bbox[5] - bbox[2]).abs();
+    (dx * dx + dy * dy + dz * dz).sqrt()
 }
 
 pub fn render_phase1e_html_section(

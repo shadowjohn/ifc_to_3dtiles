@@ -1628,10 +1628,14 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       }
     }
     function runtimeMaterial(feature, alpha) {
-      const color = feature.explode_group_key && feature.explode_group_key.includes("電梯")
-        ? Cesium.Color.ORANGE
-        : Cesium.Color.CYAN;
-      return color.withAlpha(alpha);
+      return runtimeGroupColor(feature).withAlpha(alpha);
+    }
+    function runtimeGroupColor(feature) {
+      const key = String(feature?.explode_group_key || feature?.source_id || "");
+      let hash = 0;
+      for (let i = 0; i < key.length; i++) hash = ((hash << 5) - hash + key.charCodeAt(i)) | 0;
+      const colors = [Cesium.Color.CYAN, Cesium.Color.ORANGE, Cesium.Color.LIME, Cesium.Color.VIOLET, Cesium.Color.SKYBLUE];
+      return colors[Math.abs(hash) % colors.length];
     }
     function clearRuntimeHighlight() {
       for (const entity of state.runtimePickEntities) {
