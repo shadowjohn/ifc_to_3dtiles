@@ -237,8 +237,11 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
     #status { position:absolute; z-index:2; right:12px; bottom:12px; max-width:520px; max-height:40vh; overflow:auto; background:rgba(16,20,24,.92); border:1px solid #2b3642; border-radius:8px; padding:10px 12px; white-space:pre-wrap; }
     #detailPanel { position:absolute; z-index:2; top:12px; right:12px; width:min(390px, calc(100vw - 24px)); max-height:calc(100vh - 96px); overflow:auto; background:rgba(16,20,24,.94); border:1px solid #2b3642; border-radius:8px; padding:12px; box-shadow:0 16px 40px rgba(0,0,0,.38); }
     #sourceListPanel { position:absolute; z-index:2; top:72px; left:12px; width:min(360px, calc(100vw - 24px)); max-height:calc(100vh - 150px); overflow:auto; background:rgba(16,20,24,.94); border:1px solid #2b3642; border-radius:8px; padding:12px; box-shadow:0 16px 40px rgba(0,0,0,.30); }
+    #pickDebugPanel { position:absolute; z-index:2; left:12px; bottom:12px; width:min(360px, calc(100vw - 24px)); max-height:32vh; overflow:auto; background:rgba(16,20,24,.94); border:1px solid #2b3642; border-radius:8px; padding:12px; box-shadow:0 16px 40px rgba(0,0,0,.30); }
     #sourceListPanel h2 { margin:0 0 8px; font-size:15px; }
+    #pickDebugPanel h2 { margin:0 0 8px; font-size:15px; }
     #qaSearch { box-sizing:border-box; width:100%; margin:0 0 8px; padding:7px 9px; border:1px solid #334150; border-radius:6px; background:#0d141b; color:#e8eef5; }
+    #pickThresholdSelect { border:1px solid #334150; border-radius:6px; background:#0d141b; color:#e8eef5; padding:4px 6px; }
     .source-row { width:100%; margin:0 0 6px; padding:8px; text-align:left; border:1px solid #2b3642; border-radius:6px; color:#e8eef5; background:#121a22; cursor:pointer; }
     .source-row:hover { border-color:#6aa7ff; background:#172330; }
     .source-title { display:flex; justify-content:space-between; gap:8px; align-items:center; }
@@ -271,6 +274,17 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
     <label><input id="aoiToggle" type="checkbox" checked> AOI</label>
     <label><input id="outlierToggle" type="checkbox"> outliers</label>
     <label><input id="duplicateCompareToggle" type="checkbox"> duplicate compare</label>
+    <label>threshold px
+      <select id="pickThresholdSelect">
+        <option value="10">10</option>
+        <option value="20">20</option>
+        <option value="36" selected>36</option>
+        <option value="50">50</option>
+        <option value="80">80</option>
+      </select>
+    </label>
+    <label><input id="showPickBboxToggle" type="checkbox" checked> pick bbox</label>
+    <label><input id="showCandidateCentersToggle" type="checkbox"> candidate centers</label>
     <button id="flyBtn" class="btn">Zoom</button>
   </div>
   <aside id="detailPanel">
@@ -287,6 +301,12 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       <button id="outlierListBtn" class="btn">Outliers</button>
     </div>
     <div id="sourceList"></div>
+  </aside>
+  <aside id="pickDebugPanel">
+    <h2>Pick Debug</h2>
+    <div id="pickDebugSummary" class="mono muted">click x/y: - · pickSource = miss</div>
+    <h3>Top Candidates</h3>
+    <div id="candidatePreviewList" class="mono muted">none</div>
   </aside>
   <pre id="status">sources_manifest.json / debug_overlays.json</pre>
   <!--EMBEDDED_MANIFESTS-->
@@ -316,7 +336,18 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       spatialPickIndex: null,
       spatialPickSources: new Map(),
       spatialPickHighlightEntity: null,
-      pickMode: "miss"
+      spatialPickCandidateEntities: [],
+      pickMode: "miss",
+      pickDebug: {
+        clickX: null,
+        clickY: null,
+        pickSource: "miss",
+        selectedFeatureId: null,
+        nearestDistancePx: null,
+        thresholdPx: 36,
+        candidateCount: 0,
+        candidates: []
+      }
     };
     function status(text) {
       document.getElementById("status").textContent = text;
@@ -369,6 +400,41 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
     function formatRatio(value) {
       if (value === null || value === undefined || !Number.isFinite(Number(value))) return "-";
       return Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 }) + "x";
+    }
+    function pickThresholdPx() {
+      const value = Number(document.getElementById("pickThresholdSelect")?.value || 36);
+      return Number.isFinite(value) ? value : 36;
+    }
+    function updatePickDebug(update) {
+      state.pickDebug = {
+        ...state.pickDebug,
+        thresholdPx: pickThresholdPx(),
+        ...update
+      };
+      renderPickDebugPanel();
+    }
+    function renderPickDebugPanel() {
+      const debug = state.pickDebug;
+      const summary = document.getElementById("pickDebugSummary");
+      const list = document.getElementById("candidatePreviewList");
+      if (summary) {
+        summary.innerHTML = [
+          `click x/y: ${formatNumber(debug.clickX)} / ${formatNumber(debug.clickY)}`,
+          `pickSource = ${escapeHtml(debug.pickSource || "miss")}`,
+          `selected featureId: ${escapeHtml(debug.selectedFeatureId ?? "-")}`,
+          `nearest screen distance px: ${formatNumber(debug.nearestDistancePx)}`,
+          `threshold px: ${formatNumber(debug.thresholdPx)}`,
+          `candidate count: ${formatNumber(debug.candidateCount)}`
+        ].join("<br>");
+      }
+      if (list) {
+        const candidates = debug.candidates || [];
+        list.innerHTML = candidates.length
+          ? candidates.slice(0, 5).map(candidate =>
+            `${escapeHtml(candidate.featureId)} · ${escapeHtml(candidate.sourceId)} · ${escapeHtml(candidate.layer)} · ${escapeHtml(candidate.category)} · ${formatNumber(candidate.screenDistancePx)}px`
+          ).join("<br>")
+          : "none";
+      }
     }
     function sourceSearchText(source) {
       return [
@@ -748,6 +814,22 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       const node = document.getElementById("runtimeDebug");
       if (node) node.textContent = runtimeDebugText();
     }
+    function rankSpatialPickCandidates(candidates, thresholdPx) {
+      const valid = (candidates || [])
+        .filter(candidate =>
+          candidate
+          && Number.isFinite(Number(candidate.screenDistancePx))
+          && candidate.screenDistancePx >= 0
+        )
+        .sort((a, b) => a.screenDistancePx - b.screenDistancePx);
+      const topCandidates = valid.slice(0, 5);
+      const hit = topCandidates.find(candidate => candidate.screenDistancePx <= thresholdPx) || null;
+      return {
+        hit,
+        topCandidates,
+        candidateCount: valid.length
+      };
+    }
     function setRuntimeVisible(visible) {
       for (const entry of state.runtimeModels) entry.model.show = visible;
       for (const entity of state.runtimePickEntities) entity.show = visible;
@@ -900,18 +982,31 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
     function setupPickHandler(viewer) {
       const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
       handler.setInputAction((movement) => {
+        const thresholdPx = pickThresholdPx();
+        updatePickDebug({
+          clickX: movement.position.x,
+          clickY: movement.position.y,
+          pickSource: "miss",
+          selectedFeatureId: null,
+          nearestDistancePx: null,
+          thresholdPx,
+          candidateCount: 0,
+          candidates: []
+        });
         const picked = viewer.scene.pick(movement.position);
         const entity = picked && picked.id;
         if (entity) {
           const kind = propValue(entity, "qa_kind");
           if (kind === "source" || kind === "duplicate") {
             state.pickMode = "cesium_pick";
+            updatePickDebug({ pickSource: "cesium_pick" });
             clearSpatialPickHighlight(viewer);
             showSourceDetail(propValue(entity, "source_id"), propValue(entity, "bbox_kind"));
             refresh(viewer);
             return;
           } else if (kind === "outlier") {
             state.pickMode = "cesium_pick";
+            updatePickDebug({ pickSource: "cesium_pick", selectedFeatureId: propValue(entity, "fid") });
             clearSpatialPickHighlight(viewer);
             const index = Number(propValue(entity, "outlier_index"));
             const outlier = state.spatialQa?.outliers?.[index];
@@ -920,21 +1015,27 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
             return;
           } else if (kind === "aoi") {
             state.pickMode = "cesium_pick";
+            updatePickDebug({ pickSource: "cesium_pick" });
             clearSpatialPickHighlight(viewer);
             showAoiDetail();
             refresh(viewer);
             return;
           } else if (kind === "runtime_feature") {
+            updatePickDebug({ pickSource: "cesium_pick", selectedFeatureId: propValue(entity, "feature_id") });
             clearSpatialPickHighlight(viewer);
             const key = String(propValue(entity, "runtime_feature_key"));
             showRuntimeFeatureDetail(state.runtimeFeatureDetails.get(key), "cesium_pick");
             return;
           }
         }
-        const fallback = nearestSpatialPickFeature(viewer, movement.position, 36);
+        const fallback = nearestSpatialPickFeature(viewer, movement.position, thresholdPx);
         if (fallback) {
           showSpatialPickFeatureDetail(fallback, "spatial_pick_index");
-          drawSpatialPickBbox(viewer, fallback);
+          if (document.getElementById("showPickBboxToggle").checked) {
+            drawSpatialPickBbox(viewer, fallback);
+          } else {
+            clearSpatialPickHighlight(viewer);
+          }
           return;
         }
         showPickMiss();
@@ -943,8 +1044,7 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
     }
     function nearestSpatialPickFeature(viewer, clickPosition, thresholdPx) {
       const features = state.spatialPickIndex?.features || [];
-      let best = null;
-      let bestDistance = Number.POSITIVE_INFINITY;
+      const candidates = [];
       for (const feature of features) {
         const world = spatialPickFeatureWorldCenter(feature);
         if (!world) continue;
@@ -955,12 +1055,18 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
         const dx = screen.x - clickPosition.x;
         const dy = screen.y - clickPosition.y;
         const distance = Math.sqrt(dx * dx + dy * dy);
-        if (distance < bestDistance) {
-          best = { ...feature, screenDistancePx: distance };
-          bestDistance = distance;
-        }
+        candidates.push({ ...feature, screenDistancePx: distance, screenX: screen.x, screenY: screen.y });
       }
-      return best && bestDistance <= thresholdPx ? best : null;
+      const ranked = rankSpatialPickCandidates(candidates, thresholdPx);
+      updatePickDebug({
+        candidateCount: ranked.candidateCount,
+        candidates: ranked.topCandidates,
+        nearestDistancePx: ranked.topCandidates[0]?.screenDistancePx ?? null,
+        selectedFeatureId: ranked.hit?.featureId ?? null,
+        pickSource: ranked.hit ? "spatial_pick_index" : "miss"
+      });
+      drawCandidateCenters(viewer, ranked.topCandidates);
+      return ranked.hit;
     }
     function spatialPickFeatureWorldCenter(feature) {
       const source = state.spatialPickSources.get(feature.sourceId);
@@ -990,6 +1096,36 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
         state.spatialPickHighlightEntity = null;
       }
     }
+    function clearCandidateCenters(viewer) {
+      if (!viewer) return;
+      for (const entity of state.spatialPickCandidateEntities) {
+        viewer.entities.remove(entity);
+      }
+      state.spatialPickCandidateEntities = [];
+    }
+    function drawCandidateCenters(viewer, candidates) {
+      clearCandidateCenters(viewer);
+      if (!document.getElementById("showCandidateCentersToggle").checked) return;
+      for (const candidate of (candidates || []).slice(0, 5)) {
+        const world = spatialPickFeatureWorldCenter(candidate);
+        if (!world) continue;
+        state.spatialPickCandidateEntities.push(viewer.entities.add({
+          name: `candidate center ${candidate.sourceId} FID ${candidate.featureId}`,
+          position: world,
+          point: {
+            pixelSize: 7,
+            color: Cesium.Color.CYAN.withAlpha(0.82),
+            outlineColor: Cesium.Color.WHITE,
+            outlineWidth: 1
+          },
+          properties: {
+            qa_kind: "spatial_pick_candidate",
+            source_id: candidate.sourceId,
+            feature_id: candidate.featureId
+          }
+        }));
+      }
+    }
     function drawSpatialPickBbox(viewer, feature) {
       clearSpatialPickHighlight(viewer);
       const corners = spatialPickBboxWorldCorners(feature);
@@ -1014,6 +1150,11 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
     }
     function showSpatialPickFeatureDetail(feature, pickSource) {
       state.pickMode = pickSource;
+      updatePickDebug({
+        pickSource,
+        selectedFeatureId: feature.featureId,
+        nearestDistancePx: feature.screenDistancePx ?? state.pickDebug.nearestDistancePx
+      });
       document.getElementById("detailPanel").innerHTML = `
         <h2>Spatial Pick Feature</h2>
         <p><b>${escapeHtml(pickSourceLabel(pickSource))}</b></p>
@@ -1032,6 +1173,7 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
     function showPickMiss() {
       state.pickMode = "miss";
       clearSpatialPickHighlight(window.viewer);
+      updatePickDebug({ pickSource: "miss", selectedFeatureId: null });
       document.getElementById("detailPanel").innerHTML = `
         <h2>Pick Miss</h2>
         <p><b>${escapeHtml(pickSourceLabel("miss"))}</b></p>
@@ -1097,10 +1239,22 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       document.getElementById("aoiToggle").addEventListener("change", () => refresh(viewer));
       document.getElementById("outlierToggle").addEventListener("change", () => refresh(viewer));
       document.getElementById("duplicateCompareToggle").addEventListener("change", () => refresh(viewer));
+      document.getElementById("pickThresholdSelect").addEventListener("change", () => updatePickDebug({ thresholdPx: pickThresholdPx() }));
+      document.getElementById("showPickBboxToggle").addEventListener("change", () => {
+        if (!document.getElementById("showPickBboxToggle").checked) clearSpatialPickHighlight(viewer);
+      });
+      document.getElementById("showCandidateCentersToggle").addEventListener("change", () => {
+        if (document.getElementById("showCandidateCentersToggle").checked) {
+          drawCandidateCenters(viewer, state.pickDebug.candidates);
+        } else {
+          clearCandidateCenters(viewer);
+        }
+      });
       document.getElementById("flyBtn").addEventListener("click", () => viewer.zoomTo(viewer.entities));
       setupPickHandler(viewer);
       wireReviewNavigation(viewer);
       renderSourceList();
+      renderPickDebugPanel();
       refresh(viewer);
       if (state.approved[0]) showSourceDetail(state.approved[0].source_id, "approved");
       if (state.entities.length) viewer.zoomTo(viewer.entities);

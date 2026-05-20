@@ -1788,6 +1788,34 @@ fn phase1gd_publish_viewer_keeps_cesium_pick_first_priority() {
 }
 
 #[test]
+fn phase1ge_publish_viewer_has_pick_accuracy_debug_controls() {
+    let html = render_publish_viewer_html();
+
+    assert!(html.contains("pickDebugPanel"));
+    assert!(html.contains("pickThresholdSelect"));
+    assert!(html.contains("showPickBboxToggle"));
+    assert!(html.contains("showCandidateCentersToggle"));
+    assert!(html.contains("candidatePreviewList"));
+    assert!(html.contains("renderPickDebugPanel"));
+    assert!(html.contains("rankSpatialPickCandidates"));
+    assert!(html.contains("drawCandidateCenters"));
+    assert!(html.contains("click x/y"));
+    assert!(html.contains("threshold px"));
+    assert!(html.contains("candidate count"));
+}
+
+#[test]
+fn phase1ge_js_pick_accuracy_test_script_exists() {
+    let script = std::fs::read_to_string("tools/test_phase1g_pick_accuracy.js")
+        .expect("Phase 1G-E JS test script");
+
+    assert!(script.contains("nearest candidate sorting"));
+    assert!(script.contains("threshold miss"));
+    assert!(script.contains("threshold hit"));
+    assert!(script.contains("invalid center skipped"));
+}
+
+#[test]
 fn phase1gc_spatial_pick_index_serializes_runtime_only_schema_with_local_bbox() {
     let index = build_spatial_pick_index(
         "local",
