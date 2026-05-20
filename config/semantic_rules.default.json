@@ -1,0 +1,150 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "default.pipe.strict",
+      "category": "pipe",
+      "level": "strict",
+      "strict_keywords": ["pipe", "tube", "管"],
+      "suggested_keywords": [],
+      "layer_regex": [],
+      "source_regex": [],
+      "geometry_types": [],
+      "confidence": 0.92
+    },
+    {
+      "id": "default.wall.strict",
+      "category": "wall",
+      "level": "strict",
+      "strict_keywords": ["wall", "牆", "墻"],
+      "suggested_keywords": [],
+      "layer_regex": [],
+      "source_regex": [],
+      "geometry_types": [],
+      "confidence": 0.92
+    },
+    {
+      "id": "default.slab.strict",
+      "category": "slab",
+      "level": "strict",
+      "strict_keywords": ["slab", "floor", "deck", "platform", "平台", "版"],
+      "suggested_keywords": [],
+      "layer_regex": [],
+      "source_regex": [],
+      "geometry_types": [],
+      "confidence": 0.92
+    },
+    {
+      "id": "default.beam.strict",
+      "category": "beam",
+      "level": "strict",
+      "strict_keywords": ["beam", "girder", "梁"],
+      "suggested_keywords": [],
+      "layer_regex": [],
+      "source_regex": [],
+      "geometry_types": [],
+      "confidence": 0.92
+    },
+    {
+      "id": "default.column.strict",
+      "category": "column",
+      "level": "strict",
+      "strict_keywords": ["column", "pier", "pile", "tower", "柱", "墩", "塔"],
+      "suggested_keywords": [],
+      "layer_regex": [],
+      "source_regex": [],
+      "geometry_types": [],
+      "confidence": 0.92
+    },
+    {
+      "id": "default.annotation.strict",
+      "category": "annotation",
+      "level": "strict",
+      "strict_keywords": ["annotation", "anno", "text", "dim", "label", "註", "文字"],
+      "suggested_keywords": [],
+      "layer_regex": [],
+      "source_regex": [],
+      "geometry_types": [],
+      "confidence": 0.92
+    },
+    {
+      "id": "default.terrain.strict",
+      "category": "terrain",
+      "level": "strict",
+      "strict_keywords": ["terrain", "ground", "dtm", "地形", "地表"],
+      "suggested_keywords": [],
+      "layer_regex": [],
+      "source_regex": [],
+      "geometry_types": [],
+      "confidence": 0.92
+    },
+    {
+      "id": "default.track.suggested",
+      "category": "beam",
+      "level": "suggested",
+      "strict_keywords": [],
+      "suggested_keywords": ["rail", "track", "軌道"],
+      "layer_regex": [],
+      "source_regex": [],
+      "geometry_types": [],
+      "confidence": 0.75
+    },
+    {
+      "id": "default.ladder.suggested",
+      "category": "beam",
+      "level": "suggested",
+      "strict_keywords": [],
+      "suggested_keywords": ["ladder", "梯"],
+      "layer_regex": [],
+      "source_regex": [],
+      "geometry_types": [],
+      "confidence": 0.65
+    },
+    {
+      "id": "default.box-girder.suggested",
+      "category": "beam",
+      "level": "suggested",
+      "strict_keywords": [],
+      "suggested_keywords": ["steel box", "box girder"],
+      "layer_regex": [],
+      "source_regex": [],
+      "geometry_types": [],
+      "confidence": 0.75
+    },
+    {
+      "id": "default.embedded-plate.suggested",
+      "category": "slab",
+      "level": "suggested",
+      "strict_keywords": [],
+      "suggested_keywords": ["embedded plate", "embed", "預埋件"],
+      "layer_regex": [],
+      "source_regex": [],
+      "geometry_types": [],
+      "confidence": 0.65,
+      "aspect_hint": "bbox"
+    },
+    {
+      "id": "default.support-base.suggested",
+      "category": "column",
+      "level": "suggested",
+      "strict_keywords": [],
+      "suggested_keywords": ["base", "support", "固定座", "座"],
+      "layer_regex": [],
+      "source_regex": [],
+      "geometry_types": [],
+      "confidence": 0.60,
+      "aspect_hint": "bbox"
+    },
+    {
+      "id": "default.rope-cable.suggested",
+      "category": "beam",
+      "level": "suggested",
+      "strict_keywords": [],
+      "suggested_keywords": ["rope", "cable", "繩", "索"],
+      "layer_regex": [],
+      "source_regex": [],
+      "geometry_types": [],
+      "confidence": 0.58
+    }
+  ]
+}

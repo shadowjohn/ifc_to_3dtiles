@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
+use regex::Regex;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -60,6 +61,18 @@ pub struct GeometryPublishReport {
     pub degenerate_skipped_count: usize,
     pub debug_inflated_feature_count: usize,
     pub visual_category_counts: BTreeMap<String, usize>,
+    pub strict_category_counts: BTreeMap<String, usize>,
+    pub suggested_category_counts: BTreeMap<String, usize>,
+    pub strict_semantic_coverage: f64,
+    pub suggested_semantic_coverage: f64,
+    pub strict_unknown_ratio: f64,
+    pub suggested_unknown_ratio: f64,
+    pub category_confidence_histogram: BTreeMap<String, usize>,
+    #[serde(rename = "semanticRulesSource")]
+    pub semantic_rules_source: String,
+    #[serde(rename = "semanticRulesVersion")]
+    pub semantic_rules_version: u32,
+    pub semantic_matched_rule_counts: BTreeMap<String, usize>,
     pub line_width_exaggeration: f64,
     pub surface_shading_mode: String,
     pub double_side_debug_available: bool,
@@ -87,6 +100,8 @@ pub struct GeometryDiagnosticReport {
     pub bbox_mismatch_count: usize,
     pub outlier_geometry_count: usize,
     pub category_counts: BTreeMap<String, usize>,
+    pub semantic_rules_source: String,
+    pub semantic_rules_version: u32,
     pub tolerances: GeometryDiagnosticTolerances,
     pub source_bbox: [f64; 6],
     pub source_bbox_wgs84: Option<[f64; 6]>,
@@ -112,6 +127,12 @@ pub struct GeometryDiagnosticFeature {
     pub source_id: String,
     pub layer: String,
     pub category: String,
+    pub strict_category: String,
+    pub strict_confidence: f64,
+    pub suggested_category: String,
+    pub suggested_confidence: f64,
+    pub matched_rule_id: String,
+    pub inference_reason: String,
     pub cleanup_action: String,
     pub mesh_exported: bool,
     pub vertex_count: usize,
@@ -224,7 +245,9 @@ enum VisualCategory {
     Slab,
     Beam,
     Column,
+    Pipe,
     Annotation,
+    Terrain,
     Linework,
     Marker,
     Unknown,
@@ -237,12 +260,113 @@ impl VisualCategory {
             Self::Slab => "slab",
             Self::Beam => "beam",
             Self::Column => "column",
+            Self::Pipe => "pipe",
             Self::Annotation => "annotation",
+            Self::Terrain => "terrain",
             Self::Linework => "linework",
             Self::Marker => "marker",
             Self::Unknown => "unknown",
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SemanticInference {
+    strict_category: VisualCategory,
+    strict_confidence: f64,
+    suggested_category: VisualCategory,
+    suggested_confidence: f64,
+    matched_rule_id: String,
+    inference_reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SemanticRulesConfig {
+    pub version: u32,
+    pub rules: Vec<SemanticRule>,
+    #[serde(skip)]
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SemanticRule {
+    pub id: String,
+    pub category: String,
+    #[serde(default)]
+    pub level: String,
+    #[serde(default)]
+    pub strict_keywords: Vec<String>,
+    #[serde(default)]
+    pub suggested_keywords: Vec<String>,
+    #[serde(default)]
+    pub layer_regex: Vec<String>,
+    #[serde(default)]
+    pub source_regex: Vec<String>,
+    #[serde(default)]
+    pub geometry_types: Vec<String>,
+    pub confidence: Option<f64>,
+    #[serde(default)]
+    pub aspect_hint: Option<String>,
+}
+
+impl SemanticRulesConfig {
+    pub fn from_json_str(text: &str, source: &str) -> Result<Self> {
+        let mut config: Self = serde_json::from_str(text)
+            .with_context(|| format!("解析 semantic rules config 失敗：{source}"))?;
+        config.source = source.to_string();
+        Ok(config)
+    }
+
+    fn load_project_default() -> Result<Self> {
+        let default_path = find_semantic_rules_path("semantic_rules.default.json");
+        let local_path = find_semantic_rules_path("semantic_rules.local.json");
+        let mut config = if let Some(default_path) = default_path {
+            let text = fs::read_to_string(&default_path)
+                .with_context(|| format!("讀取 semantic rules 失敗：{}", default_path.display()))?;
+            Self::from_json_str(&text, &default_path.display().to_string())?
+        } else {
+            Self::from_json_str(
+                include_str!("../config/semantic_rules.default.json"),
+                "embedded:config/semantic_rules.default.json",
+            )?
+        };
+
+        if let Some(local_path) = local_path {
+            let text = fs::read_to_string(&local_path).with_context(|| {
+                format!("讀取 semantic local rules 失敗：{}", local_path.display())
+            })?;
+            let local = Self::from_json_str(&text, &local_path.display().to_string())?;
+            config.merge_override(local);
+        }
+        Ok(config)
+    }
+
+    fn merge_override(&mut self, local: Self) {
+        self.version = self.version.max(local.version);
+        self.source = format!("{}+{}", self.source, local.source);
+        for rule in local.rules {
+            if let Some(index) = self
+                .rules
+                .iter()
+                .position(|existing| existing.id == rule.id)
+            {
+                self.rules[index] = rule;
+            } else {
+                self.rules.push(rule);
+            }
+        }
+    }
+}
+
+fn find_semantic_rules_path(file_name: &str) -> Option<std::path::PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    for dir in cwd.ancestors() {
+        let candidate = dir.join("config").join(file_name);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 pub fn build_minimal_geometry_preview(
@@ -251,6 +375,25 @@ pub fn build_minimal_geometry_preview(
     origin_wgs84: [f64; 3],
     model_matrix: [f64; 16],
     features: &[GeometryPreviewFeature],
+) -> Result<GeometryPreviewBuildOutput> {
+    let semantic_rules = SemanticRulesConfig::load_project_default()?;
+    build_minimal_geometry_preview_with_semantic_rules(
+        source_id,
+        origin_epsg3826,
+        origin_wgs84,
+        model_matrix,
+        features,
+        &semantic_rules,
+    )
+}
+
+pub fn build_minimal_geometry_preview_with_semantic_rules(
+    source_id: &str,
+    origin_epsg3826: [f64; 3],
+    origin_wgs84: [f64; 3],
+    model_matrix: [f64; 16],
+    features: &[GeometryPreviewFeature],
+    semantic_rules: &SemanticRulesConfig,
 ) -> Result<GeometryPreviewBuildOutput> {
     ensure!(!features.is_empty(), "geometry preview has no features");
     ensure!(
@@ -268,7 +411,10 @@ pub fn build_minimal_geometry_preview(
     let mut debug_marker_count = 0;
     let mut degenerate_skipped_count = 0;
     let mut debug_inflated_feature_count = 0;
-    let mut visual_category_counts = BTreeMap::new();
+    let mut strict_category_counts = BTreeMap::new();
+    let mut suggested_category_counts = BTreeMap::new();
+    let mut category_confidence_histogram = BTreeMap::new();
+    let mut semantic_matched_rule_counts = BTreeMap::new();
 
     for (batch_id, feature) in features.iter().enumerate() {
         if source_id != "*" && feature.source_id != source_id {
@@ -280,9 +426,27 @@ pub fn build_minimal_geometry_preview(
         source_ids.insert(feature.source_id.clone());
         let kind = preview_kind(feature);
         let cleanup_action = preview_cleanup_action(feature);
-        let visual_category = visual_category(feature, kind, cleanup_action);
-        *visual_category_counts
-            .entry(visual_category.as_str().to_string())
+        let semantic = semantic_inference(feature, kind, cleanup_action, semantic_rules);
+        *strict_category_counts
+            .entry(semantic.strict_category.as_str().to_string())
+            .or_insert(0) += 1;
+        *suggested_category_counts
+            .entry(semantic.suggested_category.as_str().to_string())
+            .or_insert(0) += 1;
+        add_confidence_bucket(
+            &mut category_confidence_histogram,
+            "strict",
+            semantic.strict_category,
+            semantic.strict_confidence,
+        );
+        add_confidence_bucket(
+            &mut category_confidence_histogram,
+            "suggested",
+            semantic.suggested_category,
+            semantic.suggested_confidence,
+        );
+        *semantic_matched_rule_counts
+            .entry(semantic.matched_rule_id.clone())
             .or_insert(0) += 1;
         match kind {
             PreviewKind::Line => {
@@ -305,13 +469,13 @@ pub fn build_minimal_geometry_preview(
             PreviewCleanupAction::Skip => unreachable!("skip already returned None"),
             PreviewCleanupAction::KeepAsPointMarker => {
                 debug_marker_count += 1;
-                visual_category_color(visual_category)
+                visual_category_color(semantic.suggested_category)
             }
             PreviewCleanupAction::InflateForDebugOnly => {
                 debug_inflated_feature_count += 1;
-                visual_category_color(visual_category)
+                visual_category_color(semantic.suggested_category)
             }
-            PreviewCleanupAction::KeepRaw => visual_category_color(visual_category),
+            PreviewCleanupAction::KeepRaw => visual_category_color(semantic.suggested_category),
         };
         append_preview_box(&mut mesh, bbox, origin_epsg3826, batch_id as u16, color);
     }
@@ -319,11 +483,19 @@ pub fn build_minimal_geometry_preview(
     ensure!(!mesh.is_empty(), "geometry preview mesh is empty");
     let local_bbox = bounds_to_bbox(mesh.bounds);
     let approved_source_ids: Vec<_> = source_ids.into_iter().collect();
+    let feature_count = features.len();
+    let strict_unknown_ratio = unknown_ratio(&strict_category_counts, feature_count);
+    let suggested_unknown_ratio = unknown_ratio(&suggested_category_counts, feature_count);
+    let visual_category_counts = suggested_category_counts.clone();
     let extras = json!({
         "preview": "minimal_geometry_preview",
-        "feature_count": features.len(),
+        "feature_count": feature_count,
         "source_ids": approved_source_ids.clone(),
         "visual_category_counts": visual_category_counts.clone(),
+        "strict_category_counts": strict_category_counts.clone(),
+        "suggested_category_counts": suggested_category_counts.clone(),
+        "semanticRulesSource": semantic_rules.source.clone(),
+        "semanticRulesVersion": semantic_rules.version,
         "note": "Entity bbox proxy preview; not production geometry fidelity"
     });
     let glb = build_glb_with_extras(&mesh, Some(extras))?;
@@ -332,7 +504,7 @@ pub fn build_minimal_geometry_preview(
         preview_version: 1,
         source_count: approved_source_ids.len(),
         approved_source_ids,
-        feature_count: features.len(),
+        feature_count,
         line_feature_count,
         surface_feature_count,
         fallback_feature_count,
@@ -341,6 +513,16 @@ pub fn build_minimal_geometry_preview(
         degenerate_skipped_count,
         debug_inflated_feature_count,
         visual_category_counts,
+        strict_category_counts,
+        suggested_category_counts,
+        strict_semantic_coverage: 1.0 - strict_unknown_ratio,
+        suggested_semantic_coverage: 1.0 - suggested_unknown_ratio,
+        strict_unknown_ratio,
+        suggested_unknown_ratio,
+        category_confidence_histogram,
+        semantic_rules_source: semantic_rules.source.clone(),
+        semantic_rules_version: semantic_rules.version,
+        semantic_matched_rule_counts,
         line_width_exaggeration: LINE_WIDTH_EXAGGERATION,
         surface_shading_mode: "category_color_with_normals".to_string(),
         double_side_debug_available: true,
@@ -398,6 +580,27 @@ pub fn build_geometry_diagnostic_report(
     source_bbox: [f64; 6],
     features: &[GeometryPreviewFeature],
 ) -> Result<GeometryDiagnosticReport> {
+    let semantic_rules = SemanticRulesConfig::load_project_default()?;
+    build_geometry_diagnostic_report_with_semantic_rules(
+        source_epsg,
+        origin_epsg3826,
+        origin_wgs84,
+        model_matrix,
+        source_bbox,
+        features,
+        &semantic_rules,
+    )
+}
+
+pub fn build_geometry_diagnostic_report_with_semantic_rules(
+    source_epsg: u32,
+    origin_epsg3826: [f64; 3],
+    origin_wgs84: [f64; 3],
+    model_matrix: [f64; 16],
+    source_bbox: [f64; 6],
+    features: &[GeometryPreviewFeature],
+    semantic_rules: &SemanticRulesConfig,
+) -> Result<GeometryDiagnosticReport> {
     ensure!(
         !features.is_empty(),
         "geometry diagnostic report has no features"
@@ -420,6 +623,7 @@ pub fn build_geometry_diagnostic_report(
             model_matrix_finite,
             source_bbox,
             feature,
+            semantic_rules,
         )?;
         if diagnostic.problem_category != "none" {
             bad_feature_count += 1;
@@ -449,6 +653,8 @@ pub fn build_geometry_diagnostic_report(
         bbox_mismatch_count,
         outlier_geometry_count,
         category_counts,
+        semantic_rules_source: semantic_rules.source.clone(),
+        semantic_rules_version: semantic_rules.version,
         tolerances: GeometryDiagnosticTolerances {
             center_distance_m: DIAGNOSTIC_CENTER_TOLERANCE_M,
             size_ratio: DIAGNOSTIC_SIZE_RATIO_TOLERANCE,
@@ -580,20 +786,23 @@ pub fn write_geometry_preview_outputs(input: &Path, output: &Path) -> Result<()>
     let lonlat = project_to_wgs84(manifest.source_epsg, origin_epsg3826[0], origin_epsg3826[1])?;
     let origin_wgs84 = [lonlat.lon_deg, lonlat.lat_deg, origin_epsg3826[2]];
     let model_matrix = enu_to_ecef_transform(lonlat.lon_deg, lonlat.lat_deg, origin_epsg3826[2]);
-    let preview = build_minimal_geometry_preview(
+    let semantic_rules = SemanticRulesConfig::load_project_default()?;
+    let preview = build_minimal_geometry_preview_with_semantic_rules(
         "*",
         origin_epsg3826,
         origin_wgs84,
         model_matrix,
         &features,
+        &semantic_rules,
     )?;
-    let diagnostic = build_geometry_diagnostic_report(
+    let diagnostic = build_geometry_diagnostic_report_with_semantic_rules(
         manifest.source_epsg,
         origin_epsg3826,
         origin_wgs84,
         model_matrix,
         merged_bbox,
         &features,
+        &semantic_rules,
     )?;
     let transform_diff = build_geometry_transform_diff_report(&diagnostic)?;
 
@@ -748,45 +957,305 @@ fn marker_bbox(center: [f64; 3], size: f64) -> [f64; 6] {
     ]
 }
 
-fn visual_category(
+fn semantic_inference(
     feature: &GeometryPreviewFeature,
     kind: PreviewKind,
     cleanup_action: PreviewCleanupAction,
-) -> VisualCategory {
-    let text = format!(
-        "{} {}",
-        feature.layer.to_ascii_lowercase(),
-        feature.geometry_type.to_ascii_lowercase()
-    );
-    if contains_any(
-        &text,
-        &["anno", "annotation", "text", "dim", "label", "註", "文字"],
-    ) {
-        return VisualCategory::Annotation;
+    semantic_rules: &SemanticRulesConfig,
+) -> SemanticInference {
+    if cleanup_action == PreviewCleanupAction::KeepAsPointMarker {
+        return SemanticInference {
+            strict_category: VisualCategory::Marker,
+            strict_confidence: 1.0,
+            suggested_category: VisualCategory::Marker,
+            suggested_confidence: 1.0,
+            matched_rule_id: "builtin.cleanup.marker".to_string(),
+            inference_reason: "strict:cleanup_marker=>marker".to_string(),
+        };
     }
     if matches!(kind, PreviewKind::Line) {
-        return VisualCategory::Linework;
+        return SemanticInference {
+            strict_category: VisualCategory::Linework,
+            strict_confidence: 1.0,
+            suggested_category: VisualCategory::Linework,
+            suggested_confidence: 1.0,
+            matched_rule_id: "builtin.geometry.linework".to_string(),
+            inference_reason: "strict:geometry_type:LINESTRING/CURVE=>linework".to_string(),
+        };
     }
-    if contains_any(&text, &["wall", "墻", "牆"]) {
-        VisualCategory::Wall
-    } else if contains_any(&text, &["slab", "floor", "deck", "版"]) {
-        VisualCategory::Slab
-    } else if contains_any(&text, &["beam", "girder", "cable", "梁"]) {
-        VisualCategory::Beam
-    } else if contains_any(
-        &text,
-        &["column", "pier", "pile", "tower", "柱", "墩", "塔"],
-    ) {
-        VisualCategory::Column
-    } else if cleanup_action == PreviewCleanupAction::KeepAsPointMarker {
-        VisualCategory::Marker
-    } else {
-        VisualCategory::Unknown
+
+    if let Some(rule_match) = semantic_rule_match(feature, semantic_rules, true) {
+        return SemanticInference {
+            strict_category: rule_match.category,
+            strict_confidence: rule_match.confidence,
+            suggested_category: rule_match.category,
+            suggested_confidence: rule_match.confidence,
+            matched_rule_id: rule_match.rule_id,
+            inference_reason: rule_match.reason,
+        };
+    }
+
+    if let Some(rule_match) = semantic_rule_match(feature, semantic_rules, false) {
+        return SemanticInference {
+            strict_category: VisualCategory::Unknown,
+            strict_confidence: 0.0,
+            suggested_category: rule_match.category,
+            suggested_confidence: rule_match.confidence,
+            matched_rule_id: rule_match.rule_id,
+            inference_reason: rule_match.reason,
+        };
+    }
+
+    SemanticInference {
+        strict_category: VisualCategory::Unknown,
+        strict_confidence: 0.0,
+        suggested_category: VisualCategory::Unknown,
+        suggested_confidence: 0.0,
+        matched_rule_id: "none".to_string(),
+        inference_reason: "unknown:no_rule_match".to_string(),
     }
 }
 
-fn contains_any(text: &str, needles: &[&str]) -> bool {
-    needles.iter().any(|needle| text.contains(needle))
+#[derive(Debug, Clone, PartialEq)]
+struct SemanticRuleMatch {
+    rule_id: String,
+    category: VisualCategory,
+    confidence: f64,
+    reason: String,
+}
+
+fn semantic_rule_match(
+    feature: &GeometryPreviewFeature,
+    semantic_rules: &SemanticRulesConfig,
+    strict: bool,
+) -> Option<SemanticRuleMatch> {
+    semantic_rules
+        .rules
+        .iter()
+        .filter(|rule| geometry_type_condition_matches(rule, &feature.geometry_type))
+        .find_map(|rule| semantic_rule_match_one(feature, rule, strict))
+}
+
+fn semantic_rule_match_one(
+    feature: &GeometryPreviewFeature,
+    rule: &SemanticRule,
+    strict: bool,
+) -> Option<SemanticRuleMatch> {
+    let category = visual_category_from_str(&rule.category)?;
+    let original_text = format!(
+        "{} {} {}",
+        feature.source_id, feature.layer, feature.geometry_type
+    );
+    let text = original_text.to_ascii_lowercase();
+    let level_is_strict = rule.level.eq_ignore_ascii_case("strict");
+    let keywords = if strict {
+        (&rule.strict_keywords, "strict")
+    } else {
+        (&rule.suggested_keywords, "suggested")
+    }
+    .0;
+    if let Some(keyword) = first_matching_keyword(
+        &text,
+        &original_text,
+        &keywords.iter().map(String::as_str).collect::<Vec<_>>(),
+    ) {
+        return Some(rule_match_from_hit(
+            feature, rule, category, strict, "keyword", keyword,
+        ));
+    }
+
+    let regex_hit = first_regex_hit(&rule.layer_regex, &feature.layer)
+        .map(|pattern| ("layer_regex", pattern))
+        .or_else(|| {
+            first_regex_hit(&rule.source_regex, &feature.source_id)
+                .map(|pattern| ("source_regex", pattern))
+        });
+    if let Some((kind, pattern)) = regex_hit {
+        if strict == level_is_strict {
+            return Some(rule_match_from_hit(
+                feature, rule, category, strict, kind, pattern,
+            ));
+        }
+    }
+
+    let geometry_only = rule.strict_keywords.is_empty()
+        && rule.suggested_keywords.is_empty()
+        && rule.layer_regex.is_empty()
+        && rule.source_regex.is_empty()
+        && !rule.geometry_types.is_empty();
+    if geometry_only && strict == level_is_strict {
+        return Some(rule_match_from_hit(
+            feature,
+            rule,
+            category,
+            strict,
+            "geometry_type",
+            feature.geometry_type.clone(),
+        ));
+    }
+
+    None
+}
+
+fn rule_match_from_hit(
+    feature: &GeometryPreviewFeature,
+    rule: &SemanticRule,
+    base_category: VisualCategory,
+    strict: bool,
+    hit_kind: &str,
+    hit_value: String,
+) -> SemanticRuleMatch {
+    let (category, confidence, aspect_reason) = if rule
+        .aspect_hint
+        .as_deref()
+        .unwrap_or("")
+        .eq_ignore_ascii_case("bbox")
+    {
+        aspect_category(
+            feature.bbox,
+            base_category,
+            rule.confidence.unwrap_or(if strict { 0.92 } else { 0.65 }),
+        )
+    } else {
+        (
+            base_category,
+            rule.confidence.unwrap_or(if strict { 0.92 } else { 0.65 }),
+            "rule",
+        )
+    };
+    let level = if strict { "strict" } else { "suggested" };
+    let reason = if aspect_reason == "rule" {
+        format!(
+            "{level}:rule:{}:{hit_kind}:{hit_value}=>{}",
+            rule.id,
+            category.as_str()
+        )
+    } else {
+        format!(
+            "{level}:rule:{}:{hit_kind}:{hit_value};suggested:aspect_ratio:{aspect_reason}=>{}",
+            rule.id,
+            category.as_str()
+        )
+    };
+    SemanticRuleMatch {
+        rule_id: rule.id.clone(),
+        category,
+        confidence,
+        reason,
+    }
+}
+
+fn visual_category_from_str(category: &str) -> Option<VisualCategory> {
+    match category.to_ascii_lowercase().as_str() {
+        "wall" => Some(VisualCategory::Wall),
+        "slab" => Some(VisualCategory::Slab),
+        "beam" => Some(VisualCategory::Beam),
+        "column" => Some(VisualCategory::Column),
+        "pipe" => Some(VisualCategory::Pipe),
+        "annotation" => Some(VisualCategory::Annotation),
+        "terrain" => Some(VisualCategory::Terrain),
+        "linework" => Some(VisualCategory::Linework),
+        "marker" => Some(VisualCategory::Marker),
+        "unknown" => Some(VisualCategory::Unknown),
+        _ => None,
+    }
+}
+
+fn geometry_type_condition_matches(rule: &SemanticRule, geometry_type: &str) -> bool {
+    rule.geometry_types.is_empty()
+        || rule.geometry_types.iter().any(|expected| {
+            geometry_type
+                .to_ascii_uppercase()
+                .contains(&expected.to_ascii_uppercase())
+        })
+}
+
+fn first_regex_hit(patterns: &[String], text: &str) -> Option<String> {
+    patterns.iter().find_map(|pattern| {
+        Regex::new(pattern)
+            .ok()
+            .filter(|regex| regex.is_match(text))
+            .map(|_| pattern.clone())
+    })
+}
+
+fn first_matching_keyword(text: &str, original_text: &str, needles: &[&str]) -> Option<String> {
+    needles.iter().find_map(|needle| {
+        if text.contains(&needle.to_ascii_lowercase()) {
+            find_original_keyword(original_text, needle).or_else(|| Some((*needle).to_string()))
+        } else {
+            None
+        }
+    })
+}
+
+fn find_original_keyword(original_text: &str, needle: &str) -> Option<String> {
+    if !needle.is_ascii() {
+        return original_text.contains(needle).then(|| needle.to_string());
+    }
+    let lower_text = original_text.to_ascii_lowercase();
+    let lower_needle = needle.to_ascii_lowercase();
+    lower_text.find(&lower_needle).map(|index| {
+        original_text
+            .chars()
+            .skip(index)
+            .take(needle.chars().count())
+            .collect()
+    })
+}
+
+fn aspect_category(
+    bbox: [f64; 6],
+    default_category: VisualCategory,
+    base_confidence: f64,
+) -> (VisualCategory, f64, &'static str) {
+    let size = bbox_size(normalize_bbox(bbox));
+    let mut sorted = size;
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let min_axis = sorted[0];
+    let mid_axis = sorted[1].max(1e-9);
+    let max_axis = sorted[2].max(1e-9);
+    if min_axis <= 0.35 || min_axis / max_axis < 0.08 {
+        (
+            VisualCategory::Slab,
+            base_confidence.max(0.55),
+            "flat_plate",
+        )
+    } else if max_axis / mid_axis >= 4.0 {
+        (VisualCategory::Beam, base_confidence.max(0.55), "linear")
+    } else if size[2] > size[0].max(size[1]) * 1.5 {
+        (
+            VisualCategory::Column,
+            base_confidence.max(0.55),
+            "vertical_slender",
+        )
+    } else {
+        (default_category, base_confidence.max(0.55), "default")
+    }
+}
+
+fn add_confidence_bucket(
+    histogram: &mut BTreeMap<String, usize>,
+    prefix: &str,
+    category: VisualCategory,
+    confidence: f64,
+) {
+    let bucket = if category == VisualCategory::Unknown || confidence <= 0.0 {
+        "unknown"
+    } else if confidence >= 0.8 {
+        "high"
+    } else {
+        "medium"
+    };
+    *histogram.entry(format!("{prefix}_{bucket}")).or_insert(0) += 1;
+}
+
+fn unknown_ratio(counts: &BTreeMap<String, usize>, feature_count: usize) -> f64 {
+    if feature_count == 0 {
+        0.0
+    } else {
+        *counts.get("unknown").unwrap_or(&0) as f64 / feature_count as f64
+    }
 }
 
 fn visual_category_color(category: VisualCategory) -> [f32; 4] {
@@ -795,7 +1264,9 @@ fn visual_category_color(category: VisualCategory) -> [f32; 4] {
         VisualCategory::Slab => [0.55, 0.78, 0.42, 1.0],
         VisualCategory::Beam => [1.0, 0.68, 0.22, 1.0],
         VisualCategory::Column => [0.72, 0.50, 1.0, 1.0],
+        VisualCategory::Pipe => [0.20, 0.86, 0.82, 1.0],
         VisualCategory::Annotation => [0.78, 0.82, 0.88, 1.0],
+        VisualCategory::Terrain => [0.56, 0.49, 0.34, 1.0],
         VisualCategory::Linework => [1.0, 0.78, 0.24, 1.0],
         VisualCategory::Marker => [1.0, 0.2, 0.75, 1.0],
         VisualCategory::Unknown => [0.68, 0.70, 0.72, 1.0],
@@ -808,9 +1279,11 @@ fn diagnose_geometry_feature(
     model_matrix_finite: bool,
     source_bbox: [f64; 6],
     feature: &GeometryPreviewFeature,
+    semantic_rules: &SemanticRulesConfig,
 ) -> Result<GeometryDiagnosticFeature> {
     let kind = preview_kind(feature);
     let cleanup_action = preview_cleanup_action(feature);
+    let semantic = semantic_inference(feature, kind, cleanup_action, semantic_rules);
     let pick_bbox = normalize_bbox(feature.bbox);
     let mesh_exported = cleanup_action != PreviewCleanupAction::Skip;
     let bbox = effective_preview_bbox(feature, cleanup_action)?.unwrap_or(pick_bbox);
@@ -968,6 +1441,12 @@ fn diagnose_geometry_feature(
         source_id: feature.source_id.clone(),
         layer: feature.layer.clone(),
         category: feature.geometry_type.clone(),
+        strict_category: semantic.strict_category.as_str().to_string(),
+        strict_confidence: semantic.strict_confidence,
+        suggested_category: semantic.suggested_category.as_str().to_string(),
+        suggested_confidence: semantic.suggested_confidence,
+        matched_rule_id: semantic.matched_rule_id,
+        inference_reason: semantic.inference_reason,
         cleanup_action: cleanup_action.as_str().to_string(),
         mesh_exported,
         vertex_count: if mesh_exported { 36 } else { 0 },

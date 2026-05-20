@@ -735,3 +735,39 @@
   - 輸出 `publish/screenshots/phase2a_preview.png`
   - 輸出 `publish/screenshots/phase2a_visual_report.json`
 - 本階段先產可重跑的視覺基準，不做 pixel diff，不修正式 CAD geometry。
+
+### Phase 2B Semantic Geometry Classification
+
+- 目標：降低 approved preview 的 suggested unknown ratio，讓 preview 開始具備基本 BIM/CAD semantic。
+- 採用 dual-track classification：
+  - `strictCategory` / `strictConfidence`：正式統計、後續 gate / QA report 使用。
+  - `suggestedCategory` / `suggestedConfidence`：viewer coloring、semantic legend、人工判讀輔助使用。
+  - `matchedRuleId` / `inferenceReason`：保留命中的 config 規則與分類來源。
+- 語意規則改為外部 config：
+  - 預設規則：`config/semantic_rules.default.json`
+  - 個案覆寫：`config/semantic_rules.local.json`
+  - `.gitignore` 忽略 local 規則，避免把個案 layer/source 規則寫回核心。
+  - 規則支援 category、strict / suggested keywords、layer / source regex、geometry type condition、confidence、bbox aspect hint。
+- 分類類別固定：
+  - `wall`
+  - `slab`
+  - `beam`
+  - `column`
+  - `pipe`
+  - `annotation`
+  - `terrain`
+  - `linework`
+  - `marker`
+  - `unknown`
+- `geometry_publish_report.json` 補：
+  - `strict_category_counts`
+  - `suggested_category_counts`
+  - `strict_semantic_coverage`
+  - `suggested_semantic_coverage`
+  - `strict_unknown_ratio`
+  - `suggested_unknown_ratio`
+  - `category_confidence_histogram`
+  - `semanticRulesSource`
+  - `semanticRulesVersion`
+- viewer 補 semantic legend / category filter / strict-vs-suggested mode；GLB 顏色使用 `suggestedCategory`。
+- 本階段不改 source approval gate、不改 geometry transform、不改 spatial pick / diagnostics schema。

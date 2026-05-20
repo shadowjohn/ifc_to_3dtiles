@@ -241,6 +241,11 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
     #pickDebugPanel { position:absolute; z-index:2; left:12px; bottom:12px; width:min(360px, calc(100vw - 24px)); max-height:32vh; overflow:auto; background:rgba(16,20,24,.94); border:1px solid #2b3642; border-radius:8px; padding:12px; box-shadow:0 16px 40px rgba(0,0,0,.30); }
     #sourceListPanel h2 { margin:0 0 8px; font-size:15px; }
     #pickDebugPanel h2 { margin:0 0 8px; font-size:15px; }
+    #semanticLegend { display:grid; grid-template-columns:1fr 1fr; gap:5px 8px; margin:8px 0 10px; color:#b9c6d2; font-size:12px; }
+    #semanticCategoryFilter, #semanticModeSelect { width:100%; margin:4px 0 8px; padding:6px 8px; border:1px solid #334150; border-radius:6px; background:#0d141b; color:#e8eef5; }
+    .semantic-wall { color:#59adff; } .semantic-slab { color:#8cc76b; } .semantic-beam { color:#ffad38; } .semantic-column { color:#b880ff; }
+    .semantic-pipe { color:#33dbd1; } .semantic-annotation { color:#c7d1e0; } .semantic-terrain { color:#8f7d57; } .semantic-linework { color:#ffc73d; }
+    .semantic-marker { color:#ff33bf; } .semantic-unknown { color:#adb3bb; }
     #visualLegend { display:grid; grid-template-columns:1fr 1fr; gap:5px 10px; margin:8px 0 10px; color:#b9c6d2; font-size:12px; }
     .legend-item { display:flex; gap:6px; align-items:center; min-width:0; }
     .legend-swatch { width:18px; height:10px; border:2px solid currentColor; background:rgba(255,255,255,.06); flex:0 0 auto; }
@@ -337,6 +342,40 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
     <div id="qaSummary" class="muted">loading</div>
     <h3>Geometry Preview</h3>
     <pre id="geometryPreviewStats" class="mono muted">preview stats unloaded</pre>
+    <h3>Semantic</h3>
+    <label class="muted">mode
+      <select id="semanticModeSelect">
+        <option value="suggestedCategory" selected>suggestedCategory</option>
+        <option value="strictCategory">strictCategory</option>
+      </select>
+    </label>
+    <label class="muted">category
+      <select id="semanticCategoryFilter">
+        <option value="all" selected>all categories</option>
+        <option value="wall">wall</option>
+        <option value="slab">slab</option>
+        <option value="beam">beam</option>
+        <option value="column">column</option>
+        <option value="pipe">pipe</option>
+        <option value="annotation">annotation</option>
+        <option value="terrain">terrain</option>
+        <option value="linework">linework</option>
+        <option value="marker">marker</option>
+        <option value="unknown">unknown</option>
+      </select>
+    </label>
+    <div id="semanticLegend">
+      <span class="legend-item semantic-wall"><i class="legend-swatch"></i>wall</span>
+      <span class="legend-item semantic-slab"><i class="legend-swatch"></i>slab</span>
+      <span class="legend-item semantic-beam"><i class="legend-swatch"></i>beam</span>
+      <span class="legend-item semantic-column"><i class="legend-swatch"></i>column</span>
+      <span class="legend-item semantic-pipe"><i class="legend-swatch"></i>pipe</span>
+      <span class="legend-item semantic-annotation"><i class="legend-swatch"></i>annotation</span>
+      <span class="legend-item semantic-terrain"><i class="legend-swatch"></i>terrain</span>
+      <span class="legend-item semantic-linework"><i class="legend-swatch"></i>linework</span>
+      <span class="legend-item semantic-marker"><i class="legend-swatch"></i>marker</span>
+      <span class="legend-item semantic-unknown"><i class="legend-swatch"></i>unknown</span>
+    </div>
     <div class="qa-actions">
       <button id="duplicateDrillBtn" class="btn">Duplicate</button>
       <button id="outlierListBtn" class="btn">Outliers</button>
@@ -1300,6 +1339,16 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
         .sort()
         .map(key => `${key}:${categories[key]}`)
         .join("  ") || "-";
+      const strictCounts = report.strict_category_counts || {};
+      const suggestedCounts = report.suggested_category_counts || {};
+      const strictText = Object.keys(strictCounts)
+        .sort()
+        .map(key => `${key}:${strictCounts[key]}`)
+        .join("  ") || "-";
+      const suggestedText = Object.keys(suggestedCounts)
+        .sort()
+        .map(key => `${key}:${suggestedCounts[key]}`)
+        .join("  ") || "-";
       node.textContent = [
         `triangles: ${report.triangle_count ?? 0}`,
         `surfaces: ${report.surface_feature_count ?? 0}`,
@@ -1309,8 +1358,27 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
         `debug inflated: ${report.debug_inflated_feature_count ?? 0}`,
         `line width x${report.line_width_exaggeration ?? 1}`,
         `shading: ${report.surface_shading_mode || "-"}`,
+        `strict_unknown_ratio: ${formatNumber(report.strict_unknown_ratio)}`,
+        `suggested_unknown_ratio: ${formatNumber(report.suggested_unknown_ratio)}`,
+        `strict_semantic_coverage: ${formatNumber(report.strict_semantic_coverage)}`,
+        `suggested_semantic_coverage: ${formatNumber(report.suggested_semantic_coverage)}`,
+        `semanticRulesSource: ${report.semanticRulesSource || report.semantic_rules_source || "-"}`,
+        `semanticRulesVersion: ${report.semanticRulesVersion ?? report.semantic_rules_version ?? "-"}`,
+        `strictCategory counts: ${strictText}`,
+        `suggestedCategory counts: ${suggestedText}`,
         `visual_category_counts: ${categoryText}`
       ].join("\n");
+    }
+    function semanticModeField() {
+      return document.getElementById("semanticModeSelect")?.value || "suggestedCategory";
+    }
+    function semanticCategoryFilterValue() {
+      return document.getElementById("semanticCategoryFilter")?.value || "all";
+    }
+    function diagnosticSemanticCategory(feature) {
+      const mode = semanticModeField();
+      if (mode === "strictCategory") return feature.strictCategory || feature.strict_category || "unknown";
+      return feature.suggestedCategory || feature.suggested_category || feature.category || "unknown";
     }
     function rankSpatialPickCandidates(candidates, thresholdPx) {
       const valid = (candidates || [])
@@ -1379,6 +1447,8 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       state.geometryDiagnosticEntities = [];
     }
     function diagnosticFeatureMatchesToggles(feature) {
+      const semanticFilter = semanticCategoryFilterValue();
+      if (semanticFilter !== "all" && diagnosticSemanticCategory(feature) !== semanticFilter) return false;
       if (document.getElementById("badGeometryOnlyToggle")?.checked && feature.problemCategory !== "none") return true;
       if (document.getElementById("bboxMismatchToggle")?.checked && feature.bboxToleranceExceeded) return true;
       if (document.getElementById("outlierGeometryToggle")?.checked && feature.outlierGeometry) return true;
@@ -2164,6 +2234,8 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
         if (!document.getElementById("previewPickOverlayToggle").checked) clearSpatialPickHighlight(viewer);
       });
       document.getElementById("doubleSideDebugToggle").addEventListener("change", () => setGeometryPreviewVisible(document.getElementById("geometryPreviewToggle").checked && state.geometryPreviewLoaded));
+      document.getElementById("semanticModeSelect").addEventListener("change", () => refresh(viewer));
+      document.getElementById("semanticCategoryFilter").addEventListener("change", () => refresh(viewer));
       document.getElementById("badGeometryOnlyToggle").addEventListener("change", () => refresh(viewer));
       document.getElementById("bboxMismatchToggle").addEventListener("change", () => refresh(viewer));
       document.getElementById("outlierGeometryToggle").addEventListener("change", () => refresh(viewer));

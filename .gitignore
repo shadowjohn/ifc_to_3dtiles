@@ -51,6 +51,7 @@
 *.bak
 .env
 .env.*
+config/semantic_rules.local.json
 .vscode/
 .idea/
 .superpowers/

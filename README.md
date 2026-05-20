@@ -311,6 +311,16 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\run_phase2a_preview_screen
 
 輸出在 `out\inspect_tamkang\publish\screenshots\phase2a_preview.png` 與 `phase2a_visual_report.json`。第一版只做 baseline artifact，不做 pixel diff。
 
+Phase 2B 會把 preview semantic classification 改成雙軌：
+
+- `strictCategory` / `strictConfidence`：正式統計、未來 gate / QA report 使用，保守分類。
+- `suggestedCategory` / `suggestedConfidence`：viewer coloring、semantic legend、人工判讀輔助使用。
+- `matchedRuleId` / `inferenceReason`：保留規則來源，方便追查是哪一條 config 命中。
+
+語意規則不寫死在 Rust 核心，改由 `config\semantic_rules.default.json` 載入；專案若需要覆寫，可建立本機 `config\semantic_rules.local.json`。local 檔已被 `.gitignore` 忽略，適合放個案 layer/source 規則。規則支援 `category`、`strict_keywords`、`suggested_keywords`、`layer_regex`、`source_regex`、`geometry_types`、`confidence` 與 `aspect_hint`。
+
+`geometry_publish_report.json` 會新增 `strict_category_counts`、`suggested_category_counts`、`strict_semantic_coverage`、`suggested_semantic_coverage`、`strict_unknown_ratio`、`suggested_unknown_ratio`、`category_confidence_histogram`、`semanticRulesSource`、`semanticRulesVersion`。GLB 顏色使用 `suggestedCategory`，但不改 source approval gate、不改 transform / pick / diagnostics pipeline。
+
 ## Verification
 
 ```powershell

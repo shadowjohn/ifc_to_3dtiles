@@ -9,9 +9,10 @@ use ifc_to_3dtiles::{
     cad_metadata::{CadHierarchyDump, CadLevel, CadMaterial, CadModel, CadReference},
     fingerprint::{GeometryFingerprint, duplicate_candidate_score},
     geometry_preview::{
-        GeometryPreviewFeature, build_geometry_diagnostic_report,
-        build_geometry_preview_tileset_json, build_geometry_transform_diff_report,
-        build_minimal_geometry_preview,
+        GeometryPreviewFeature, SemanticRulesConfig, build_geometry_diagnostic_report,
+        build_geometry_diagnostic_report_with_semantic_rules, build_geometry_preview_tileset_json,
+        build_geometry_transform_diff_report, build_minimal_geometry_preview,
+        build_minimal_geometry_preview_with_semantic_rules,
     },
     georef::{
         Aoi, Bounds2, BoundsSummary, SourceTransform, classify_source_scale, decide_source_status,
@@ -2482,8 +2483,8 @@ fn phase2a_preview_report_counts_visual_categories_and_quality_settings() {
                 feature_id: 3,
                 source_id: "dwg-12d5f1b6".to_string(),
                 layer: "Anno-Text".to_string(),
-                geometry_type: "POINT".to_string(),
-                bbox: [292105.0, 2785205.0, 2.0, 292105.0, 2785205.0, 2.0],
+                geometry_type: "POLYHEDRALSURFACE".to_string(),
+                bbox: [292105.0, 2785205.0, 2.0, 292108.0, 2785208.0, 3.0],
             },
         ],
     )
@@ -2566,6 +2567,266 @@ fn phase2a_screenshot_baseline_scripts_exist_and_write_expected_artifacts() {
     assert!(mjs.contains("phase2a_preview.png"));
     assert!(mjs.contains("phase2a_visual_report.json"));
     assert!(mjs.contains("geometryPreviewToggle"));
+}
+
+#[test]
+fn phase2b_semantic_classification_uses_strict_and_suggested_tracks() {
+    let rules = SemanticRulesConfig::from_json_str(
+        r#"{
+          "version": 99,
+          "rules": [
+            {
+              "id": "fixture.pipe.strict",
+              "category": "pipe",
+              "level": "strict",
+              "strict_keywords": ["FixtureTube"],
+              "suggested_keywords": [],
+              "layer_regex": [],
+              "source_regex": [],
+              "geometry_types": [],
+              "confidence": 0.93
+            },
+            {
+              "id": "fixture.track.suggested",
+              "category": "beam",
+              "level": "suggested",
+              "strict_keywords": [],
+              "suggested_keywords": ["FixtureTrack"],
+              "layer_regex": [],
+              "source_regex": [],
+              "geometry_types": [],
+              "confidence": 0.75
+            },
+            {
+              "id": "fixture.embedded.aspect",
+              "category": "slab",
+              "level": "suggested",
+              "strict_keywords": [],
+              "suggested_keywords": ["FixtureEmbed"],
+              "layer_regex": [],
+              "source_regex": [],
+              "geometry_types": [],
+              "confidence": 0.65,
+              "aspect_hint": "bbox"
+            },
+            {
+              "id": "fixture.typo-pier.suggested",
+              "category": "column",
+              "level": "suggested",
+              "strict_keywords": [],
+              "suggested_keywords": ["FixtureTypoPier"],
+              "layer_regex": [],
+              "source_regex": [],
+              "geometry_types": [],
+              "confidence": 0.60
+            }
+          ]
+        }"#,
+        "test_semantic_rules.json",
+    )
+    .expect("semantic rules fixture");
+    let diagnostic = build_geometry_diagnostic_report_with_semantic_rules(
+        3826,
+        [292100.0, 2785200.0, 0.0],
+        [121.42, 25.15, 0.0],
+        [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ],
+        [292100.0, 2785200.0, 0.0, 292170.0, 2785260.0, 40.0],
+        &[
+            GeometryPreviewFeature {
+                feature_id: 1,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "FixtureTube".to_string(),
+                geometry_type: "POLYHEDRALSURFACE".to_string(),
+                bbox: [292100.0, 2785200.0, 0.0, 292110.0, 2785210.0, 4.0],
+            },
+            GeometryPreviewFeature {
+                feature_id: 2,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "FixtureTrack".to_string(),
+                geometry_type: "POLYHEDRALSURFACE".to_string(),
+                bbox: [292115.0, 2785200.0, 8.0, 292155.0, 2785201.0, 9.0],
+            },
+            GeometryPreviewFeature {
+                feature_id: 3,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "FixtureEmbed".to_string(),
+                geometry_type: "POLYHEDRALSURFACE".to_string(),
+                bbox: [292100.0, 2785220.0, 4.0, 292110.0, 2785230.0, 4.2],
+            },
+            GeometryPreviewFeature {
+                feature_id: 4,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "FixtureTypoPier".to_string(),
+                geometry_type: "POLYHEDRALSURFACE".to_string(),
+                bbox: [292120.0, 2785220.0, 0.0, 292124.0, 2785224.0, 25.0],
+            },
+            GeometryPreviewFeature {
+                feature_id: 5,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "0".to_string(),
+                geometry_type: "LINESTRING".to_string(),
+                bbox: [292130.0, 2785220.0, 2.0, 292160.0, 2785220.0, 2.0],
+            },
+            GeometryPreviewFeature {
+                feature_id: 6,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "Anchor".to_string(),
+                geometry_type: "POLYHEDRALSURFACE".to_string(),
+                bbox: [292161.0, 2785221.0, 2.0, 292161.001, 2785221.001, 2.0],
+            },
+        ],
+        &rules,
+    )
+    .expect("semantic diagnostic");
+
+    let by_id = |id| {
+        diagnostic
+            .features
+            .iter()
+            .find(|feature| feature.feature_id == id)
+            .expect("feature")
+    };
+    assert_eq!(by_id(1).strict_category, "pipe");
+    assert_eq!(by_id(1).suggested_category, "pipe");
+    assert!(by_id(1).strict_confidence >= 0.85);
+    assert_eq!(by_id(1).matched_rule_id, "fixture.pipe.strict");
+    assert_eq!(by_id(2).strict_category, "unknown");
+    assert_eq!(by_id(2).suggested_category, "beam");
+    assert_eq!(by_id(2).matched_rule_id, "fixture.track.suggested");
+    assert!(by_id(2).inference_reason.contains("FixtureTrack"));
+    assert_eq!(by_id(3).suggested_category, "slab");
+    assert!(by_id(3).inference_reason.contains("flat_plate"));
+    assert_eq!(by_id(4).suggested_category, "column");
+    assert_eq!(by_id(5).strict_category, "linework");
+    assert_eq!(by_id(6).strict_category, "marker");
+    assert_eq!(by_id(6).suggested_category, "marker");
+}
+
+#[test]
+fn phase2b_publish_report_exposes_semantic_coverage_and_confidence_histogram() {
+    let rules = SemanticRulesConfig::from_json_str(
+        r#"{
+          "version": 42,
+          "rules": [
+            {
+              "id": "fixture.pipe.strict",
+              "category": "pipe",
+              "level": "strict",
+              "strict_keywords": ["FixtureTube"],
+              "suggested_keywords": [],
+              "layer_regex": [],
+              "source_regex": [],
+              "geometry_types": [],
+              "confidence": 0.93
+            },
+            {
+              "id": "fixture.track.suggested",
+              "category": "beam",
+              "level": "suggested",
+              "strict_keywords": [],
+              "suggested_keywords": ["FixtureTrack"],
+              "layer_regex": [],
+              "source_regex": [],
+              "geometry_types": [],
+              "confidence": 0.75
+            }
+          ]
+        }"#,
+        "test_semantic_rules.json",
+    )
+    .expect("semantic rules fixture");
+    let output = build_minimal_geometry_preview_with_semantic_rules(
+        "*",
+        [292100.0, 2785200.0, 0.0],
+        [121.42, 25.15, 0.0],
+        [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ],
+        &[
+            GeometryPreviewFeature {
+                feature_id: 1,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "FixtureTrack".to_string(),
+                geometry_type: "POLYHEDRALSURFACE".to_string(),
+                bbox: [292100.0, 2785200.0, 8.0, 292140.0, 2785201.0, 9.0],
+            },
+            GeometryPreviewFeature {
+                feature_id: 2,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "FixtureTube".to_string(),
+                geometry_type: "POLYHEDRALSURFACE".to_string(),
+                bbox: [292100.0, 2785210.0, 0.0, 292110.0, 2785220.0, 4.0],
+            },
+            GeometryPreviewFeature {
+                feature_id: 3,
+                source_id: "dwg-12d5f1b6".to_string(),
+                layer: "unknown layer".to_string(),
+                geometry_type: "POLYHEDRALSURFACE".to_string(),
+                bbox: [292120.0, 2785210.0, 0.0, 292125.0, 2785215.0, 5.0],
+            },
+        ],
+        &rules,
+    )
+    .expect("semantic report");
+
+    assert_eq!(output.report.strict_category_counts.get("pipe"), Some(&1));
+    assert_eq!(
+        output.report.suggested_category_counts.get("beam"),
+        Some(&1)
+    );
+    assert!(output.report.suggested_unknown_ratio < output.report.strict_unknown_ratio);
+    assert!(output.report.suggested_semantic_coverage > output.report.strict_semantic_coverage);
+    assert!(
+        output
+            .report
+            .category_confidence_histogram
+            .contains_key("suggested_medium")
+    );
+    assert_eq!(
+        output.report.visual_category_counts,
+        output.report.suggested_category_counts
+    );
+    assert_eq!(
+        output.report.semantic_rules_source,
+        "test_semantic_rules.json"
+    );
+    assert_eq!(output.report.semantic_rules_version, 42);
+}
+
+#[test]
+fn phase2b_semantic_rules_are_configurable_not_project_hardcoded() {
+    let source = std::fs::read_to_string("src/geometry_preview.rs").expect("geometry preview rs");
+    for forbidden in ["電梯軌道", "預埋件", "PireA", "Steel Box", "固定座"] {
+        assert!(
+            !source.contains(forbidden),
+            "production semantic logic must not hardcode project layer name: {forbidden}"
+        );
+    }
+
+    let default_rules =
+        std::fs::read_to_string("config/semantic_rules.default.json").expect("default rules");
+    assert!(default_rules.contains("\"version\""));
+    assert!(default_rules.contains("\"rules\""));
+    assert!(default_rules.contains("\"strict_keywords\""));
+    assert!(default_rules.contains("\"suggested_keywords\""));
+    assert!(default_rules.contains("\"layer_regex\""));
+    assert!(default_rules.contains("\"source_regex\""));
+    assert!(default_rules.contains("\"geometry_types\""));
+}
+
+#[test]
+fn phase2b_publish_viewer_has_semantic_legend_filter_and_suggested_default() {
+    let html = render_publish_viewer_html();
+
+    assert!(html.contains("semanticLegend"));
+    assert!(html.contains("semanticCategoryFilter"));
+    assert!(html.contains("semanticModeSelect"));
+    assert!(html.contains("suggestedCategory"));
+    assert!(html.contains("strictCategory"));
+    assert!(html.contains("suggested_unknown_ratio"));
+    assert!(html.contains("strict_unknown_ratio"));
 }
 
 #[test]
