@@ -148,11 +148,50 @@ function bboxIsValid(bbox) {
     && Number(bbox[2]) <= Number(bbox[5]);
 }
 
+function sourceQaDecisionRecord(source, decisionState = {}, fallbackNow = new Date().toISOString()) {
+  return {
+    sourceId: source.source_id,
+    originalFileName: source.original_file_name,
+    originalStatus: source.inspect_status || source.status || source.approval_decision || "unknown",
+    decision: decisionState.decision || source.approval_decision || "needs_review",
+    reason: decisionState.reason || source.reason || "",
+    reviewerNote: decisionState.reviewerNote || "",
+    timestamp: decisionState.timestamp || fallbackNow
+  };
+}
+
+function buildSourceQaDecisionExport(sources, decisions, now = new Date().toISOString()) {
+  return {
+    generatedAt: now,
+    decisions: (sources || []).map(source =>
+      sourceQaDecisionRecord(source, (decisions && decisions.get(source.source_id)) || {}, now)
+    )
+  };
+}
+
+function countSourceQaDecisions(decisions) {
+  const counts = {
+    approvedCount: 0,
+    rejectedCount: 0,
+    needsReviewCount: 0,
+    alternativeRouteCount: 0
+  };
+  for (const item of decisions || []) {
+    const value = String(item && item.decision || "").toLowerCase();
+    if (value === "approve" || value === "approved") counts.approvedCount += 1;
+    else if (value === "reject" || value === "rejected") counts.rejectedCount += 1;
+    else if (value === "alternative_route" || value === "needs_alternative_route") counts.alternativeRouteCount += 1;
+    else if (value === "needs_review" || value === "needsreview" || value === "manual_inspect") counts.needsReviewCount += 1;
+  }
+  return counts;
+}
+
 function buildRuntimeQaReport(features, options = {}) {
   const grid = buildSpatialPickGridIndex(features, options.cellSize || 20);
   const validBboxes = (features || []).every(feature => bboxIsValid(feature.bbox));
   const samples = options.samples || {};
   const sampleTimes = options.sampleTimes || [];
+  const decisionCounts = countSourceQaDecisions(options.sourceQaDecisions || []);
   return {
     spatialPickFeatureCount: (features || []).length,
     gridIndexEnabled: grid.valid,
@@ -166,6 +205,7 @@ function buildRuntimeQaReport(features, options = {}) {
       : 0,
     maxPickTimeMs: sampleTimes.length ? Math.max(...sampleTimes) : 0,
     bboxValid: validBboxes,
+    ...decisionCounts,
     manualChecklist: [
       "source hover highlight",
       "candidate hover highlight",
@@ -460,4 +500,66 @@ test("runtime QA report records pass fail samples", () => {
   assert.strictEqual(report.sampleRayPickPass, true);
   assert.strictEqual(report.sampleNearestPickPass, false);
   assert.strictEqual(report.sampleMissPass, true);
+});
+
+test("source QA decision export preserves required fields", () => {
+  const exported = buildSourceQaDecisionExport([
+    {
+      source_id: "dwg-12d5f1b6",
+      original_file_name: "主橋塔.dwg",
+      inspect_status: "approved"
+    }
+  ], new Map([
+    ["dwg-12d5f1b6", {
+      decision: "approve",
+      reason: "reviewed_bbox",
+      reviewerNote: "OK",
+      timestamp: "2026-05-20T10:00:00.000Z"
+    }]
+  ]), "2026-05-20T10:01:00.000Z");
+
+  assert.strictEqual(exported.generatedAt, "2026-05-20T10:01:00.000Z");
+  assert.strictEqual(exported.decisions[0].sourceId, "dwg-12d5f1b6");
+  assert.strictEqual(exported.decisions[0].originalFileName, "主橋塔.dwg");
+  assert.strictEqual(exported.decisions[0].originalStatus, "approved");
+  assert.strictEqual(exported.decisions[0].decision, "approve");
+  assert.strictEqual(exported.decisions[0].reason, "reviewed_bbox");
+  assert.strictEqual(exported.decisions[0].reviewerNote, "OK");
+  assert.strictEqual(exported.decisions[0].timestamp, "2026-05-20T10:00:00.000Z");
+});
+
+test("source QA decision counts decisions", () => {
+  const counts = countSourceQaDecisions([
+    { decision: "approve" },
+    { decision: "reject" },
+    { decision: "needs_review" },
+    { decision: "alternative_route" },
+    { decision: "needs_alternative_route" }
+  ]);
+
+  assert.deepStrictEqual(counts, {
+    approvedCount: 1,
+    rejectedCount: 1,
+    needsReviewCount: 1,
+    alternativeRouteCount: 2
+  });
+});
+
+test("runtime QA report includes decision counts", () => {
+  const report = buildRuntimeQaReport([
+    { featureId: 1, center: [5, 5, 0], bbox: [0, 0, 0, 10, 10, 10] }
+  ], {
+    samples: { ray: true, nearest: true, miss: true },
+    sourceQaDecisions: [
+      { decision: "approve" },
+      { decision: "reject" },
+      { decision: "needs_review" },
+      { decision: "alternative_route" }
+    ]
+  });
+
+  assert.strictEqual(report.approvedCount, 1);
+  assert.strictEqual(report.rejectedCount, 1);
+  assert.strictEqual(report.needsReviewCount, 1);
+  assert.strictEqual(report.alternativeRouteCount, 1);
 });

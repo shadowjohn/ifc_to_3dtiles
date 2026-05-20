@@ -218,6 +218,90 @@ function Test-RuntimeQaMissPick {
   return ($bestDistance -gt $threshold)
 }
 
+function New-SourceQaDecisionCountBag {
+  return [ordered]@{
+    approvedCount = 0
+    rejectedCount = 0
+    needsReviewCount = 0
+    alternativeRouteCount = 0
+  }
+}
+
+function Add-SourceQaDecisionCount {
+  param(
+    [object]$Counts,
+    [string]$Decision,
+    [string]$InspectStatus = "",
+    [string]$Reason = ""
+  )
+
+  $value = "$Decision".ToLowerInvariant()
+  $statusText = "$InspectStatus $Reason".ToLowerInvariant()
+  if ($value -eq "approve" -or $value -eq "approved") {
+    $Counts["approvedCount"]++
+  } elseif ($value -eq "reject" -or $value -eq "rejected") {
+    $Counts["rejectedCount"]++
+  } elseif ($value -eq "alternative_route" -or $value -eq "needs_alternative_route" -or $statusText.Contains("alternative")) {
+    $Counts["alternativeRouteCount"]++
+  } elseif ($value -eq "needs_review" -or $value -eq "needsreview" -or $value -eq "manual_inspect") {
+    $Counts["needsReviewCount"]++
+  }
+}
+
+function Get-SourceQaDecisionCounts {
+  param([string]$PublishDir)
+
+  $counts = New-SourceQaDecisionCountBag
+  $decisionPath = Join-Path $PublishDir "source_qa_decisions.json"
+  if (Test-Path -LiteralPath $decisionPath) {
+    $doc = Get-Content -LiteralPath $decisionPath -Raw | ConvertFrom-Json
+    if ($null -ne $doc.decisions) {
+      $items = @($doc.decisions)
+    } else {
+      $items = @($doc)
+    }
+    foreach ($item in $items) {
+      Add-SourceQaDecisionCount -Counts $counts -Decision "$($item.decision)"
+    }
+    return [pscustomobject]@{
+      approvedCount = $counts["approvedCount"]
+      rejectedCount = $counts["rejectedCount"]
+      needsReviewCount = $counts["needsReviewCount"]
+      alternativeRouteCount = $counts["alternativeRouteCount"]
+      sourceQaDecisionExportPresent = $true
+      sourceQaDecisionSource = "source_qa_decisions.json"
+    }
+  }
+
+  $manifestPath = Join-Path $PublishDir "sources_manifest.json"
+  if (Test-Path -LiteralPath $manifestPath) {
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    foreach ($source in @($manifest.sources)) {
+      Add-SourceQaDecisionCount -Counts $counts -Decision "$($source.approval_decision)"
+    }
+  }
+
+  $overlayPath = Join-Path $PublishDir "debug_overlays.json"
+  if (Test-Path -LiteralPath $overlayPath) {
+    $overlays = Get-Content -LiteralPath $overlayPath -Raw | ConvertFrom-Json
+    foreach ($source in @($overlays.sources)) {
+      Add-SourceQaDecisionCount -Counts $counts `
+        -Decision "$($source.approval_decision)" `
+        -InspectStatus "$($source.inspect_status)" `
+        -Reason "$($source.reason)"
+    }
+  }
+
+  return [pscustomobject]@{
+    approvedCount = $counts["approvedCount"]
+    rejectedCount = $counts["rejectedCount"]
+    needsReviewCount = $counts["needsReviewCount"]
+    alternativeRouteCount = $counts["alternativeRouteCount"]
+    sourceQaDecisionExportPresent = $false
+    sourceQaDecisionSource = "publish manifests baseline"
+  }
+}
+
 function New-RuntimeQaReport {
   param(
     [string]$PublishDir
@@ -273,7 +357,10 @@ function New-RuntimeQaReport {
     "renderPickDebugPanel",
     "hoverSourceBbox",
     "hoverCandidateBbox",
-    "formatPickLabelText"
+    "formatPickLabelText",
+    "buildSourceQaDecisionsExport",
+    "exportSourceQaDecisions",
+    "setSourceQaDecision"
   )
   $missingFunctions = @($requiredFunctions | Where-Object { $publishHtml -notlike "*$_*" })
   if ($missingFunctions.Count -gt 0) {
@@ -284,6 +371,7 @@ function New-RuntimeQaReport {
   $average = ($times | Measure-Object -Average).Average
   $max = ($times | Measure-Object -Maximum).Maximum
   $allPass = ($sampleRay -and $sampleNearest -and $sampleMiss -and $grid.Valid -and $missingFunctions.Count -eq 0)
+  $decisionCounts = Get-SourceQaDecisionCounts -PublishDir $PublishDir
 
   $report = [pscustomobject]@{
     generatedAt = (Get-Date).ToString("o")
@@ -299,13 +387,20 @@ function New-RuntimeQaReport {
     maxPickTimeMs = [math]::Round([double]$max, 3)
     bboxValid = ($invalidBbox.Count -eq 0)
     hybridPickFunctionsPresent = ($missingFunctions.Count -eq 0)
+    approvedCount = $decisionCounts.approvedCount
+    rejectedCount = $decisionCounts.rejectedCount
+    needsReviewCount = $decisionCounts.needsReviewCount
+    alternativeRouteCount = $decisionCounts.alternativeRouteCount
+    sourceQaDecisionExportPresent = $decisionCounts.sourceQaDecisionExportPresent
+    sourceQaDecisionSource = $decisionCounts.sourceQaDecisionSource
     pass = [bool]$allPass
     ManualChecklist = @(
       "source hover highlight",
       "candidate hover highlight",
       "selected bbox label",
       "pick miss state",
-      "grid/full_scan toggle"
+      "grid/full_scan toggle",
+      "source QA decision export"
     )
   }
 
@@ -470,6 +565,11 @@ if ($null -ne $runtimeQaReport) {
   Write-Host "  sampleMissPass: $($runtimeQaReport.sampleMissPass)"
   Write-Host "  averagePickTimeMs: $($runtimeQaReport.averagePickTimeMs)"
   Write-Host "  maxPickTimeMs: $($runtimeQaReport.maxPickTimeMs)"
+  Write-Host "  approvedCount: $($runtimeQaReport.approvedCount)"
+  Write-Host "  rejectedCount: $($runtimeQaReport.rejectedCount)"
+  Write-Host "  needsReviewCount: $($runtimeQaReport.needsReviewCount)"
+  Write-Host "  alternativeRouteCount: $($runtimeQaReport.alternativeRouteCount)"
+  Write-Host "  sourceQaDecisionSource: $($runtimeQaReport.sourceQaDecisionSource)"
   Write-Host "  ManualChecklist: $($runtimeQaReport.ManualChecklist -join ' / ')"
   if (-not $runtimeQaReport.pass) {
     Write-Error "Runtime QA summary 未通過，請檢查 runtime_qa_report.json"

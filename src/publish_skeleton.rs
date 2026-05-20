@@ -259,6 +259,13 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
     .source-meta { margin-top:4px; color:#91a0ad; font-size:12px; }
     .qa-actions { display:flex; gap:6px; flex-wrap:wrap; margin:8px 0; }
     .qa-actions .btn { font-size:12px; padding:5px 8px; }
+    .decision-actions { display:grid; grid-template-columns:1fr 1fr; gap:5px; margin-top:8px; }
+    .decision-btn { font-size:11px; padding:5px 6px; border-color:#334150; }
+    .decision-btn.active { border-color:#7ee787; background:#1b3727; color:#d9ffe5; }
+    .decision-btn[data-decision-action="reject"].active { border-color:#ff6b6b; background:#392020; color:#ffd6d6; }
+    .decision-btn[data-decision-action="needs_review"].active { border-color:#f5d76e; background:#353019; color:#fff2b0; }
+    .decision-btn[data-decision-action="alternative_route"].active { border-color:#56d4ff; background:#16303a; color:#d8f6ff; }
+    .reviewer-note { box-sizing:border-box; width:100%; min-height:72px; margin-top:6px; padding:8px; border:1px solid #334150; border-radius:6px; background:#0d141b; color:#e8eef5; resize:vertical; }
     #detailPanel h2 { margin:0 0 8px; font-size:16px; }
     #detailPanel h3 { margin:12px 0 6px; font-size:13px; color:#dce8f3; }
     #detailPanel p { margin:4px 0; }
@@ -312,6 +319,7 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
     <div class="qa-actions">
       <button id="duplicateDrillBtn" class="btn">Duplicate</button>
       <button id="outlierListBtn" class="btn">Outliers</button>
+      <button id="exportSourceDecisionsBtn" class="btn">Export Decisions</button>
     </div>
     <div id="sourceList"></div>
   </aside>
@@ -337,12 +345,15 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       overlays: "debug_overlays.json",
       spatialQa: "spatial_qa_manifest.json",
       runtimeManifest: "runtime_manifest.json",
-      spatialPick: "spatial_pick_index.json"
+      spatialPick: "spatial_pick_index.json",
+      sourceQaDecisions: "source_qa_decisions.json"
     };
     const state = {
       approved: [],
       rejected: [],
       needs_review: [],
+      activeSourceId: null,
+      sourceDecisions: new Map(),
       spatialQa: null,
       sourceDetails: new Map(),
       entities: [],
@@ -637,12 +648,132 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
           : "none";
       }
     }
+    const SOURCE_QA_DECISION_DEFS = {
+      approve: { label: "Approve", reason: "approved_by_reviewer" },
+      reject: { label: "Reject", reason: "rejected_by_reviewer" },
+      needs_review: { label: "Needs Review", reason: "needs_manual_inspect" },
+      alternative_route: { label: "Alternative Route", reason: "needs_alternative_route" }
+    };
+    function allQaSources() {
+      return state.spatialQa?.sources || [];
+    }
+    function sourceDefaultDecision(source) {
+      const original = [
+        source?.approval_decision,
+        source?.inspect_status,
+        source?.reason,
+        ...(source?.quarantine_reasons || [])
+      ].join(" ").toLowerCase();
+      if (String(source?.approval_decision || "").toLowerCase() === "approved") return "approve";
+      if (String(source?.approval_decision || "").toLowerCase() === "rejected") return "reject";
+      if (original.includes("alternative")) return "alternative_route";
+      return "needs_review";
+    }
+    function sourceDecisionState(sourceId) {
+      const source = state.sourceDetails.get(sourceId);
+      const existing = state.sourceDecisions.get(sourceId);
+      if (existing) return existing;
+      const decision = sourceDefaultDecision(source);
+      return {
+        sourceId,
+        decision,
+        reason: SOURCE_QA_DECISION_DEFS[decision]?.reason || "",
+        reviewerNote: "",
+        timestamp: ""
+      };
+    }
+    function bboxAvailability(source) {
+      return (source?.percentile_bbox || source?.raw_bbox || source?.percentile_bbox_wgs84 || source?.raw_bbox_wgs84)
+        ? "bbox available"
+        : "bbox missing";
+    }
+    function sourceQaDecisionRecord(source, now) {
+      const decision = sourceDecisionState(source.source_id);
+      return {
+        sourceId: source.source_id,
+        originalFileName: source.original_file_name,
+        originalStatus: source.inspect_status || source.approval_decision || "unknown",
+        decision: decision.decision,
+        reason: decision.reason || "",
+        reviewerNote: decision.reviewerNote || "",
+        timestamp: decision.timestamp || now
+      };
+    }
+    function buildSourceQaDecisionsExport() {
+      const now = new Date().toISOString();
+      return {
+        generatedAt: now,
+        decisions: allQaSources().map(source => sourceQaDecisionRecord(source, now))
+      };
+    }
+    function sourceDecisionCounts() {
+      const counts = { approve: 0, reject: 0, needs_review: 0, alternative_route: 0 };
+      for (const source of allQaSources()) {
+        const decision = sourceDecisionState(source.source_id).decision;
+        counts[decision] = (counts[decision] || 0) + 1;
+      }
+      return counts;
+    }
+    function renderSourceDecisionButtons(sourceId, compact) {
+      const current = sourceDecisionState(sourceId).decision;
+      const activeClass = action => current === action ? "active" : "";
+      return `
+        <div class="decision-actions${compact ? " compact" : ""}">
+          <button class="btn decision-btn ${activeClass("approve")}" data-decision-action="approve" data-source-id="${escapeHtml(sourceId)}">Approve</button>
+          <button class="btn decision-btn ${activeClass("reject")}" data-decision-action="reject" data-source-id="${escapeHtml(sourceId)}">Reject</button>
+          <button class="btn decision-btn ${activeClass("needs_review")}" data-decision-action="needs_review" data-source-id="${escapeHtml(sourceId)}">Needs Review</button>
+          <button class="btn decision-btn ${activeClass("alternative_route")}" data-decision-action="alternative_route" data-source-id="${escapeHtml(sourceId)}">Alternative Route</button>
+        </div>
+      `;
+    }
+    function setSourceQaDecision(sourceId, decision) {
+      const source = state.sourceDetails.get(sourceId);
+      if (!source || !SOURCE_QA_DECISION_DEFS[decision]) return;
+      const existing = sourceDecisionState(sourceId);
+      state.sourceDecisions.set(sourceId, {
+        ...existing,
+        sourceId,
+        decision,
+        reason: SOURCE_QA_DECISION_DEFS[decision].reason,
+        timestamp: new Date().toISOString()
+      });
+      renderSourceList();
+      showSourceDetail(sourceId, "decision");
+    }
+    function updateSourceReviewerNote(sourceId, reviewerNote) {
+      const source = state.sourceDetails.get(sourceId);
+      if (!source) return;
+      const existing = sourceDecisionState(sourceId);
+      state.sourceDecisions.set(sourceId, {
+        ...existing,
+        sourceId,
+        reviewerNote,
+        timestamp: existing.timestamp || new Date().toISOString()
+      });
+    }
+    function exportSourceQaDecisions() {
+      const payload = buildSourceQaDecisionsExport();
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = DATA_FILES.sourceQaDecisions;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      status(`source_qa_decisions.json exported: ${payload.decisions.length} sources`);
+    }
     function sourceSearchText(source) {
+      const decision = sourceDecisionState(source.source_id);
       return [
         source.source_id,
         source.original_file_name,
         source.inspect_status,
         source.approval_decision,
+        decision.decision,
+        decision.reason,
+        decision.reviewerNote,
         source.aoi_status,
         ...(source.warnings || []),
         ...(source.quarantine_reasons || []),
@@ -655,19 +786,24 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       const query = (document.getElementById("qaSearch").value || "").trim().toLowerCase();
       const sources = (state.spatialQa?.sources || [])
         .filter(source => !query || sourceSearchText(source).includes(query));
+      const counts = sourceDecisionCounts();
       document.getElementById("qaSummary").textContent =
-        `runtime ${state.approved.length} / debug ${state.rejected.length + state.needs_review.length} / showing ${sources.length}`;
-      list.innerHTML = sources.map(source => `
-        <button class="source-row" data-source-id="${escapeHtml(source.source_id)}">
+        `runtime ${state.approved.length} / debug ${state.rejected.length + state.needs_review.length} / showing ${sources.length} / decisions A:${counts.approve} R:${counts.reject} N:${counts.needs_review} Alt:${counts.alternative_route}`;
+      list.innerHTML = sources.map(source => {
+        const decision = sourceDecisionState(source.source_id);
+        return `
+        <div class="source-row" role="button" tabindex="0" data-source-id="${escapeHtml(source.source_id)}">
           <span class="source-title">
             <b>${escapeHtml(source.original_file_name)}</b>
-            <span class="pill">${escapeHtml(source.approval_decision)}</span>
+            <span class="pill">${escapeHtml(decision.decision)}</span>
           </span>
           <span class="source-meta">
-            ${escapeHtml(source.inspect_status)} · ${escapeHtml(source.aoi_status || "no_bbox")} · scale ${escapeHtml(source.selected_scale ?? "-")}
+            ${escapeHtml(source.inspect_status)} · ${escapeHtml(source.aoi_status || "no_bbox")} · ${escapeHtml(bboxAvailability(source))} · scale ${escapeHtml(source.selected_scale ?? "-")}
           </span>
-        </button>
-      `).join("");
+          ${renderSourceDecisionButtons(source.source_id, true)}
+        </div>
+      `;
+      }).join("");
     }
     function propValue(entity, key) {
       const value = entity && entity.properties && entity.properties[key];
@@ -931,25 +1067,33 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
     function showSourceDetail(sourceId, titleSuffix) {
       const source = state.sourceDetails.get(sourceId);
       const panel = document.getElementById("detailPanel");
+      state.activeSourceId = sourceId;
       if (!source) {
         panel.innerHTML = `<h2>Spatial QA</h2><p class="muted">找不到 source detail：${escapeHtml(sourceId)}</p>`;
         return;
       }
+      const decision = sourceDecisionState(sourceId);
       const duplicateItems = (source.duplicate_candidates || [])
         .map(candidate => `${candidate.original_file_name} ${(candidate.score * 100).toFixed(1)}%`);
       panel.innerHTML = `
         <h2>${escapeHtml(source.original_file_name)} ${escapeHtml(titleSuffix || "")}</h2>
         <p><b>source</b> <span class="mono">${escapeHtml(source.source_id)}</span></p>
-        <p><b>status</b> ${escapeHtml(source.inspect_status)} / ${escapeHtml(source.approval_decision)}</p>
+        <p><b>current status</b> ${escapeHtml(source.inspect_status)} / ${escapeHtml(source.approval_decision)}</p>
+        <p><b>decision</b> ${escapeHtml(decision.decision)} · <b>reason</b> ${escapeHtml(decision.reason || "-")}</p>
+        <p><b>bbox availability</b> ${escapeHtml(bboxAvailability(source))}</p>
+        <p><b>AOI relation</b> ${escapeHtml(source.aoi_status || "no_bbox")} · ${escapeHtml(formatAoiGap(source))}</p>
         <p><b>scale</b> ${source.selected_scale ?? "-"}</p>
         <p><b>entities</b> ${formatNumber(source.entity_count)} · <b>vertices</b> ${formatNumber(source.vertex_count)}</p>
         <p><b>duplicate_of</b> <span class="mono">${escapeHtml(source.duplicate_of || "-")}</span></p>
-        <p><b>AOI</b> ${escapeHtml(source.aoi_status || "no_bbox")} · ${escapeHtml(formatAoiGap(source))}</p>
         <p><b>bbox inflation</b> ${escapeHtml(formatRatio(source.bbox_inflation_ratio))}</p>
         <div class="qa-actions">
           <button class="btn" onclick="zoomToSource('${escapeHtml(source.source_id)}', 'percentile')">Zoom P0.5/P99.5</button>
           <button class="btn" onclick="zoomToSource('${escapeHtml(source.source_id)}', 'raw')">Zoom Raw</button>
         </div>
+        <h3>Decision</h3>
+        ${renderSourceDecisionButtons(source.source_id, false)}
+        <textarea id="sourceReviewerNote" class="reviewer-note" data-source-id="${escapeHtml(source.source_id)}" placeholder="人工備註 / reviewerNote">${escapeHtml(decision.reviewerNote || "")}</textarea>
+        <p class="mono muted">timestamp: ${escapeHtml(decision.timestamp || "-")}</p>
         <h3>Warnings</h3>${formatList(source.warnings, "none")}
         <h3>Quarantine</h3>${formatList(source.quarantine_reasons, "none")}
         <h3>Duplicate</h3>${formatList(duplicateItems, "none")}
@@ -1626,6 +1770,13 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
     function wireReviewNavigation(viewer) {
       document.getElementById("qaSearch").addEventListener("input", renderSourceList);
       document.getElementById("sourceList").addEventListener("click", (event) => {
+        const decisionButton = event.target.closest("[data-decision-action]");
+        if (decisionButton) {
+          event.preventDefault();
+          event.stopPropagation();
+          setSourceQaDecision(decisionButton.dataset.sourceId, decisionButton.dataset.decisionAction);
+          return;
+        }
         const row = event.target.closest(".source-row");
         if (!row) return;
         zoomToSource(row.dataset.sourceId, "percentile");
@@ -1652,12 +1803,27 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       });
       document.getElementById("duplicateDrillBtn").addEventListener("click", () => showDuplicateDetail(0));
       document.getElementById("outlierListBtn").addEventListener("click", showOutlierList);
+      document.getElementById("exportSourceDecisionsBtn").addEventListener("click", exportSourceQaDecisions);
+      document.getElementById("detailPanel").addEventListener("click", (event) => {
+        const decisionButton = event.target.closest("[data-decision-action]");
+        if (!decisionButton) return;
+        setSourceQaDecision(decisionButton.dataset.sourceId, decisionButton.dataset.decisionAction);
+      });
+      document.getElementById("detailPanel").addEventListener("input", (event) => {
+        if (event.target && event.target.id === "sourceReviewerNote") {
+          updateSourceReviewerNote(event.target.dataset.sourceId, event.target.value);
+          renderSourceList();
+        }
+      });
       window.zoomToSource = zoomToSource;
       window.zoomToOutlier = zoomToOutlier;
       window.showDuplicateDetail = showDuplicateDetail;
       window.showOutlierList = showOutlierList;
       window.highlightRuntimeSource = highlightRuntimeSource;
       window.highlightRuntimeGroup = highlightRuntimeGroup;
+      window.buildSourceQaDecisionsExport = buildSourceQaDecisionsExport;
+      window.exportSourceQaDecisions = exportSourceQaDecisions;
+      window.setSourceQaDecision = setSourceQaDecision;
     }
     async function main() {
       if (!window.Cesium) { cesiumMissing(); return; }

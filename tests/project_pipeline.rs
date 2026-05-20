@@ -1938,6 +1938,49 @@ fn phase1gi_js_pick_accuracy_tests_cover_runtime_qa_report() {
 }
 
 #[test]
+fn phase1j_publish_viewer_has_source_qa_decision_workflow() {
+    let html = render_publish_viewer_html();
+
+    assert!(html.contains("source_qa_decisions.json"));
+    assert!(html.contains("exportSourceDecisionsBtn"));
+    assert!(html.contains("buildSourceQaDecisionsExport"));
+    assert!(html.contains("exportSourceQaDecisions"));
+    assert!(html.contains("setSourceQaDecision"));
+    assert!(html.contains("sourceReviewerNote"));
+    assert!(html.contains("data-decision-action=\"approve\""));
+    assert!(html.contains("data-decision-action=\"reject\""));
+    assert!(html.contains("data-decision-action=\"needs_review\""));
+    assert!(html.contains("data-decision-action=\"alternative_route\""));
+    assert!(html.contains("reviewerNote"));
+    assert!(html.contains("timestamp"));
+    assert!(html.contains("bbox availability"));
+    assert!(html.contains("AOI relation"));
+}
+
+#[test]
+fn phase1j_verify_script_reports_source_decision_counts() {
+    let script =
+        std::fs::read_to_string("tools/verify_index_page.ps1").expect("verify_index_page.ps1");
+
+    assert!(script.contains("source_qa_decisions.json"));
+    assert!(script.contains("Get-SourceQaDecisionCounts"));
+    assert!(script.contains("approvedCount"));
+    assert!(script.contains("rejectedCount"));
+    assert!(script.contains("needsReviewCount"));
+    assert!(script.contains("alternativeRouteCount"));
+}
+
+#[test]
+fn phase1j_js_pick_accuracy_tests_cover_source_decision_export() {
+    let script = std::fs::read_to_string("tools/test_phase1g_pick_accuracy.js")
+        .expect("Phase 1G-J JS test script");
+
+    assert!(script.contains("source QA decision export preserves required fields"));
+    assert!(script.contains("source QA decision counts decisions"));
+    assert!(script.contains("runtime QA report includes decision counts"));
+}
+
+#[test]
 fn phase1gc_spatial_pick_index_serializes_runtime_only_schema_with_local_bbox() {
     let index = build_spatial_pick_index(
         "local",
