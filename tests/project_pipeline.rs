@@ -1904,6 +1904,40 @@ fn phase1gh_js_pick_accuracy_tests_cover_spatial_grid_index() {
 }
 
 #[test]
+fn phase1gi_verify_script_generates_runtime_qa_report_and_summary() {
+    let script =
+        std::fs::read_to_string("tools/verify_index_page.ps1").expect("verify_index_page.ps1");
+
+    assert!(script.contains("runtime_qa_report.json"));
+    assert!(script.contains("spatialPickFeatureCount"));
+    assert!(script.contains("gridIndexEnabled"));
+    assert!(script.contains("gridCellCount"));
+    assert!(script.contains("pickIndexMode"));
+    assert!(script.contains("sampleRayPickPass"));
+    assert!(script.contains("sampleNearestPickPass"));
+    assert!(script.contains("sampleMissPass"));
+    assert!(script.contains("averagePickTimeMs"));
+    assert!(script.contains("maxPickTimeMs"));
+    assert!(script.contains("ManualChecklist"));
+    assert!(script.contains("source hover highlight"));
+    assert!(script.contains("candidate hover highlight"));
+    assert!(script.contains("selected bbox label"));
+    assert!(script.contains("pick miss state"));
+    assert!(script.contains("grid/full_scan toggle"));
+    assert!(script.contains("Runtime QA summary"));
+}
+
+#[test]
+fn phase1gi_js_pick_accuracy_tests_cover_runtime_qa_report() {
+    let script = std::fs::read_to_string("tools/test_phase1g_pick_accuracy.js")
+        .expect("Phase 1G-I JS test script");
+
+    assert!(script.contains("runtime QA report includes required fields"));
+    assert!(script.contains("runtime QA report fails invalid bbox"));
+    assert!(script.contains("runtime QA report records pass fail samples"));
+}
+
+#[test]
 fn phase1gc_spatial_pick_index_serializes_runtime_only_schema_with_local_bbox() {
     let index = build_spatial_pick_index(
         "local",

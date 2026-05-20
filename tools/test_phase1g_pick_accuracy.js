@@ -139,6 +139,43 @@ function spatialPickCandidatesForNearest(grid, features, point, radiusCells = 1)
   return { mode: "grid", features: fromGrid };
 }
 
+function bboxIsValid(bbox) {
+  return Array.isArray(bbox)
+    && bbox.length === 6
+    && bbox.every(value => Number.isFinite(Number(value)))
+    && Number(bbox[0]) <= Number(bbox[3])
+    && Number(bbox[1]) <= Number(bbox[4])
+    && Number(bbox[2]) <= Number(bbox[5]);
+}
+
+function buildRuntimeQaReport(features, options = {}) {
+  const grid = buildSpatialPickGridIndex(features, options.cellSize || 20);
+  const validBboxes = (features || []).every(feature => bboxIsValid(feature.bbox));
+  const samples = options.samples || {};
+  const sampleTimes = options.sampleTimes || [];
+  return {
+    spatialPickFeatureCount: (features || []).length,
+    gridIndexEnabled: grid.valid,
+    gridCellCount: grid.cells.size,
+    pickIndexMode: grid.valid ? "grid" : "full_scan",
+    sampleRayPickPass: !!samples.ray,
+    sampleNearestPickPass: !!samples.nearest,
+    sampleMissPass: !!samples.miss,
+    averagePickTimeMs: sampleTimes.length
+      ? sampleTimes.reduce((sum, value) => sum + value, 0) / sampleTimes.length
+      : 0,
+    maxPickTimeMs: sampleTimes.length ? Math.max(...sampleTimes) : 0,
+    bboxValid: validBboxes,
+    manualChecklist: [
+      "source hover highlight",
+      "candidate hover highlight",
+      "selected bbox label",
+      "pick miss state",
+      "grid/full_scan toggle"
+    ]
+  };
+}
+
 function visualStateAfterHoverSource(state, sourceId) {
   return {
     ...state,
@@ -382,4 +419,45 @@ test("grid result remains same as full scan", () => {
     fromGrid.features.map(feature => feature.featureId).sort(),
     fromFullScan.features.filter(feature => feature.featureId !== 3).map(feature => feature.featureId).sort()
   );
+});
+
+test("runtime QA report includes required fields", () => {
+  const report = buildRuntimeQaReport([
+    { featureId: 1, center: [5, 5, 0], bbox: [0, 0, 0, 10, 10, 10] },
+    { featureId: 2, center: [25, 5, 0], bbox: [20, 0, 0, 30, 10, 10] }
+  ], {
+    samples: { ray: true, nearest: true, miss: true },
+    sampleTimes: [1.5, 2.5, 3.5]
+  });
+
+  assert.strictEqual(report.spatialPickFeatureCount, 2);
+  assert.strictEqual(report.gridIndexEnabled, true);
+  assert.strictEqual(report.pickIndexMode, "grid");
+  assert.strictEqual(report.sampleRayPickPass, true);
+  assert.strictEqual(report.sampleNearestPickPass, true);
+  assert.strictEqual(report.sampleMissPass, true);
+  assert.strictEqual(report.averagePickTimeMs, 2.5);
+  assert.strictEqual(report.maxPickTimeMs, 3.5);
+});
+
+test("runtime QA report fails invalid bbox", () => {
+  const report = buildRuntimeQaReport([
+    { featureId: 1, center: [5, 5, 0], bbox: [10, 0, 0, 0, 10, 10] }
+  ], {
+    samples: { ray: true, nearest: true, miss: true }
+  });
+
+  assert.strictEqual(report.bboxValid, false);
+});
+
+test("runtime QA report records pass fail samples", () => {
+  const report = buildRuntimeQaReport([
+    { featureId: 1, center: [5, 5, 0], bbox: [0, 0, 0, 10, 10, 10] }
+  ], {
+    samples: { ray: true, nearest: false, miss: true }
+  });
+
+  assert.strictEqual(report.sampleRayPickPass, true);
+  assert.strictEqual(report.sampleNearestPickPass, false);
+  assert.strictEqual(report.sampleMissPass, true);
 });
