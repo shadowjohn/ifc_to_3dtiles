@@ -295,7 +295,8 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       approved: "sources_manifest.json",
       overlays: "debug_overlays.json",
       spatialQa: "spatial_qa_manifest.json",
-      runtimeManifest: "runtime_manifest.json"
+      runtimeManifest: "runtime_manifest.json",
+      spatialPick: "spatial_pick_index.json"
     };
     const state = {
       approved: [],
@@ -311,7 +312,11 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       runtimeLoaded: false,
       runtimeLoading: false,
       runtimeFeatureCount: 0,
-      runtimeMetadataFields: []
+      runtimeMetadataFields: [],
+      spatialPickIndex: null,
+      spatialPickSources: new Map(),
+      spatialPickHighlightEntity: null,
+      pickMode: "miss"
     };
     function status(text) {
       document.getElementById("status").textContent = text;
@@ -689,6 +694,8 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
         `rejected bbox: ${state.rejected.length}`,
         `needs review bbox: ${state.needs_review.length}`,
         `outlier marker: ${(state.spatialQa?.outliers || []).length}`,
+        `spatial pick index: ${(state.spatialPickIndex?.features || []).length}`,
+        `Pick mode: ${state.pickMode}`,
         "metadata: source_id, original_file_name, approval_decision, reason, duplicate_of"
       ].join("\n"));
     }
@@ -705,6 +712,28 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
         throw new Error("runtime geometry 需要透過本機 HTTP server 載入，請使用 tools/run_phase1f_publish_viewer.ps1。");
       }
       return Cesium.Resource.fetchJson({ url: `${url}?t=${Date.now()}` });
+    }
+    async function loadSpatialPickIndex() {
+      if (location.protocol === "file:") {
+        state.pickMode = "miss";
+        return null;
+      }
+      try {
+        const index = await Cesium.Resource.fetchJson({ url: `${DATA_FILES.spatialPick}?t=${Date.now()}` });
+        state.spatialPickIndex = index;
+        state.spatialPickSources.clear();
+        for (const source of (index.sources || [])) {
+          state.spatialPickSources.set(source.sourceId, {
+            ...source,
+            modelMatrix: Cesium.Matrix4.fromArray(source.modelMatrix)
+          });
+        }
+        return index;
+      } catch (err) {
+        state.pickMode = "miss";
+        status("spatial_pick_index.json 載入失敗；Cesium pick 仍可使用。\n" + formatError(err));
+        return null;
+      }
     }
     function runtimeDebugText() {
       const sourceCount = state.runtimeManifest?.sources?.length || 0;
@@ -769,12 +798,19 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
         }
       }
     }
-    function showRuntimeFeatureDetail(feature) {
+    function pickSourceLabel(pickSource) {
+      if (pickSource === "cesium_pick") return "pickSource = cesium_pick";
+      if (pickSource === "spatial_pick_index") return "pickSource = spatial_pick_index";
+      return "pickSource = miss";
+    }
+    function showRuntimeFeatureDetail(feature, pickSource = "cesium_pick") {
       if (!feature) return;
+      state.pickMode = pickSource;
       window.currentRuntimeFeature = feature;
       highlightRuntimeGroup(feature.explode_group_key);
       document.getElementById("detailPanel").innerHTML = `
         <h2>Runtime Feature</h2>
+        <p><b>${escapeHtml(pickSourceLabel(pickSource))}</b></p>
         <p><b>source_id</b> <span class="mono">${escapeHtml(feature.source_id)}</span></p>
         <p><b>feature_id</b> <span class="mono">${escapeHtml(feature.feature_id)}</span></p>
         <p><b>explode_group_key</b> ${escapeHtml(feature.explode_group_key)}</p>
@@ -786,6 +822,7 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
         </div>
         <div id="runtimeDebug" class="mono muted">${escapeHtml(runtimeDebugText())}</div>
       `;
+      refresh(window.viewer);
     }
     function runtimeBoxEntity(feature) {
       if (!feature.center_wgs84 || !feature.dimensions) return null;
@@ -865,22 +902,142 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       handler.setInputAction((movement) => {
         const picked = viewer.scene.pick(movement.position);
         const entity = picked && picked.id;
-        if (!entity) return;
-        const kind = propValue(entity, "qa_kind");
-        if (kind === "source" || kind === "duplicate") {
-          showSourceDetail(propValue(entity, "source_id"), propValue(entity, "bbox_kind"));
-        } else if (kind === "outlier") {
-          const index = Number(propValue(entity, "outlier_index"));
-          const outlier = state.spatialQa?.outliers?.[index];
-          if (outlier) showOutlierDetail(outlier);
-        } else if (kind === "aoi") {
-          showAoiDetail();
-        } else if (kind === "runtime_feature") {
-          const key = String(propValue(entity, "runtime_feature_key"));
-          showRuntimeFeatureDetail(state.runtimeFeatureDetails.get(key));
+        if (entity) {
+          const kind = propValue(entity, "qa_kind");
+          if (kind === "source" || kind === "duplicate") {
+            state.pickMode = "cesium_pick";
+            clearSpatialPickHighlight(viewer);
+            showSourceDetail(propValue(entity, "source_id"), propValue(entity, "bbox_kind"));
+            refresh(viewer);
+            return;
+          } else if (kind === "outlier") {
+            state.pickMode = "cesium_pick";
+            clearSpatialPickHighlight(viewer);
+            const index = Number(propValue(entity, "outlier_index"));
+            const outlier = state.spatialQa?.outliers?.[index];
+            if (outlier) showOutlierDetail(outlier);
+            refresh(viewer);
+            return;
+          } else if (kind === "aoi") {
+            state.pickMode = "cesium_pick";
+            clearSpatialPickHighlight(viewer);
+            showAoiDetail();
+            refresh(viewer);
+            return;
+          } else if (kind === "runtime_feature") {
+            clearSpatialPickHighlight(viewer);
+            const key = String(propValue(entity, "runtime_feature_key"));
+            showRuntimeFeatureDetail(state.runtimeFeatureDetails.get(key), "cesium_pick");
+            return;
+          }
         }
+        const fallback = nearestSpatialPickFeature(viewer, movement.position, 36);
+        if (fallback) {
+          showSpatialPickFeatureDetail(fallback, "spatial_pick_index");
+          drawSpatialPickBbox(viewer, fallback);
+          return;
+        }
+        showPickMiss();
       }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
       return handler;
+    }
+    function nearestSpatialPickFeature(viewer, clickPosition, thresholdPx) {
+      const features = state.spatialPickIndex?.features || [];
+      let best = null;
+      let bestDistance = Number.POSITIVE_INFINITY;
+      for (const feature of features) {
+        const world = spatialPickFeatureWorldCenter(feature);
+        if (!world) continue;
+        const screen = Cesium.SceneTransforms.worldToWindowCoordinates
+          ? Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene, world)
+          : Cesium.SceneTransforms.wgs84ToWindowCoordinates(viewer.scene, world);
+        if (!screen || !Number.isFinite(screen.x) || !Number.isFinite(screen.y)) continue;
+        const dx = screen.x - clickPosition.x;
+        const dy = screen.y - clickPosition.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        if (distance < bestDistance) {
+          best = { ...feature, screenDistancePx: distance };
+          bestDistance = distance;
+        }
+      }
+      return best && bestDistance <= thresholdPx ? best : null;
+    }
+    function spatialPickFeatureWorldCenter(feature) {
+      const source = state.spatialPickSources.get(feature.sourceId);
+      if (!source || !feature.center) return null;
+      return Cesium.Matrix4.multiplyByPoint(
+        source.modelMatrix,
+        new Cesium.Cartesian3(feature.center[0], feature.center[1], feature.center[2]),
+        new Cesium.Cartesian3()
+      );
+    }
+    function spatialPickBboxWorldCorners(feature) {
+      const source = state.spatialPickSources.get(feature.sourceId);
+      if (!source || !feature.bbox) return [];
+      const b = feature.bbox;
+      return [
+        [b[0], b[1], b[2]], [b[3], b[1], b[2]], [b[3], b[4], b[2]], [b[0], b[4], b[2]],
+        [b[0], b[1], b[5]], [b[3], b[1], b[5]], [b[3], b[4], b[5]], [b[0], b[4], b[5]]
+      ].map(point => Cesium.Matrix4.multiplyByPoint(
+        source.modelMatrix,
+        new Cesium.Cartesian3(point[0], point[1], point[2]),
+        new Cesium.Cartesian3()
+      ));
+    }
+    function clearSpatialPickHighlight(viewer) {
+      if (state.spatialPickHighlightEntity && viewer) {
+        viewer.entities.remove(state.spatialPickHighlightEntity);
+        state.spatialPickHighlightEntity = null;
+      }
+    }
+    function drawSpatialPickBbox(viewer, feature) {
+      clearSpatialPickHighlight(viewer);
+      const corners = spatialPickBboxWorldCorners(feature);
+      if (corners.length !== 8) return null;
+      const edgeIndices = [0,1, 1,2, 2,3, 3,0, 4,5, 5,6, 6,7, 7,4, 0,4, 1,5, 2,6, 3,7];
+      const positions = edgeIndices.map(index => corners[index]);
+      state.spatialPickHighlightEntity = viewer.entities.add({
+        name: `spatial pick bbox ${feature.sourceId} FID ${feature.featureId}`,
+        polyline: {
+          positions,
+          width: 3,
+          material: Cesium.Color.YELLOW
+        },
+        properties: {
+          qa_kind: "spatial_pick_bbox",
+          source_id: feature.sourceId,
+          feature_id: feature.featureId
+        }
+      });
+      viewer.flyTo(state.spatialPickHighlightEntity, { duration: 0.35 });
+      return state.spatialPickHighlightEntity;
+    }
+    function showSpatialPickFeatureDetail(feature, pickSource) {
+      state.pickMode = pickSource;
+      document.getElementById("detailPanel").innerHTML = `
+        <h2>Spatial Pick Feature</h2>
+        <p><b>${escapeHtml(pickSourceLabel(pickSource))}</b></p>
+        <p><b>featureId</b> <span class="mono">${escapeHtml(feature.featureId)}</span></p>
+        <p><b>source</b> <span class="mono">${escapeHtml(feature.sourceId)}</span></p>
+        <p><b>layer</b> ${escapeHtml(feature.layer)}</p>
+        <p><b>category</b> ${escapeHtml(feature.category)}</p>
+        <p><b>name</b> ${escapeHtml(feature.name || "-")}</p>
+        <p><b>radius</b> ${formatNumber(feature.radius)} m</p>
+        <p><b>screen distance</b> ${formatNumber(feature.screenDistancePx)} px</p>
+        <p class="mono">bbox: ${escapeHtml(JSON.stringify(feature.bbox || null))}</p>
+        <p class="mono">center: ${escapeHtml(JSON.stringify(feature.center || null))}</p>
+      `;
+      refresh(window.viewer);
+    }
+    function showPickMiss() {
+      state.pickMode = "miss";
+      clearSpatialPickHighlight(window.viewer);
+      document.getElementById("detailPanel").innerHTML = `
+        <h2>Pick Miss</h2>
+        <p><b>${escapeHtml(pickSourceLabel("miss"))}</b></p>
+        <p class="muted">Cesium scene.pick 與 spatial_pick_index fallback 都沒有命中。</p>
+      `;
+      refresh(window.viewer);
     }
     function wireReviewNavigation(viewer) {
       document.getElementById("qaSearch").addEventListener("input", renderSourceList);
@@ -924,6 +1081,7 @@ pub fn render_publish_viewer_html_with_data_and_spatial(
       const approved = await loadJson(DATA_FILES.approved, "embeddedSourcesManifest");
       const overlays = await loadJson(DATA_FILES.overlays, "embeddedDebugOverlays");
       state.spatialQa = await loadJson(DATA_FILES.spatialQa, "embeddedSpatialQaManifest");
+      await loadSpatialPickIndex();
       for (const source of (state.spatialQa?.sources || [])) {
         state.sourceDetails.set(source.source_id, source);
       }

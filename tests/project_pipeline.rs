@@ -1760,6 +1760,34 @@ fn phase1h_publish_viewer_has_runtime_geometry_toggle_and_pick_handlers() {
 }
 
 #[test]
+fn phase1gd_publish_viewer_loads_spatial_pick_index_and_has_hybrid_pick_hooks() {
+    let html = render_publish_viewer_html();
+
+    assert!(html.contains("spatial_pick_index.json"));
+    assert!(html.contains("loadSpatialPickIndex"));
+    assert!(html.contains("nearestSpatialPickFeature"));
+    assert!(html.contains("showSpatialPickFeatureDetail"));
+    assert!(html.contains("drawSpatialPickBbox"));
+    assert!(html.contains("pickSource = spatial_pick_index"));
+    assert!(html.contains("pickSource = miss"));
+    assert!(html.contains("SceneTransforms"));
+}
+
+#[test]
+fn phase1gd_publish_viewer_keeps_cesium_pick_first_priority() {
+    let html = render_publish_viewer_html();
+    let cesium_pick_index = html
+        .find("viewer.scene.pick(movement.position)")
+        .expect("cesium pick");
+    let fallback_index = html
+        .find("nearestSpatialPickFeature")
+        .expect("fallback pick");
+
+    assert!(cesium_pick_index < fallback_index);
+    assert!(html.contains("pickSource = cesium_pick"));
+}
+
+#[test]
 fn phase1gc_spatial_pick_index_serializes_runtime_only_schema_with_local_bbox() {
     let index = build_spatial_pick_index(
         "local",
