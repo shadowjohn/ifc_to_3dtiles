@@ -27,6 +27,9 @@ use ifc_to_3dtiles::{
 };
 use rusqlite::params;
 
+const DEFAULT_TILE_MAX_FEATURES: usize = 50;
+const DEFAULT_TILE_MAX_TRIANGLES: usize = 20_000;
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum CliNormalMode {
     Flat,
@@ -82,10 +85,10 @@ struct Cli {
     #[arg(long, default_value_t = 3826)]
     source_epsg: u32,
 
-    #[arg(long, default_value_t = 500)]
+    #[arg(long, default_value_t = DEFAULT_TILE_MAX_FEATURES)]
     tile_max_features: usize,
 
-    #[arg(long, default_value_t = 200000)]
+    #[arg(long, default_value_t = DEFAULT_TILE_MAX_TRIANGLES)]
     tile_max_triangles: usize,
 
     #[arg(
@@ -711,4 +714,15 @@ fn safe_stem(path: &Path) -> String {
             _ => ch,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DEFAULT_TILE_MAX_FEATURES, DEFAULT_TILE_MAX_TRIANGLES};
+
+    #[test]
+    fn default_tile_budget_targets_small_b3dm_files() {
+        assert_eq!(DEFAULT_TILE_MAX_FEATURES, 50);
+        assert_eq!(DEFAULT_TILE_MAX_TRIANGLES, 20_000);
+    }
 }

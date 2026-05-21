@@ -4,6 +4,8 @@ use anyhow::{Result, anyhow, bail};
 
 use crate::step::{StepIndex, extract_first_ref, extract_refs, numbers_in, split_arguments};
 
+const CIRCLE_EXTRUSION_SEGMENTS: usize = 24;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Vec3 {
     pub x: f64,
@@ -347,6 +349,36 @@ pub fn axis2_placement_3d(index: &StepIndex, id: u32) -> Result<Mat4> {
     Ok(Mat4::from_basis(origin, x, y, z.normalized()))
 }
 
+fn axis2_placement_2d(index: &StepIndex, id: u32) -> Result<Mat4> {
+    let entity = index
+        .entity(id)
+        .ok_or_else(|| anyhow!("missing 2d axis placement #{id}"))?;
+    let args = split_arguments(index.body(entity));
+    let origin = args
+        .first()
+        .and_then(|arg| extract_first_ref(arg))
+        .map(|ref_id| parse_cartesian_point(index, ref_id))
+        .transpose()?
+        .unwrap_or_default();
+    let mut x = args
+        .get(1)
+        .and_then(|arg| extract_first_ref(arg))
+        .map(|ref_id| parse_direction(index, ref_id))
+        .transpose()?
+        .unwrap_or_else(|| Vec3::new(1.0, 0.0, 0.0));
+    x = Vec3::new(x.x, x.y, 0.0).normalized();
+    if x.length() <= f64::EPSILON {
+        x = Vec3::new(1.0, 0.0, 0.0);
+    }
+    let y = Vec3::new(-x.y, x.x, 0.0).normalized();
+    Ok(Mat4::from_basis(
+        Vec3::new(origin.x, origin.y, 0.0),
+        x,
+        y,
+        Vec3::new(0.0, 0.0, 1.0),
+    ))
+}
+
 pub fn local_placement_matrix(index: &StepIndex, id: u32) -> Result<Mat4> {
     fn inner(
         index: &StepIndex,
@@ -507,6 +539,56 @@ pub fn mesh_face_based_surface_model(
     Ok(mesh)
 }
 
+pub fn mesh_extruded_area_solid(
+    index: &StepIndex,
+    solid_id: u32,
+    transform: &Mat4,
+    options: MeshBuildOptions,
+) -> Result<Mesh> {
+    let solid = index
+        .entity(solid_id)
+        .ok_or_else(|| anyhow!("missing extruded area solid #{solid_id}"))?;
+    let args = split_arguments(index.body(solid));
+    let profile_id = args
+        .first()
+        .and_then(|arg| extract_first_ref(arg))
+        .ok_or_else(|| anyhow!("extruded area solid #{solid_id} has no swept area"))?;
+    let position = args
+        .get(1)
+        .and_then(|arg| extract_first_ref(arg))
+        .map(|id| axis2_placement_3d(index, id))
+        .transpose()?
+        .unwrap_or_else(Mat4::identity);
+    let direction = args
+        .get(2)
+        .and_then(|arg| extract_first_ref(arg))
+        .map(|id| parse_direction(index, id))
+        .transpose()?
+        .unwrap_or_else(|| Vec3::new(0.0, 0.0, 1.0));
+    let depth = args
+        .get(3)
+        .and_then(|arg| numbers_in(arg).first().copied())
+        .unwrap_or(0.0);
+    if depth <= f64::EPSILON {
+        return Ok(Mesh::new());
+    }
+
+    let profile = index
+        .entity(profile_id)
+        .ok_or_else(|| anyhow!("missing swept area profile #{profile_id}"))?;
+    if profile.type_name != "IFCCIRCLEPROFILEDEF" {
+        return Ok(Mesh::new());
+    }
+
+    mesh_circle_extrusion(
+        index,
+        profile_id,
+        &(*transform * position),
+        direction.normalized() * depth,
+        options,
+    )
+}
+
 pub fn mesh_shell(
     index: &StepIndex,
     shell_id: u32,
@@ -560,19 +642,105 @@ pub fn mesh_shell(
 fn append_fan(mesh: &mut Mesh, points: &[Vec3], batch_id: u16, color: [f32; 4]) {
     let first = points[0];
     for i in 1..points.len() - 1 {
-        let a = first;
-        let b = points[i];
-        let c = points[i + 1];
-        let normal = (b - a).cross(c - a).normalized();
-        if normal.length() <= f64::EPSILON {
-            continue;
-        }
-        for p in [a, b, c] {
-            mesh.positions.push(p.to_array());
-            mesh.normals.push(normal.to_array());
-            mesh.colors.push(color);
-            mesh.batch_ids.push(batch_id);
-            mesh.bounds.include(p);
-        }
+        append_triangle(mesh, first, points[i], points[i + 1], batch_id, color);
+    }
+}
+
+fn mesh_circle_extrusion(
+    index: &StepIndex,
+    profile_id: u32,
+    transform: &Mat4,
+    extrusion: Vec3,
+    options: MeshBuildOptions,
+) -> Result<Mesh> {
+    let profile = index
+        .entity(profile_id)
+        .ok_or_else(|| anyhow!("missing circle profile #{profile_id}"))?;
+    let args = split_arguments(index.body(profile));
+    let radius = args
+        .get(3)
+        .and_then(|arg| numbers_in(arg).first().copied())
+        .unwrap_or(0.0);
+    if radius <= f64::EPSILON {
+        return Ok(Mesh::new());
+    }
+    let profile_position = args
+        .get(2)
+        .and_then(|arg| extract_first_ref(arg))
+        .map(|id| axis2_placement_2d(index, id))
+        .transpose()?
+        .unwrap_or_else(Mat4::identity);
+
+    let mut local_points = Vec::with_capacity(CIRCLE_EXTRUSION_SEGMENTS);
+    for index in 0..CIRCLE_EXTRUSION_SEGMENTS {
+        let angle = std::f64::consts::TAU * index as f64 / CIRCLE_EXTRUSION_SEGMENTS as f64;
+        local_points.push(profile_position.transform_point(Vec3::new(
+            radius * angle.cos(),
+            radius * angle.sin(),
+            0.0,
+        )));
+    }
+    let local_center = profile_position.transform_point(Vec3::new(0.0, 0.0, 0.0));
+    let base_center = transform.transform_point(local_center);
+    let top_center = transform.transform_point(local_center + extrusion);
+    let base: Vec<Vec3> = local_points
+        .iter()
+        .map(|point| transform.transform_point(*point))
+        .collect();
+    let top: Vec<Vec3> = local_points
+        .iter()
+        .map(|point| transform.transform_point(*point + extrusion))
+        .collect();
+
+    let mut mesh = Mesh::new();
+    for i in 0..CIRCLE_EXTRUSION_SEGMENTS {
+        let j = (i + 1) % CIRCLE_EXTRUSION_SEGMENTS;
+        append_triangle(
+            &mut mesh,
+            base[i],
+            base[j],
+            top[j],
+            options.batch_id,
+            options.color,
+        );
+        append_triangle(
+            &mut mesh,
+            base[i],
+            top[j],
+            top[i],
+            options.batch_id,
+            options.color,
+        );
+        append_triangle(
+            &mut mesh,
+            base_center,
+            base[j],
+            base[i],
+            options.batch_id,
+            options.color,
+        );
+        append_triangle(
+            &mut mesh,
+            top_center,
+            top[i],
+            top[j],
+            options.batch_id,
+            options.color,
+        );
+    }
+    Ok(mesh)
+}
+
+fn append_triangle(mesh: &mut Mesh, a: Vec3, b: Vec3, c: Vec3, batch_id: u16, color: [f32; 4]) {
+    let normal = (b - a).cross(c - a).normalized();
+    if normal.length() <= f64::EPSILON {
+        return;
+    }
+    for p in [a, b, c] {
+        mesh.positions.push(p.to_array());
+        mesh.normals.push(normal.to_array());
+        mesh.colors.push(color);
+        mesh.batch_ids.push(batch_id);
+        mesh.bounds.include(p);
     }
 }

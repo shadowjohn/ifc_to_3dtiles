@@ -1,0 +1,10 @@
+{
+  "three": "0.183.0",
+  "three_files": [
+    "three.module.js",
+    "examples/jsm"
+  ],
+  "3d-tiles-renderer": "0.4.21",
+  "maplibre-gl": "5.24.0",
+  "prepared_at": "2026-05-19T02:23:49"
+}

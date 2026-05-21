@@ -6,7 +6,7 @@ Rust CLI for converting IFC2X3 models into standalone GLB plus Cesium 3D Tiles 1
 
 ## Features
 
-- STEP/IFC2X3 indexing parser, focused on AECOsim `FacetedBrep` / `MappedRepresentation`.
+- STEP/IFC2X3 indexing parser, focused on AECOsim/Revit `FacetedBrep` / `MappedRepresentation` / circle-profile `SweptSolid`.
 - RVT -> IFC -> GLB orchestration for local Revit 2025 / 2026 / 2027.
 - Product metadata to Batch Table: IFC id、GlobalId、類型、名稱、樓層、群組、style、顏色、Pset JSON。
 - IFC style color extraction with fallback report.
@@ -63,14 +63,16 @@ cargo build --release
   --input .\DJB-M-SU-_.ifc `
   --output .\out `
   --source-epsg 3826 `
-  --tile-max-features 125 `
-  --tile-max-triangles 40000 `
+  --tile-max-features 50 `
+  --tile-max-triangles 20000 `
   --normal-mode both `
   --smooth-angle-deg 90 `
   --overwrite
 ```
 
 注意：`--output` 請填 parent folder，例如 `.\out`。程式會自動建立 `out\<ifc-name>\`。如果填 `out\DJB-M-SU-_`，會變成 `out\DJB-M-SU-_\DJB-M-SU-_`。
+
+預設 tiling 目標偏向互動載入：`--tile-max-triangles 20000` 約落在 2-3MB 級距。若單一 IFC product 本身超過 triangle budget，converter 會再按 triangle chunk 拆成多個 b3dm；這只是分包，不會減面或降低畫質。
 
 ## RVT Input
 
@@ -99,7 +101,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\build_revit_bridge.ps1 -Ve
 - Autodesk Account: <https://manage.autodesk.com/products>
 - Revit Free Trial: <https://www.autodesk.com/products/revit/free-trial>
 
-非預設安裝路徑可用 `--revit-exe "D:\...\Revit.exe" --revit-version 2026` 指定。
+非預設安裝路徑可用 `--revit-exe "D:\...\Revit.exe" --revit-version 2026` 指定。若誤把 `C:\Program Files\Autodesk\Revit 2025` / `2026` / `2027` 這類安裝資料夾傳給 `--bridge-assembly`，工具也會自動把它當作 Revit 安裝提示使用；真正的 bridge DLL 仍會從 `target\revit_bridge\<version>\RvtToGlb.RevitIfcExporter.dll` 讀取。
 
 ## Demo Viewer
 
@@ -333,7 +335,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\verify_index_page.ps1
 ## Current Limits
 
 - 主要支援 IFC2X3 product geometry；RVT 需先經 Revit IFC exporter。
-- 幾何以 `FacetedBrep` / `ShellBasedSurfaceModel` / `MappedRepresentation` 為主。
+- 幾何以 `FacetedBrep` / `ShellBasedSurfaceModel` / `MappedRepresentation` 為主，並支援 Revit 常見的 `IFCEXTRUDEDAREASOLID + IFCCIRCLEPROFILEDEF` 圓形鋼索/管狀構件。
 - 顏色支援 IFC surface style，沒有 PBR material / texture。
 - 不做 Draco / meshopt 壓縮。
 - Viewer 目前預期輸出可包含：

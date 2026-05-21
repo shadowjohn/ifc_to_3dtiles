@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>DJB-M-SU-_ MapLibre + Three 3D Tiles Viewer</title>
+  <link rel="stylesheet" href="../vendor/maplibre/maplibre-gl.css">
+  <style>
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      font-family: "Microsoft JhengHei", "Segoe UI", sans-serif;
+      background: #0c1418;
+      color: #eaf4f7;
+    }
+
+    #viewerRoot, #map {
+      position: fixed;
+      inset: 0;
+    }
+
+    .toolbar {
+      position: absolute;
+      left: 12px;
+      top: 12px;
+      z-index: 5;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      max-width: calc(100vw - 340px);
+      padding: 8px;
+      border: 1px solid rgba(214, 235, 241, 0.24);
+      border-radius: 8px;
+      background: rgba(8, 18, 23, 0.86);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+      backdrop-filter: blur(10px);
+    }
+
+    .tool-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 6px;
+      border-right: 1px solid rgba(214, 235, 241, 0.16);
+    }
+
+    .tool-group:last-child {
+      border-right: 0;
+    }
+
+    button, select {
+      height: 30px;
+      border: 1px solid rgba(214, 235, 241, 0.28);
+      border-radius: 6px;
+      background: rgba(20, 36, 43, 0.96);
+      color: #f3fbfd;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    button {
+      padding: 0 10px;
+    }
+
+    button[aria-pressed="true"], button.is-active {
+      border-color: #ffd21a;
+      color: #1b1600;
+      background: #ffd21a;
+    }
+
+    select {
+      padding: 0 8px;
+    }
+
+    input[type="range"] {
+      width: 86px;
+      accent-color: #ffd21a;
+    }
+
+    label, .value {
+      font-size: 12px;
+      color: #cfe3e8;
+      white-space: nowrap;
+    }
+
+    .move-pad {
+      display: grid;
+      grid-template-columns: repeat(3, 26px);
+      grid-template-rows: repeat(3, 24px);
+      gap: 3px;
+      align-items: center;
+      justify-items: center;
+    }
+
+    .move-pad button {
+      width: 26px;
+      height: 24px;
+      padding: 0;
+      font-size: 11px;
+    }
+
+    .measure-result {
+      position: absolute;
+      left: 12px;
+      bottom: 12px;
+      z-index: 5;
+      min-width: 260px;
+      max-width: 560px;
+      padding: 8px 10px;
+      border: 1px solid rgba(214, 235, 241, 0.22);
+      border-radius: 8px;
+      background: rgba(8, 18, 23, 0.86);
+      color: #f3fbfd;
+      font-size: 13px;
+      backdrop-filter: blur(10px);
+    }
+
+    .side-panel {
+      position: absolute;
+      right: 12px;
+      top: 12px;
+      z-index: 5;
+      width: 300px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .panel {
+      border: 1px solid rgba(214, 235, 241, 0.22);
+      border-radius: 8px;
+      background: rgba(8, 18, 23, 0.86);
+      backdrop-filter: blur(10px);
+      overflow: hidden;
+    }
+
+    .panel h2 {
+      margin: 0;
+      padding: 8px 10px;
+      font-size: 13px;
+      font-weight: 600;
+      border-bottom: 1px solid rgba(214, 235, 241, 0.14);
+    }
+
+    .panel-body {
+      max-height: 34vh;
+      overflow: auto;
+      padding: 8px 10px;
+    }
+
+    .meta-row, .perf-row {
+      display: grid;
+      grid-template-columns: 96px 1fr;
+      gap: 8px;
+      align-items: start;
+      padding: 3px 0;
+      font-size: 12px;
+      border-bottom: 1px solid rgba(214, 235, 241, 0.08);
+    }
+
+    .meta-row span, .perf-row span {
+      color: #9fb7bd;
+    }
+
+    .meta-row strong, .perf-row strong {
+      min-width: 0;
+      color: #f8fcfd;
+      font-weight: 500;
+      word-break: break-all;
+    }
+
+    .empty {
+      color: #9fb7bd;
+      font-size: 12px;
+    }
+
+    @media (max-width: 980px) {
+      .toolbar {
+        right: 12px;
+        max-width: none;
+      }
+      .side-panel {
+        top: auto;
+        left: 12px;
+        right: 12px;
+        bottom: 48px;
+        width: auto;
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="viewerRoot" data-viewer-mode="maplibre">
+    <div id="map"></div>
+    <div class="toolbar" id="toolPanel">
+      <div class="tool-group">
+        <button type="button" id="focusToggle" aria-pressed="false">焦點 OFF</button>
+        <button type="button" id="clearSelectionButton">取消</button>
+      </div>
+      <div class="tool-group">
+        <button type="button" data-measure-mode="distance">量距</button>
+        <button type="button" data-measure-mode="area">量面</button>
+        <button type="button" id="clearMeasureButton">清除</button>
+      </div>
+      <div class="tool-group">
+        <label for="basemapSelect">底圖</label>
+        <select id="basemapSelect" aria-label="底圖選擇">
+          <option value="emap5" selected>EMAP5</option>
+          <option value="googleRoadmap">Google 街景圖</option>
+          <option value="googleSatellite">Google 航照圖</option>
+          <option value="osm">OSM</option>
+        </select>
+      </div>
+      <div class="tool-group">
+        <label for="normalModeSlider">法線</label>
+        <input id="normalModeSlider" type="range" min="0" max="2" value="0" step="1">
+        <span class="value" id="normalModeValue">平面</span>
+      </div>
+      <div class="tool-group">
+        <label for="renderScaleSlider">畫質</label>
+        <input id="renderScaleSlider" type="range" min="0.5" max="1" value="1" step="0.05">
+        <span class="value" id="renderScaleValue">100%</span>
+        <label><input id="autoRenderScaleToggle" type="checkbox" checked> 自動</label>
+      </div>
+      <div class="tool-group">
+        <label for="explodeSlider">爆炸</label>
+        <input id="explodeSlider" type="range" min="0" max="160" value="0" step="1">
+        <span class="value" id="explodeValue">0 m</span>
+        <button type="button" id="resetExplodeButton">還原</button>
+      </div>
+      <div class="tool-group">
+        <label for="moveOutSlider">移出</label>
+        <input id="moveOutSlider" type="range" min="0" max="180" value="0" step="1">
+        <span class="value" id="moveOutValue">0 m</span>
+        <button type="button" id="resetMoveOutButton">還原</button>
+        <div class="move-pad" id="movePad" aria-label="移出方向">
+          <button type="button" data-move-direction="nw">↖</button>
+          <button type="button" data-move-direction="n">↑</button>
+          <button type="button" data-move-direction="ne">↗</button>
+          <button type="button" data-move-direction="w">←</button>
+          <button type="button" data-move-direction="center">●</button>
+          <button type="button" data-move-direction="e">→</button>
+          <button type="button" data-move-direction="sw">↙</button>
+          <button type="button" data-move-direction="s">↓</button>
+          <button type="button" data-move-direction="se">↘</button>
+        </div>
+      </div>
+      <div class="tool-group">
+        <label><input id="groundToggle" type="checkbox" checked disabled> 地面</label>
+      </div>
+    </div>
+    <div class="side-panel">
+      <section class="panel">
+        <h2>效能</h2>
+        <div class="panel-body" id="performancePanel"></div>
+      </section>
+      <section class="panel">
+        <h2>屬性</h2>
+        <div class="panel-body" id="metadataPanel"><div class="empty">未選取物件</div></div>
+      </section>
+    </div>
+    <div id="measureResult" class="measure-result">MapLibre + Three 3D Tiles 比較頁載入中</div>
+  </div>
+  <script>
+    window.addEventListener("error", function (event) {
+      const status = document.getElementById("measureResult");
+      if (status) status.textContent = "MapLibre Three viewer error: " + (event.message || "unknown");
+    });
+    window.addEventListener("unhandledrejection", function (event) {
+      const status = document.getElementById("measureResult");
+      const reason = event.reason && (event.reason.message || String(event.reason));
+      if (status) status.textContent = "MapLibre Three viewer error: " + (reason || "promise rejected");
+    });
+  </script>
+  <script src="../vendor/maplibre/maplibre-gl.js"></script>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "../vendor/three/three.module.js",
+        "three/addons/": "../vendor/three/examples/jsm/",
+        "three/examples/jsm/": "../vendor/three/examples/jsm/",
+        "3d-tiles-renderer": "../vendor/3d-tiles-renderer/build/index.three.js"
+      }
+    }
+  </script>
+  <script type="module">
+    import { bootIfcThreeViewer } from "../three_viewer_common.js";
+    bootIfcThreeViewer({ mode: "maplibre" });
+  </script>
+</body>
+</html>

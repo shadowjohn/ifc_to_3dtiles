@@ -388,6 +388,13 @@ fn revit_like_ifc_wall_converts_to_flat_and_smooth_glb_with_metadata() {
     assert!(out_dir.join("revit_wall_smooth.glb").is_file());
     assert!(out_dir.join("metadata.json").is_file());
     assert!(out_dir.join("unsupported_geometry_report.json").is_file());
+    assert!(out_dir.join("tileset_smooth_90.json").is_file());
+    assert!(
+        out_dir
+            .join("tiles_smooth_90")
+            .join("tile_0000.b3dm")
+            .is_file()
+    );
 
     let flat_glb_json = read_glb_json(out_dir.join("revit_wall_flat.glb"));
     assert_eq!(
@@ -402,6 +409,119 @@ fn revit_like_ifc_wall_converts_to_flat_and_smooth_glb_with_metadata() {
     assert_eq!(metadata[0]["ifc_type"], "IFCWALL");
     assert_eq!(metadata[0]["name"], "Basic Wall");
     assert_eq!(metadata[0]["psets"]["Pset_WallCommon"]["Reference"], "W1");
+
+    let smooth_90_tileset: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(out_dir.join("tileset_smooth_90.json")).expect("smooth 90 tileset"),
+    )
+    .expect("smooth 90 tileset json");
+    assert_eq!(
+        smooth_90_tileset["root"]["children"][0]["content"]["uri"],
+        "tiles_smooth_90/tile_0000.b3dm"
+    );
+}
+
+#[test]
+fn swept_solid_circle_proxy_converts_to_glb_with_metadata() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let input = temp.path().join("revit_cable.ifc");
+    std::fs::write(&input, revit_like_ifc_cable_swept_solid()).expect("write ifc fixture");
+    let output = temp.path().join("out");
+
+    let outputs = ifc_to_3dtiles::convert_path(&ConvertOptions {
+        input,
+        output: output.clone(),
+        source_epsg: 3826,
+        tile_max_features: 100,
+        tile_max_triangles: 1000,
+        normal_mode: NormalMode::Both,
+        smooth_angle_deg: 90.0,
+        overwrite: true,
+    })
+    .expect("convert swept solid cable");
+
+    let out_dir = outputs.first().expect("output dir");
+    let flat_glb_json = read_glb_json(out_dir.join("revit_cable_flat.glb"));
+    assert_eq!(flat_glb_json["accessors"][0]["count"], 288);
+    assert_eq!(
+        flat_glb_json["nodes"][0]["extras"]["features"][0]["ifc_type"],
+        "IFCBUILDINGELEMENTPROXY"
+    );
+
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(out_dir.join("metadata.json")).expect("metadata"))
+            .expect("metadata json");
+    assert_eq!(metadata[0]["name"], "P44橋柱預力鋼纜");
+}
+
+#[test]
+fn unsupported_report_includes_skipped_empty_products() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let input = temp.path().join("unsupported_swept.ifc");
+    std::fs::write(&input, revit_like_ifc_wall_with_unsupported_swept_solid())
+        .expect("write ifc fixture");
+    let output = temp.path().join("out");
+
+    let outputs = ifc_to_3dtiles::convert_path(&ConvertOptions {
+        input,
+        output: output.clone(),
+        source_epsg: 3826,
+        tile_max_features: 100,
+        tile_max_triangles: 1000,
+        normal_mode: NormalMode::Both,
+        smooth_angle_deg: 90.0,
+        overwrite: true,
+    })
+    .expect("convert fixture with unsupported swept solid");
+
+    let out_dir = outputs.first().expect("output dir");
+    let report: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(out_dir.join("unsupported_geometry_report.json"))
+            .expect("unsupported report"),
+    )
+    .expect("unsupported report json");
+    assert_eq!(report["unsupported_items"]["IFCEXTRUDEDAREASOLID"], 1);
+}
+
+#[test]
+fn single_large_feature_is_split_across_multiple_b3dm_tiles() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let input = temp.path().join("revit_wall.ifc");
+    std::fs::write(&input, revit_like_ifc_wall()).expect("write ifc fixture");
+    let output = temp.path().join("out");
+
+    let outputs = ifc_to_3dtiles::convert_path(&ConvertOptions {
+        input,
+        output: output.clone(),
+        source_epsg: 3826,
+        tile_max_features: 100,
+        tile_max_triangles: 4,
+        normal_mode: NormalMode::Both,
+        smooth_angle_deg: 90.0,
+        overwrite: true,
+    })
+    .expect("convert split fixture");
+
+    let out_dir = outputs.first().expect("output dir");
+    let tile_count = std::fs::read_dir(out_dir.join("tiles"))
+        .expect("tiles dir")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "b3dm"))
+        .count();
+    let smooth_tile_count = std::fs::read_dir(out_dir.join("tiles_smooth"))
+        .expect("smooth tiles dir")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "b3dm"))
+        .count();
+
+    assert_eq!(tile_count, 3);
+    assert_eq!(smooth_tile_count, 3);
+    assert!(out_dir.join("tiles").join("tile_0002.b3dm").is_file());
+    assert!(
+        out_dir
+            .join("tiles_smooth")
+            .join("tile_0002.b3dm")
+            .is_file()
+    );
 }
 
 fn read_glb_json(path: impl AsRef<Path>) -> serde_json::Value {
@@ -475,4 +595,49 @@ DATA;
 ENDSEC;
 END-ISO-10303-21;
 "
+}
+
+fn revit_like_ifc_cable_swept_solid() -> &'static str {
+    "\
+ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION(('ViewDefinition [CoordinationView_V2.0]'),'2;1');
+FILE_SCHEMA(('IFC2X3'));
+ENDSEC;
+DATA;
+#1=IFCPROJECT('P1',$,'Project',$,$,$,$,$);
+#10=IFCCARTESIANPOINT((0.,0.,0.));
+#11=IFCDIRECTION((0.,0.,1.));
+#12=IFCDIRECTION((1.,0.,0.));
+#13=IFCAXIS2PLACEMENT3D(#10,#11,#12);
+#14=IFCLOCALPLACEMENT($,#13);
+#20=IFCCARTESIANPOINT((0.,0.));
+#21=IFCDIRECTION((1.,0.));
+#22=IFCAXIS2PLACEMENT2D(#20,#21);
+#23=IFCCIRCLEPROFILEDEF(.AREA.,'Cable',#22,0.5);
+#24=IFCEXTRUDEDAREASOLID(#23,#13,#11,10.);
+#25=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#24));
+#26=IFCPRODUCTDEFINITIONSHAPE($,$,(#25));
+#27=IFCBUILDINGELEMENTPROXY('CABLEGUID',$,'P44\\X2\\6A4B67F19810529B92FC7E9C\\X0\\',$,$,#14,#26,'C1',$);
+ENDSEC;
+END-ISO-10303-21;
+"
+}
+
+fn revit_like_ifc_wall_with_unsupported_swept_solid() -> String {
+    revit_like_ifc_wall().replace(
+        "ENDSEC;\nEND-ISO-10303-21;",
+        "\
+#200=IFCCARTESIANPOINT((0.,0.));
+#201=IFCCARTESIANPOINT((1.,0.));
+#202=IFCCARTESIANPOINT((0.,1.));
+#203=IFCPOLYLINE((#200,#201,#202,#200));
+#204=IFCARBITRARYCLOSEDPROFILEDEF(.AREA.,'Triangle',#203);
+#205=IFCEXTRUDEDAREASOLID(#204,#13,#11,1.);
+#206=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#205));
+#207=IFCPRODUCTDEFINITIONSHAPE($,$,(#206));
+#208=IFCBUILDINGELEMENTPROXY('UNSUPPORTEDGUID',$,'Unsupported swept',$,$,#14,#207,'U1',$);
+ENDSEC;
+END-ISO-10303-21;",
+    )
 }

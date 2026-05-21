@@ -13,7 +13,7 @@ use crate::{
     b3dm, crs,
     geometry::{
         Bounds, Mat4, Mesh, MeshBuildOptions, Vec3, axis2_placement_3d, cartesian_operator_3d,
-        local_placement_matrix, mesh_faceted_brep,
+        local_placement_matrix, mesh_extruded_area_solid, mesh_faceted_brep,
     },
     glb,
     model::StyleTable,
@@ -98,6 +98,12 @@ struct Feature {
     unsupported_items: BTreeMap<String, usize>,
 }
 
+#[derive(Debug)]
+enum FeatureBuildResult {
+    Converted(Feature),
+    Empty(ResolveStats),
+}
+
 #[derive(Debug, Default)]
 struct TileWriteResult {
     flat_children: Vec<TileJson>,
@@ -173,6 +179,7 @@ fn convert_file(input: &Path, options: &ConvertOptions) -> Result<PathBuf> {
     let mut warnings = Vec::new();
     let mut features = Vec::new();
     let mut skipped = 0usize;
+    let mut skipped_unsupported_items = BTreeMap::<String, usize>::new();
 
     let product_entities: Vec<&EntityRecord> = index
         .entities()
@@ -181,8 +188,11 @@ fn convert_file(input: &Path, options: &ConvertOptions) -> Result<PathBuf> {
 
     for (ordinal, entity) in product_entities.iter().enumerate() {
         match build_feature(&index, &ctx, &styles, entity, ordinal as u32) {
-            Ok(Some(feature)) => features.push(feature),
-            Ok(None) => skipped += 1,
+            Ok(FeatureBuildResult::Converted(feature)) => features.push(feature),
+            Ok(FeatureBuildResult::Empty(stats)) => {
+                skipped += 1;
+                merge_unsupported_items(&mut skipped_unsupported_items, stats.unsupported_items);
+            }
             Err(err) => {
                 skipped += 1;
                 if warnings.len() < 200 {
@@ -260,7 +270,10 @@ fn convert_file(input: &Path, options: &ConvertOptions) -> Result<PathBuf> {
     )?;
     fs::write(
         output_dir.join("unsupported_geometry_report.json"),
-        serde_json::to_vec_pretty(&build_unsupported_geometry_report(&features))?,
+        serde_json::to_vec_pretty(&build_unsupported_geometry_report(
+            &features,
+            &skipped_unsupported_items,
+        ))?,
     )?;
 
     let tile_result = write_tiles(
@@ -282,6 +295,14 @@ fn convert_file(input: &Path, options: &ConvertOptions) -> Result<PathBuf> {
             output_dir.join("tileset_smooth.json"),
             serde_json::to_vec_pretty(&smooth_tileset)?,
         )?;
+        if is_default_smooth_90(options.smooth_angle_deg) {
+            write_smooth_90_alias(
+                &output_dir,
+                root_transform,
+                &root_bounds,
+                &tile_result.smooth_children,
+            )?;
+        }
     }
 
     let missing_color_total: usize = features
@@ -340,6 +361,31 @@ fn write_tiles(
     let mut tile_index = 0usize;
 
     while start < features.len() {
+        let first_triangles = features[start].mesh.triangle_count();
+        if first_triangles > max_triangles {
+            let feature = &features[start];
+            let mut triangle_start = 0usize;
+            while triangle_start < first_triangles {
+                let triangle_end = (triangle_start + max_triangles).min(first_triangles);
+                let tile_mesh = mesh_triangle_range(&feature.mesh, triangle_start, triangle_end, 0);
+                let mut meta = feature.metadata.clone();
+                meta.batch_id = 0;
+                write_tile_outputs(
+                    tiles_dir,
+                    smooth_tiles_dir,
+                    &mut result,
+                    tile_index,
+                    &tile_mesh,
+                    &[meta],
+                    options,
+                )?;
+                tile_index += 1;
+                triangle_start = triangle_end;
+            }
+            start += 1;
+            continue;
+        }
+
         let mut end = start;
         let mut tri_count = 0usize;
         while end < features.len() && end - start < max_features {
@@ -364,55 +410,160 @@ fn write_tiles(
             metadata.push(meta);
         }
 
-        let batch_table = build_batch_table(&metadata);
-        let filename = format!("tile_{tile_index:04}.b3dm");
-        if options.normal_mode == NormalMode::Smooth {
-            let smooth_mesh =
-                tile_mesh.with_smoothed_normals_by_position_angle(1e-6, options.smooth_angle_deg);
-            write_b3dm(
-                tiles_dir,
-                &filename,
-                &smooth_mesh,
-                metadata.len(),
-                &batch_table,
-            )?;
-        } else {
-            write_b3dm(
-                tiles_dir,
-                &filename,
-                &tile_mesh,
-                metadata.len(),
-                &batch_table,
-            )?;
-        }
-        result.flat_children.push(TileJson {
-            uri: format!("tiles/{filename}"),
-            bounds: tile_mesh.bounds,
-            geometric_error: 0.0,
-        });
-
-        if let Some(smooth_tiles_dir) = smooth_tiles_dir {
-            let smooth_mesh =
-                tile_mesh.with_smoothed_normals_by_position_angle(1e-6, options.smooth_angle_deg);
-            write_b3dm(
-                smooth_tiles_dir,
-                &filename,
-                &smooth_mesh,
-                metadata.len(),
-                &batch_table,
-            )?;
-            result.smooth_children.push(TileJson {
-                uri: format!("tiles_smooth/{filename}"),
-                bounds: smooth_mesh.bounds,
-                geometric_error: 0.0,
-            });
-        }
+        write_tile_outputs(
+            tiles_dir,
+            smooth_tiles_dir,
+            &mut result,
+            tile_index,
+            &tile_mesh,
+            &metadata,
+            options,
+        )?;
 
         tile_index += 1;
         start = end;
     }
 
     Ok(result)
+}
+
+fn write_tile_outputs(
+    tiles_dir: &Path,
+    smooth_tiles_dir: Option<&Path>,
+    result: &mut TileWriteResult,
+    tile_index: usize,
+    tile_mesh: &Mesh,
+    metadata: &[FeatureMetadata],
+    options: &ConvertOptions,
+) -> Result<()> {
+    let batch_table = build_batch_table(metadata);
+    let filename = format!("tile_{tile_index:04}.b3dm");
+    if options.normal_mode == NormalMode::Smooth {
+        let smooth_mesh =
+            tile_mesh.with_smoothed_normals_by_position_angle(1e-6, options.smooth_angle_deg);
+        write_b3dm(
+            tiles_dir,
+            &filename,
+            &smooth_mesh,
+            metadata.len(),
+            &batch_table,
+        )?;
+    } else {
+        write_b3dm(
+            tiles_dir,
+            &filename,
+            tile_mesh,
+            metadata.len(),
+            &batch_table,
+        )?;
+    }
+    result.flat_children.push(TileJson {
+        uri: format!("tiles/{filename}"),
+        bounds: tile_mesh.bounds,
+        geometric_error: 0.0,
+    });
+
+    if let Some(smooth_tiles_dir) = smooth_tiles_dir {
+        let smooth_mesh =
+            tile_mesh.with_smoothed_normals_by_position_angle(1e-6, options.smooth_angle_deg);
+        write_b3dm(
+            smooth_tiles_dir,
+            &filename,
+            &smooth_mesh,
+            metadata.len(),
+            &batch_table,
+        )?;
+        result.smooth_children.push(TileJson {
+            uri: format!("tiles_smooth/{filename}"),
+            bounds: smooth_mesh.bounds,
+            geometric_error: 0.0,
+        });
+    }
+
+    Ok(())
+}
+
+fn mesh_triangle_range(
+    source: &Mesh,
+    triangle_start: usize,
+    triangle_end: usize,
+    batch_id: u16,
+) -> Mesh {
+    let mut mesh = Mesh::new();
+    let vertex_start = triangle_start * 3;
+    let vertex_end = triangle_end * 3;
+    for index in vertex_start..vertex_end {
+        if let Some(position) = source.positions.get(index) {
+            mesh.positions.push(*position);
+            mesh.bounds
+                .include(Vec3::new(position[0], position[1], position[2]));
+        }
+        if let Some(normal) = source.normals.get(index) {
+            mesh.normals.push(*normal);
+        }
+        if let Some(color) = source.colors.get(index) {
+            mesh.colors.push(*color);
+        }
+        mesh.batch_ids.push(batch_id);
+    }
+    mesh
+}
+
+fn write_smooth_90_alias(
+    output_dir: &Path,
+    root_transform: [f64; 16],
+    root_bounds: &Bounds,
+    smooth_children: &[TileJson],
+) -> Result<()> {
+    let smooth_dir = output_dir.join("tiles_smooth");
+    let smooth_90_dir = output_dir.join("tiles_smooth_90");
+    copy_dir_contents(&smooth_dir, &smooth_90_dir)?;
+
+    let smooth_90_children =
+        retarget_tile_uris(smooth_children, "tiles_smooth/", "tiles_smooth_90/");
+    let smooth_90_tileset =
+        tiles::build_tileset_json(root_transform, root_bounds, &smooth_90_children);
+    fs::write(
+        output_dir.join("tileset_smooth_90.json"),
+        serde_json::to_vec_pretty(&smooth_90_tileset)?,
+    )?;
+    Ok(())
+}
+
+fn is_default_smooth_90(angle: f64) -> bool {
+    (angle - 90.0).abs() < 1e-9
+}
+
+fn retarget_tile_uris(children: &[TileJson], from: &str, to: &str) -> Vec<TileJson> {
+    children
+        .iter()
+        .map(|child| {
+            let mut retargeted = child.clone();
+            if let Some(rest) = retargeted.uri.strip_prefix(from) {
+                retargeted.uri = format!("{to}{rest}");
+            }
+            retargeted
+        })
+        .collect()
+}
+
+fn copy_dir_contents(source: &Path, destination: &Path) -> Result<()> {
+    fs::create_dir_all(destination)
+        .with_context(|| format!("建立目錄失敗：{}", destination.display()))?;
+    for entry in
+        fs::read_dir(source).with_context(|| format!("讀取目錄失敗：{}", source.display()))?
+    {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let target = destination.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_contents(&entry.path(), &target)?;
+        } else if file_type.is_file() {
+            fs::copy(entry.path(), &target)
+                .with_context(|| format!("複製檔案失敗：{}", target.display()))?;
+        }
+    }
+    Ok(())
 }
 
 fn write_standalone_glbs(
@@ -552,8 +703,12 @@ fn build_metadata_report(features: &[Feature]) -> Value {
     )
 }
 
-fn build_unsupported_geometry_report(features: &[Feature]) -> Value {
+fn build_unsupported_geometry_report(
+    features: &[Feature],
+    skipped_unsupported_items: &BTreeMap<String, usize>,
+) -> Value {
     let mut unsupported = BTreeMap::<String, usize>::new();
+    merge_unsupported_items(&mut unsupported, skipped_unsupported_items.clone());
     for feature in features {
         for (key, value) in &feature.unsupported_items {
             *unsupported.entry(key.clone()).or_insert(0) += value;
@@ -563,6 +718,12 @@ fn build_unsupported_geometry_report(features: &[Feature]) -> Value {
         "feature_count": features.len(),
         "unsupported_items": unsupported,
     })
+}
+
+fn merge_unsupported_items(target: &mut BTreeMap<String, usize>, source: BTreeMap<String, usize>) {
+    for (key, value) in source {
+        *target.entry(key).or_insert(0) += value;
+    }
 }
 
 pub fn median_origin(points: &[[f64; 3]]) -> Vec3 {
@@ -606,7 +767,7 @@ fn build_feature(
     styles: &StyleTable,
     entity: &EntityRecord,
     ordinal: u32,
-) -> Result<Option<Feature>> {
+) -> Result<FeatureBuildResult> {
     let args = split_arguments(index.body(entity));
     let global_id = args
         .first()
@@ -634,7 +795,7 @@ fn build_feature(
     let transform = local_placement_matrix(index, placement_id)?;
     let resolved = mesh_product_definition(index, representation_id, transform, styles)?;
     if resolved.mesh.is_empty() {
-        return Ok(None);
+        return Ok(FeatureBuildResult::Empty(resolved.stats));
     }
 
     let storey_id = ctx.contained_in.get(&entity.id).copied();
@@ -673,7 +834,7 @@ fn build_feature(
         psets_json: psets,
     };
 
-    Ok(Some(Feature {
+    Ok(FeatureBuildResult::Converted(Feature {
         metadata,
         mesh: resolved.mesh,
         unsupported_items: resolved.stats.unsupported_items,
@@ -833,6 +994,39 @@ fn mesh_shape_representation(
                         resolved.stats.missing_color_faces += mesh.triangle_count();
                     }
                     resolved.mesh.append_with_batch(&mesh, 0);
+                }
+            }
+            "IFCEXTRUDEDAREASOLID" => {
+                let color = styles
+                    .color_for_item(item_id)
+                    .unwrap_or([0.65, 0.65, 0.65, 1.0]);
+                let item_transform =
+                    if crate::geometry::item_uses_projected_coordinates(index, item_id) {
+                        Mat4::identity()
+                    } else {
+                        transform
+                    };
+                let mesh = mesh_extruded_area_solid(
+                    index,
+                    item_id,
+                    &item_transform,
+                    MeshBuildOptions { batch_id: 0, color },
+                )?;
+                if !mesh.is_empty() {
+                    if styles.color_for_item(item_id).is_some() && resolved.first_style_id.is_none()
+                    {
+                        resolved.first_style_id = Some(item_id);
+                        resolved.first_color = Some(color);
+                    } else if styles.color_for_item(item_id).is_none() {
+                        resolved.stats.missing_color_faces += mesh.triangle_count();
+                    }
+                    resolved.mesh.append_with_batch(&mesh, 0);
+                } else {
+                    *resolved
+                        .stats
+                        .unsupported_items
+                        .entry("IFCEXTRUDEDAREASOLID".to_string())
+                        .or_insert(0) += 1;
                 }
             }
             "IFCMAPPEDITEM" => {

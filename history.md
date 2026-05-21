@@ -106,7 +106,7 @@
   - flat
   - smooth 90°
   - smooth 180° / 全平滑
-- 實測較合適的切 tile 目標約為單檔 5MB；目前因單一大型 feature 不拆分，仍可能有少數 tile 超過 5MB。
+- 舊版實測較合適的切 tile 目標約為單檔 5MB；後續金門大橋案例發現單一大型 feature 會形成 400MB b3dm，已改為更小預設與單一 feature triangle chunk 切分。
 
 ### Cesium Viewer
 
@@ -782,3 +782,40 @@
   - duplicate recommendation 改為 generic entity-count 策略。
   - QA outlier drilldown 改為挑選 raw bbox diagonal 最大的 source。
   - runtime group 顏色改成 hash-based，不看特定 layer 名稱。
+
+### RVT Bridge Install Dir Auto Hint
+
+- 使用者執行 `--bridge-assembly "C:\Program Files\Autodesk\Revit 2027"` 時，原本會被當成 bridge DLL 路徑而失敗。
+- `--bridge-assembly` 現在若收到含 `Revit.exe` 的 Revit 安裝資料夾，會自動把它當成 Revit install hint 使用，支援 2025 / 2026 / 2027。
+- bridge DLL 仍使用本工具預設位置 `target\revit_bridge\<version>\RvtToGlb.RevitIfcExporter.dll`，或可直接傳 DLL / 含 DLL 的資料夾。
+- 本機已用 Revit 2027 release bridge 實測 RVT -> IFC -> GLB 成功。
+- 目前 checkout 曾缺 `tileset_smooth_90.json` alias；已補回 converter 與 regression test。
+
+### B3DM Tile Size Control
+
+- 金門大橋輸出發現 `tile_0054.b3dm` 約 400MB；根因是 tiler 只在 feature 之間切，單一 IFC product 超過 triangle budget 時仍整包塞進一顆 b3dm。
+- 新增單一大 feature triangle chunk 切分：同一 feature 會保留原始 triangles，只分散到多顆 b3dm，不做 decimation、不降畫質。
+- 預設 tiling 從 `tile_max_features=500` / `tile_max_triangles=200000` 改為 `50` / `20000`，目標讓一般 b3dm 約落在 2-3MB 級距。
+- 新增 regression test：單一 12 triangle feature 在 `tile_max_triangles=4` 時會拆成 3 顆 b3dm，smooth tile 同步拆分。
+- 已用金門大橋 IFC 重轉驗證：`tiles` / `tiles_smooth` / `tiles_smooth_90` 各 435 顆 b3dm，最大單檔約 2.41MB、平均約 2.22MB。
+
+### IFC SweptSolid Cable Recovery
+
+- 使用者指出 `CJ02-金門大橋_F03_20260521.ifc` 轉出後鋼索不見。
+- 調查結果：鋼索存在於 IFC，product 為 `#6603771 IFCBUILDINGELEMENTPROXY`，名稱 `P44橋柱預力鋼纜:P44橋柱預力鋼纜:531572`。
+- 幾何路徑是 `MappedRepresentation -> SweptSolid -> IFCEXTRUDEDAREASOLID`，profile 為 `IFCCIRCLEPROFILEDEF`，不是 `IfcCableSegment` / `IfcTendon` / `IfcSweptDiskSolid`。
+- 根因：converter 原本只支援 Brep / FaceBasedSurfaceModel / ShellBasedSurfaceModel / MappedItem，沒有把 `IFCEXTRUDEDAREASOLID + IFCCIRCLEPROFILEDEF` 建成 mesh；空 mesh skipped product 又未被寫入 unsupported report。
+- 已新增圓形 profile extrusion meshing，預設用 24 segment 轉成封閉圓柱，不做減面。
+- 已補 regression tests：
+  - `swept_solid_circle_proxy_converts_to_glb_with_metadata`
+  - `unsupported_report_includes_skipped_empty_products`
+- 實測重轉 `CJ02-金門大橋_F03_20260521.ifc`：converted features 從 87 增為 88，metadata 已包含 `P44橋柱預力鋼纜`；tile 最大約 2.41MB。
+- 剩餘未支援項目目前會正確列在 `unsupported_geometry_report.json`：`IFCEXTRUDEDAREASOLID` 65 個多為 arbitrary profile with voids，`IFCGEOMETRICCURVESET` 2 個。
+
+### HTML Template Basemap Selector
+
+- 使用者要求 `out/html_template` 範本加入常用底圖選擇：EMAP5、Google 街景圖、Google 航照圖、OSM。
+- `index.html` Cesium 版已有底圖 selector 與 provider；本次統一顯示文字與排序。
+- `index_maplibre_three.html` / `index_three.html` 補可見「底圖」標籤，選項統一為 `EMAP5`、`Google 街景圖`、`Google 航照圖`、`OSM`。
+- `three_viewer_common.js` 的 MapLibre raster basemap label 同步改為 `Google 街景圖`；value 維持 `googleRoadmap` 以避免破壞既有狀態相容性。
+- 使用者已確認 template 內有出現底圖選擇器。

@@ -42,18 +42,16 @@ pub fn export_rvt_to_ifc(options: &RvtToIfcOptions) -> Result<PathBuf> {
     if !options.input_rvt.is_file() {
         bail!("找不到 RVT 檔案：{}", options.input_rvt.display());
     }
-    let install =
-        select_revit_installation(options.requested_version, options.revit_exe.as_deref())?;
-    let bridge_assembly = options
+    let bridge_revit_exe = options
         .bridge_assembly
-        .clone()
-        .unwrap_or_else(|| default_bridge_assembly(install.version));
-    if !bridge_assembly.is_file() {
-        bail!(
-            "找不到 Revit bridge DLL：{}。請先建置 revit_bridge，或用 --bridge-assembly 指定。",
-            bridge_assembly.display()
-        );
-    }
+        .as_deref()
+        .and_then(revit_exe_from_install_dir_argument);
+    let install = select_revit_installation(
+        options.requested_version,
+        options.revit_exe.as_deref().or(bridge_revit_exe.as_deref()),
+    )?;
+    let bridge_assembly =
+        resolve_bridge_assembly(options.bridge_assembly.as_deref(), install.version)?;
 
     if let Some(parent) = options.output_ifc.parent() {
         fs::create_dir_all(parent)
@@ -166,6 +164,69 @@ fn default_bridge_assembly(version: RevitVersion) -> PathBuf {
         .join("RvtToGlb.RevitIfcExporter.dll")
 }
 
+fn resolve_bridge_assembly(requested: Option<&Path>, version: RevitVersion) -> Result<PathBuf> {
+    let default = default_bridge_assembly(version);
+    let Some(requested) = requested else {
+        if default.is_file() {
+            return Ok(default);
+        }
+        bail!("{}", bridge_assembly_not_found_message(&default, &default));
+    };
+
+    if requested.is_file() {
+        return Ok(requested.to_path_buf());
+    }
+
+    let requested_dll = requested.join("RvtToGlb.RevitIfcExporter.dll");
+    if requested_dll.is_file() {
+        return Ok(requested_dll);
+    }
+
+    if revit_exe_from_install_dir_argument(requested).is_some() {
+        if default.is_file() {
+            return Ok(default);
+        }
+        bail!(
+            "{}",
+            revit_install_dir_bridge_missing_message(requested, &default)
+        );
+    }
+
+    bail!("{}", bridge_assembly_not_found_message(requested, &default));
+}
+
+fn revit_exe_from_install_dir_argument(path: &Path) -> Option<PathBuf> {
+    if !path.is_dir() {
+        return None;
+    }
+    let revit_exe = path.join("Revit.exe");
+    if revit_exe.is_file() {
+        Some(revit_exe)
+    } else {
+        None
+    }
+}
+
+fn bridge_assembly_not_found_message(requested: &Path, default: &Path) -> String {
+    format!(
+        "找不到 Revit bridge DLL：{}。--bridge-assembly 需要指向 RvtToGlb.RevitIfcExporter.dll，或指向含有該 DLL 的資料夾。\n\
+若你要指定 Revit 安裝位置，請使用 --revit-exe \"...\\Revit.exe\"；若傳入的是 Revit 安裝資料夾，工具也會嘗試自動使用該資料夾內的 Revit.exe。\n\
+請先建置 bridge：pwsh -NoProfile -ExecutionPolicy Bypass -File .\\tools\\build_revit_bridge.ps1 -Version 2027 -Configuration Release\n\
+預設 bridge 位置：{}",
+        requested.display(),
+        default.display()
+    )
+}
+
+fn revit_install_dir_bridge_missing_message(revit_install_dir: &Path, default: &Path) -> String {
+    format!(
+        "已偵測到 Revit 安裝資料夾：{}，會自動使用其 Revit.exe；但找不到本工具的 Revit bridge DLL：{}。\n\
+請先建置 bridge：pwsh -NoProfile -ExecutionPolicy Bypass -File .\\tools\\build_revit_bridge.ps1 -Version 2027 -Configuration Release",
+        revit_install_dir.display(),
+        default.display()
+    )
+}
+
 fn prepare_sidecars_for_new_export(output_ifc: &Path) -> Result<(PathBuf, PathBuf)> {
     let result_json = output_ifc.with_extension("rvt-export-result.json");
     if result_json.exists() {
@@ -216,7 +277,11 @@ fn install_revit_addin_manifest(
 
 #[cfg(test)]
 mod tests {
-    use super::prepare_sidecars_for_new_export;
+    use super::{
+        bridge_assembly_not_found_message, prepare_sidecars_for_new_export,
+        resolve_bridge_assembly, revit_exe_from_install_dir_argument,
+    };
+    use crate::revit::RevitVersion;
 
     #[test]
     fn prepare_sidecars_removes_stale_result_before_launching_revit() {
@@ -230,5 +295,49 @@ mod tests {
 
         assert_eq!(result_json, stale_result);
         assert!(!result_json.exists());
+    }
+
+    #[test]
+    fn bridge_assembly_error_explains_revit_install_dir_mixup() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let revit_install_dir = temp.path().join("Revit 2027");
+        std::fs::create_dir_all(&revit_install_dir).expect("create fake revit dir");
+        std::fs::write(revit_install_dir.join("Revit.exe"), b"").expect("fake Revit.exe");
+
+        let default_bridge = temp.path().join("target").join("revit_bridge").join("2027");
+        let message = bridge_assembly_not_found_message(&revit_install_dir, &default_bridge);
+
+        assert!(message.contains("--bridge-assembly 需要指向"));
+        assert!(message.contains("RvtToGlb.RevitIfcExporter.dll"));
+        assert!(message.contains("--revit-exe"));
+        assert!(message.contains("Revit.exe"));
+    }
+
+    #[test]
+    fn revit_install_dir_argument_provides_revit_exe_hint() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let revit_install_dir = temp.path().join("Autodesk").join("Revit 2026");
+        std::fs::create_dir_all(&revit_install_dir).expect("create fake revit dir");
+        let revit_exe = revit_install_dir.join("Revit.exe");
+        std::fs::write(&revit_exe, b"").expect("fake Revit.exe");
+
+        assert_eq!(
+            revit_exe_from_install_dir_argument(&revit_install_dir),
+            Some(revit_exe)
+        );
+    }
+
+    #[test]
+    fn bridge_assembly_can_be_directory_containing_bridge_dll() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bridge_dir = temp.path().join("bridge");
+        std::fs::create_dir_all(&bridge_dir).expect("create bridge dir");
+        let bridge_dll = bridge_dir.join("RvtToGlb.RevitIfcExporter.dll");
+        std::fs::write(&bridge_dll, b"bridge").expect("fake bridge dll");
+
+        let resolved =
+            resolve_bridge_assembly(Some(&bridge_dir), RevitVersion::V2027).expect("bridge dir");
+
+        assert_eq!(resolved, bridge_dll);
     }
 }

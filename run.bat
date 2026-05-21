@@ -1,0 +1,1 @@
+.\target\release\ifc_to_3dtiles.exe --input ".\out\CJ02-金門大橋_F03_20230201_97-119_3D_-2.25deg.ifc" --output .\out --normal-mode both --tile-max-triangles 25000 --tile-max-features 50 --overwrite
