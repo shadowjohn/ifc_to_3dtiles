@@ -13,25 +13,9 @@ use crate::step::{StepIndex, decode_ifc_string, extract_first_ref, extract_refs,
 pub struct ConvertedProductInfo {
     pub ifc_step_id: u32,
     pub triangle_count: usize,
-    pub epsg3826_bounds_min: Option<Epsg3826Coordinate>,
-    pub epsg3826_bounds_max: Option<Epsg3826Coordinate>,
-    pub epsg3826_center: Option<Epsg3826Coordinate>,
     pub wgs84_bounds_min: Option<Wgs84Coordinate>,
     pub wgs84_bounds_max: Option<Wgs84Coordinate>,
     pub wgs84_center: Option<Wgs84Coordinate>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize)]
-pub struct Epsg3826Coordinate {
-    pub x: f64,
-    pub y: f64,
-    pub z: f64,
-}
-
-impl Epsg3826Coordinate {
-    pub fn new(x: f64, y: f64, z: f64) -> Self {
-        Self { x, y, z }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -50,10 +34,6 @@ impl Wgs84Coordinate {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct IfcCoordinateInfo {
     pub source_epsg: Option<u32>,
-    pub epsg3826_bounds_min: Option<Epsg3826Coordinate>,
-    pub epsg3826_bounds_max: Option<Epsg3826Coordinate>,
-    pub epsg3826_center: Option<Epsg3826Coordinate>,
-    pub epsg3826_origin: Option<Epsg3826Coordinate>,
     pub wgs84_bounds_min: Option<Wgs84Coordinate>,
     pub wgs84_bounds_max: Option<Wgs84Coordinate>,
     pub wgs84_center: Option<Wgs84Coordinate>,
@@ -88,9 +68,6 @@ pub struct IfcProductInfo {
     pub representation_step_id: u32,
     pub converted: bool,
     pub triangle_count: usize,
-    pub epsg3826_bounds_min: Option<Epsg3826Coordinate>,
-    pub epsg3826_bounds_max: Option<Epsg3826Coordinate>,
-    pub epsg3826_center: Option<Epsg3826Coordinate>,
     pub wgs84_bounds_min: Option<Wgs84Coordinate>,
     pub wgs84_bounds_max: Option<Wgs84Coordinate>,
     pub wgs84_center: Option<Wgs84Coordinate>,
@@ -295,9 +272,6 @@ pub fn build_ifc_info_report(
             representation_step_id: core.representation_step_id,
             converted: triangle_count > 0,
             triangle_count,
-            epsg3826_bounds_min: converted_product.and_then(|product| product.epsg3826_bounds_min),
-            epsg3826_bounds_max: converted_product.and_then(|product| product.epsg3826_bounds_max),
-            epsg3826_center: converted_product.and_then(|product| product.epsg3826_center),
             wgs84_bounds_min: converted_product.and_then(|product| product.wgs84_bounds_min),
             wgs84_bounds_max: converted_product.and_then(|product| product.wgs84_bounds_max),
             wgs84_center: converted_product.and_then(|product| product.wgs84_center),
@@ -574,7 +548,7 @@ fn property_value_text(input: &str) -> String {
 
 fn render_products_csv(products: &[IfcProductInfo]) -> String {
     let mut out = String::from(
-        "ifc_step_id,global_id,ifc_type,name,description,object_type,tag,representation_step_id,converted,triangle_count,property_count,geometry_item_count,epsg3826_min_x,epsg3826_min_y,epsg3826_min_z,epsg3826_max_x,epsg3826_max_y,epsg3826_max_z,epsg3826_center_x,epsg3826_center_y,epsg3826_center_z,wgs84_min_lon,wgs84_min_lat,wgs84_min_height,wgs84_max_lon,wgs84_max_lat,wgs84_max_height,wgs84_center_lon,wgs84_center_lat,wgs84_center_height\n",
+        "ifc_step_id,global_id,ifc_type,name,description,object_type,tag,representation_step_id,converted,triangle_count,property_count,geometry_item_count,wgs84_min_lon,wgs84_min_lat,wgs84_min_height,wgs84_max_lon,wgs84_max_lat,wgs84_max_height,wgs84_center_lon,wgs84_center_lat,wgs84_center_height\n",
     );
     for product in products {
         let mut values = vec![
@@ -591,25 +565,12 @@ fn render_products_csv(products: &[IfcProductInfo]) -> String {
             product.property_count.to_string(),
             product.geometry_item_count.to_string(),
         ];
-        push_epsg3826_csv_values(&mut values, product.epsg3826_bounds_min);
-        push_epsg3826_csv_values(&mut values, product.epsg3826_bounds_max);
-        push_epsg3826_csv_values(&mut values, product.epsg3826_center);
         push_wgs84_csv_values(&mut values, product.wgs84_bounds_min);
         push_wgs84_csv_values(&mut values, product.wgs84_bounds_max);
         push_wgs84_csv_values(&mut values, product.wgs84_center);
         write_csv_row(&mut out, &values);
     }
     out
-}
-
-fn push_epsg3826_csv_values(values: &mut Vec<String>, coord: Option<Epsg3826Coordinate>) {
-    if let Some(coord) = coord {
-        values.push(coord.x.to_string());
-        values.push(coord.y.to_string());
-        values.push(coord.z.to_string());
-    } else {
-        values.extend(["".to_string(), "".to_string(), "".to_string()]);
-    }
 }
 
 fn push_wgs84_csv_values(values: &mut Vec<String>, coord: Option<Wgs84Coordinate>) {
@@ -704,15 +665,14 @@ fn render_info_html(report: &IfcInfoReport) -> String {
         .iter()
         .map(|product| {
             format!(
-                "<tr><td>#{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                "<tr><td>#{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
                 product.ifc_step_id,
                 escape_html(&product.ifc_type),
                 escape_html(&product.name),
                 product.converted,
                 product.triangle_count,
                 product.property_count,
-                escape_html(&format_epsg3826(product.epsg3826_center)),
-                escape_html(&format_wgs84(product.wgs84_center))
+                format_wgs84_html(product.wgs84_center)
             )
         })
         .collect::<String>();
@@ -775,6 +735,8 @@ fn render_info_html(report: &IfcInfoReport) -> String {
     .coord-layout {{ display: grid; grid-template-columns: minmax(260px, 1fr) minmax(320px, 520px); gap: 12px; align-items: stretch; }}
     .mini-map {{ min-height: 280px; border: 1px solid #d7e1e7; background: #dfe8ec; position: relative; overflow: hidden; }}
     .mini-map-empty {{ padding: 16px; color: #60717c; }}
+    .coord-line {{ display: block; white-space: nowrap; }}
+    .coord-axis {{ display: inline-block; min-width: 28px; color: #60717c; }}
     table {{ width: 100%; border-collapse: collapse; margin: 8px 0 18px; background: white; }}
     th, td {{ padding: 7px 8px; border: 1px solid #d7e1e7; font-size: 12px; text-align: left; vertical-align: top; }}
     th {{ background: #eaf2f6; position: sticky; top: 0; }}
@@ -802,7 +764,7 @@ fn render_info_html(report: &IfcInfoReport) -> String {
   </div>
   <input id="searchInput" class="search" type="search" placeholder="搜尋 StepId、類型、名稱、Pset、geometry type">
   <h2>Products</h2>
-  <div class="table-wrap"><table data-filterable><thead><tr><th>Step</th><th>Type</th><th>Name</th><th>Converted</th><th>Triangles</th><th>Properties</th><th>EPSG:3826 Center</th><th>WGS84 Center</th></tr></thead><tbody>{}</tbody></table></div>
+  <div class="table-wrap"><table data-filterable><thead><tr><th>Step</th><th>Type</th><th>Name</th><th>Converted</th><th>Triangles</th><th>Properties</th><th>WGS84 Center</th></tr></thead><tbody>{}</tbody></table></div>
   <h2>Properties</h2>
   <div class="table-wrap"><table data-filterable><thead><tr><th>Step</th><th>Product</th><th>Pset</th><th>Property</th><th>Value</th></tr></thead><tbody>{}</tbody></table></div>
   <h2>Geometry Items</h2>
@@ -870,32 +832,28 @@ fn render_info_html(report: &IfcInfoReport) -> String {
 
 fn render_coordinate_rows(info: &IfcCoordinateInfo) -> String {
     format!(
-        "<tr><td>EPSG:{}</td><td>{}</td><td>{}</td><td>center {}<br>origin {}</td></tr>\
-         <tr><td>WGS84</td><td>{}</td><td>{}</td><td>center {}<br>origin {}</td></tr>",
-        info.source_epsg
-            .map(|epsg| epsg.to_string())
-            .unwrap_or_else(|| "3826".to_string()),
-        escape_html(&format_epsg3826(info.epsg3826_bounds_min)),
-        escape_html(&format_epsg3826(info.epsg3826_bounds_max)),
-        escape_html(&format_epsg3826(info.epsg3826_center)),
-        escape_html(&format_epsg3826(info.epsg3826_origin)),
-        escape_html(&format_wgs84(info.wgs84_bounds_min)),
-        escape_html(&format_wgs84(info.wgs84_bounds_max)),
-        escape_html(&format_wgs84(info.wgs84_center)),
-        escape_html(&format_wgs84(info.wgs84_origin))
+        "<tr><td>WGS84</td><td>{}</td><td>{}</td><td><strong>center</strong>{}<br><strong>origin</strong>{}</td></tr>",
+        format_wgs84_html(info.wgs84_bounds_min),
+        format_wgs84_html(info.wgs84_bounds_max),
+        format_wgs84_html(info.wgs84_center),
+        format_wgs84_html(info.wgs84_origin)
     )
 }
 
-fn format_epsg3826(coord: Option<Epsg3826Coordinate>) -> String {
-    coord
-        .map(|coord| format!("x {}, y {}, z {}", coord.x, coord.y, coord.z))
-        .unwrap_or_else(|| "-".to_string())
-}
-
-fn format_wgs84(coord: Option<Wgs84Coordinate>) -> String {
-    coord
-        .map(|coord| format!("lon {}, lat {}, h {}", coord.lon, coord.lat, coord.height))
-        .unwrap_or_else(|| "-".to_string())
+fn format_wgs84_html(coord: Option<Wgs84Coordinate>) -> String {
+    coord.map_or_else(
+        || "-".to_string(),
+        |coord| {
+            format!(
+                "<span class=\"coord-line\"><span class=\"coord-axis\">lon</span>{}</span>\
+                 <span class=\"coord-line\"><span class=\"coord-axis\">lat</span>{}</span>\
+                 <span class=\"coord-line\"><span class=\"coord-axis\">h</span>{}</span>",
+                escape_html(&coord.lon.to_string()),
+                escape_html(&coord.lat.to_string()),
+                escape_html(&coord.height.to_string())
+            )
+        },
+    )
 }
 
 fn escape_html(text: &str) -> String {

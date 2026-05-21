@@ -83,7 +83,11 @@ struct Cli {
     #[arg(long)]
     output: Option<PathBuf>,
 
-    #[arg(long, default_value_t = 3826)]
+    #[arg(
+        long,
+        default_value_t = 3826,
+        help = "Source CRS EPSG code: 3825, 3826, 3827, 3828, 4326, or 3857"
+    )]
     source_epsg: u32,
 
     #[arg(long, default_value_t = DEFAULT_TILE_MAX_FEATURES)]
@@ -146,7 +150,11 @@ enum Command {
         #[arg(long)]
         output: PathBuf,
 
-        #[arg(long, default_value_t = 3826)]
+        #[arg(
+            long,
+            default_value_t = 3826,
+            help = "Source CRS EPSG code: 3825, 3826, 3827, 3828, 4326, or 3857"
+        )]
         source_epsg: u32,
     },
     EntityInspectDxf {

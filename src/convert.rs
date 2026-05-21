@@ -17,7 +17,7 @@ use crate::{
     },
     glb,
     ifc_info::{
-        ConvertedProductInfo, Epsg3826Coordinate, IfcCoordinateInfo, Wgs84Coordinate,
+        ConvertedProductInfo, IfcCoordinateInfo, Wgs84Coordinate,
         write_ifc_info_outputs_with_coordinate_info,
     },
     model::StyleTable,
@@ -240,10 +240,6 @@ fn convert_file(input: &Path, options: &ConvertOptions) -> Result<PathBuf> {
     let converted_products = build_converted_product_info(&features, options.source_epsg)?;
     let coordinate_info = IfcCoordinateInfo {
         source_epsg: Some(options.source_epsg),
-        epsg3826_bounds_min: Some(epsg3826_coord(source_bounds.min)),
-        epsg3826_bounds_max: Some(epsg3826_coord(source_bounds.max)),
-        epsg3826_center: Some(epsg3826_coord(source_bounds.center())),
-        epsg3826_origin: Some(epsg3826_coord(source_origin)),
         wgs84_bounds_min: Some(wgs84_coord(options.source_epsg, source_bounds.min)?),
         wgs84_bounds_max: Some(wgs84_coord(options.source_epsg, source_bounds.max)?),
         wgs84_center: Some(wgs84_coord(options.source_epsg, source_bounds.center())?),
@@ -386,19 +382,12 @@ fn build_converted_product_info(
             Ok(ConvertedProductInfo {
                 ifc_step_id: feature.metadata.ifc_step_id,
                 triangle_count: feature.mesh.triangle_count(),
-                epsg3826_bounds_min: Some(epsg3826_coord(bounds.min)),
-                epsg3826_bounds_max: Some(epsg3826_coord(bounds.max)),
-                epsg3826_center: Some(epsg3826_coord(center)),
                 wgs84_bounds_min: Some(wgs84_coord(source_epsg, bounds.min)?),
                 wgs84_bounds_max: Some(wgs84_coord(source_epsg, bounds.max)?),
                 wgs84_center: Some(wgs84_coord(source_epsg, center)?),
             })
         })
         .collect()
-}
-
-fn epsg3826_coord(point: Vec3) -> Epsg3826Coordinate {
-    Epsg3826Coordinate::new(point.x, point.y, point.z)
 }
 
 fn wgs84_coord(source_epsg: u32, point: Vec3) -> Result<Wgs84Coordinate> {

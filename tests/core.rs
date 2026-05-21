@@ -75,6 +75,45 @@ fn epsg_3826_origin_converts_to_central_meridian() {
 }
 
 #[test]
+fn common_source_epsg_codes_project_to_wgs84() {
+    let cases = [
+        (3825, 250000.0, 0.0, 119.0, 0.0),
+        (3826, 250000.0, 0.0, 121.0, 0.0),
+        (3827, 250000.0, 0.0, 119.0, 0.0),
+        (3828, 250000.0, 0.0, 121.0, 0.0),
+        (4326, 121.5, 24.25, 121.5, 24.25),
+        (3857, 0.0, 0.0, 0.0, 0.0),
+    ];
+
+    for (epsg, x, y, expected_lon, expected_lat) in cases {
+        let lon_lat = crs::project_to_wgs84(epsg, x, y).expect("project");
+        assert!(
+            (lon_lat.lon_deg - expected_lon).abs() < 1e-8,
+            "EPSG:{epsg} lon {} != {expected_lon}",
+            lon_lat.lon_deg
+        );
+        assert!(
+            (lon_lat.lat_deg - expected_lat).abs() < 1e-8,
+            "EPSG:{epsg} lat {} != {expected_lat}",
+            lon_lat.lat_deg
+        );
+    }
+}
+
+#[test]
+fn unsupported_source_epsg_lists_common_choices() {
+    let error = crs::project_to_wgs84(9999, 0.0, 0.0).expect_err("unsupported epsg");
+    let message = error.to_string();
+
+    assert!(message.contains("EPSG:3825"));
+    assert!(message.contains("EPSG:3826"));
+    assert!(message.contains("EPSG:3827"));
+    assert!(message.contains("EPSG:3828"));
+    assert!(message.contains("EPSG:4326"));
+    assert!(message.contains("EPSG:3857"));
+}
+
+#[test]
 fn faceted_brep_cube_generates_twelve_triangles() {
     let ifc = "\
 #1=IFCCARTESIANPOINT((0.,0.,0.));
@@ -419,24 +458,14 @@ fn revit_like_ifc_wall_converts_to_flat_and_smooth_glb_with_metadata() {
         serde_json::from_slice(&std::fs::read(out_dir.join("ifc_info.json")).expect("info json"))
             .expect("info json parse");
     assert_eq!(info_json["coordinate_info"]["source_epsg"], 3826);
-    assert_eq!(
-        info_json["coordinate_info"]["epsg3826_bounds_min"],
-        serde_json::json!({"x": 0.0, "y": 0.0, "z": 0.0})
-    );
-    assert_eq!(
-        info_json["coordinate_info"]["epsg3826_bounds_max"],
-        serde_json::json!({"x": 1.0, "y": 1.0, "z": 1.0})
-    );
-    assert_eq!(
-        info_json["coordinate_info"]["epsg3826_origin"],
-        serde_json::json!({"x": 0.5, "y": 0.5, "z": 0.5})
+    assert!(
+        info_json["coordinate_info"]
+            .get("epsg3826_bounds_min")
+            .is_none()
     );
     assert!(info_json["coordinate_info"]["wgs84_origin"]["lon"].is_number());
     assert!(info_json["coordinate_info"]["wgs84_bounds_min"]["lat"].is_number());
-    assert_eq!(
-        info_json["products"][0]["epsg3826_center"],
-        serde_json::json!({"x": 0.5, "y": 0.5, "z": 0.5})
-    );
+    assert!(info_json["products"][0].get("epsg3826_center").is_none());
     assert!(info_json["products"][0]["wgs84_center"]["lon"].is_number());
 
     let info_html = std::fs::read_to_string(out_dir.join("ifc_info.html")).expect("info html");
@@ -444,8 +473,11 @@ fn revit_like_ifc_wall_converts_to_flat_and_smooth_glb_with_metadata() {
     assert!(info_html.contains("Pset_WallCommon"));
     assert!(info_html.contains("IFCFACETEDBREP"));
     assert!(info_html.contains("Coordinate Info"));
-    assert!(info_html.contains("EPSG:3826"));
     assert!(info_html.contains("WGS84"));
+    assert!(!info_html.contains("<td>EPSG:3826</td>"));
+    assert!(info_html.contains("class=\"coord-line\"><span class=\"coord-axis\">lon</span>"));
+    assert!(info_html.contains("class=\"coord-line\"><span class=\"coord-axis\">lat</span>"));
+    assert!(info_html.contains("class=\"coord-line\"><span class=\"coord-axis\">h</span>"));
     assert!(info_html.contains("id=\"miniMap\""));
     assert!(info_html.contains("https://www.focusit.com.tw/easymap/easymap/easymap.js"));
     assert!(info_html.contains("new Easymap(\"miniMap\")"));
@@ -454,11 +486,10 @@ fn revit_like_ifc_wall_converts_to_flat_and_smooth_glb_with_metadata() {
     let products_csv =
         std::fs::read_to_string(out_dir.join("ifc_products.csv")).expect("products csv");
     assert!(products_csv.contains("ifc_step_id,global_id,ifc_type"));
-    assert!(products_csv.contains("epsg3826_min_x,epsg3826_min_y,epsg3826_min_z"));
+    assert!(!products_csv.contains("epsg3826_min_x"));
     assert!(products_csv.contains("wgs84_center_lon,wgs84_center_lat,wgs84_center_height"));
     assert!(products_csv.contains("90,WALLGUID,IFCWALL"));
     assert!(products_csv.contains(",true,12"));
-    assert!(products_csv.contains(",0,0,0,1,1,1,0.5,0.5,0.5,"));
 
     let properties_csv =
         std::fs::read_to_string(out_dir.join("ifc_properties.csv")).expect("properties csv");
@@ -563,8 +594,10 @@ fn ifc_info_subcommand_core_exports_html_and_csv_without_converting_tiles() {
     let products_csv =
         std::fs::read_to_string(output.join("ifc_products.csv")).expect("products csv");
     assert!(products_csv.contains("90,WALLGUID,IFCWALL"));
+    assert!(products_csv.contains("wgs84_min_lon,wgs84_min_lat,wgs84_min_height"));
+    assert!(!products_csv.contains("epsg3826_min_x"));
     assert!(products_csv.contains(",false,0"));
-    assert!(products_csv.contains(",false,0,2,1,,,,,,,,,,,,,,,,,,"));
+    assert!(products_csv.contains(",false,0,2,1,,,,,,,,,"));
 }
 
 #[test]
