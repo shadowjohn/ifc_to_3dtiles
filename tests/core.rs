@@ -430,6 +430,7 @@ fn revit_like_ifc_wall_converts_to_flat_and_smooth_glb_with_metadata() {
         std::fs::read_to_string(out_dir.join("ifc_properties.csv")).expect("properties csv");
     assert!(properties_csv.contains("90,WALLGUID,IFCWALL"));
     assert!(properties_csv.contains("Pset_WallCommon,Reference,W1"));
+    assert!(properties_csv.contains("Pset_WallCommon,DangerousFormula,'=2+2"));
 
     let geometry_csv =
         std::fs::read_to_string(out_dir.join("ifc_geometry_items.csv")).expect("geometry csv");
@@ -639,7 +640,8 @@ DATA;
 #90=IFCWALL('WALLGUID',$,'Basic Wall','Wall from Revit',$,#14,#81,'W1');
 #91=IFCRELCONTAINEDINSPATIALSTRUCTURE('RC1',$,$,$,(#90),#4);
 #100=IFCPROPERTYSINGLEVALUE('Reference',$,IFCLABEL('W1'),$);
-#101=IFCPROPERTYSET('PS1',$,'Pset_WallCommon',$,(#100));
+#103=IFCPROPERTYSINGLEVALUE('DangerousFormula',$,IFCLABEL('=2+2'),$);
+#101=IFCPROPERTYSET('PS1',$,'Pset_WallCommon',$,(#100,#103));
 #102=IFCRELDEFINESBYPROPERTIES('RD1',$,$,$,(#90),#101);
 ENDSEC;
 END-ISO-10303-21;

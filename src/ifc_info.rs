@@ -579,8 +579,18 @@ fn write_csv_row(out: &mut String, values: &[String]) {
 }
 
 fn escape_csv(value: &str) -> String {
+    let value = neutralize_csv_formula(value);
     if value.contains(',') || value.contains('"') || value.contains('\n') || value.contains('\r') {
         format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value
+    }
+}
+
+fn neutralize_csv_formula(value: &str) -> String {
+    let trimmed = value.trim_start_matches([' ', '\t', '\r', '\n']);
+    if matches!(trimmed.chars().next(), Some('=' | '+' | '-' | '@')) {
+        format!("'{value}")
     } else {
         value.to_string()
     }

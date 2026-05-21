@@ -831,3 +831,4 @@
   - `ifc_geometry_items.csv`
 - 一般 IFC -> 3D Tiles 轉檔也會自動在 `out\<ifc-name>\` 產生同一組 IFC info，不需要額外再跑一次。
 - report 目前涵蓋 product 清單、property set / single value、shape representation item、resolved geometry type、supported flag、converted flag、triangle count，以及 top entity type 統計。
+- security scan 發現 CSV 匯出若直接給 Excel 開啟，來源 IFC 字串可形成 formula injection；CSV writer 已對 `=`、`+`、`-`、`@` 開頭的 cell 加前置 apostrophe 防護，HTML / JSON 維持原值。
