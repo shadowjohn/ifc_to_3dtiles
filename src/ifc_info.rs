@@ -665,12 +665,13 @@ fn render_info_html(report: &IfcInfoReport) -> String {
         .iter()
         .map(|product| {
             format!(
-                "<tr><td>#{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                "<tr><td>#{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td><button class=\"link-button\" type=\"button\" data-property-step=\"{}\">{}</button></td><td>{}</td></tr>",
                 product.ifc_step_id,
                 escape_html(&product.ifc_type),
                 escape_html(&product.name),
                 product.converted,
                 product.triangle_count,
+                product.ifc_step_id,
                 product.property_count,
                 format_wgs84_html(product.wgs84_center)
             )
@@ -737,6 +738,15 @@ fn render_info_html(report: &IfcInfoReport) -> String {
     .mini-map-empty {{ padding: 16px; color: #60717c; }}
     .coord-line {{ display: block; white-space: nowrap; }}
     .coord-axis {{ display: inline-block; min-width: 28px; color: #60717c; }}
+    .tabs {{ display: flex; flex-wrap: wrap; gap: 6px; margin: 18px 0 12px; border-bottom: 1px solid #d7e1e7; }}
+    .tab-button {{ appearance: none; border: 1px solid transparent; border-bottom: 0; background: transparent; padding: 9px 12px; font: inherit; cursor: pointer; color: #394b57; }}
+    .tab-button.active {{ background: white; border-color: #d7e1e7; color: #182026; font-weight: 600; }}
+    .tab-panel {{ display: none; }}
+    .tab-panel.active {{ display: block; }}
+    .toolbar {{ display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; margin: 12px 0 8px; }}
+    .column-controls {{ display: flex; flex-wrap: wrap; gap: 6px; max-width: 760px; }}
+    .column-toggle {{ display: inline-flex; gap: 5px; align-items: center; padding: 7px 9px; border: 1px solid #c8d6de; border-radius: 6px; background: white; font-size: 12px; }}
+    .link-button {{ border: 0; background: transparent; color: #0f6cbd; padding: 0; font: inherit; cursor: pointer; text-decoration: underline; }}
     table {{ width: 100%; border-collapse: collapse; margin: 8px 0 18px; background: white; }}
     th, td {{ padding: 7px 8px; border: 1px solid #d7e1e7; font-size: 12px; text-align: left; vertical-align: top; }}
     th {{ background: #eaf2f6; position: sticky; top: 0; }}
@@ -749,38 +759,147 @@ fn render_info_html(report: &IfcInfoReport) -> String {
 <body>
   <h1>IFC Info Report</h1>
   <div class="muted"><code>{}</code></div>
-  <section class="summary">
-    <div class="card">Entities<strong>{}</strong></div>
-    <div class="card">Products<strong>{}</strong></div>
-    <div class="card">Converted<strong>{}</strong></div>
-    <div class="card">Skipped<strong>{}</strong></div>
-    <div class="card">Properties<strong>{}</strong></div>
-    <div class="card">Geometry Items<strong>{}</strong></div>
-  </section>
-  <h2>Coordinate Info</h2>
-  <div class="coord-layout">
-    <div class="table-wrap"><table><thead><tr><th>Set</th><th>Min</th><th>Max</th><th>Center / Origin</th></tr></thead><tbody>{}</tbody></table></div>
-    <div id="miniMap" class="mini-map"><div class="mini-map-empty">沒有可定位的 WGS84 範圍；請先跑 IFC -> 3D Tiles 轉檔。</div></div>
+  <nav class="tabs" role="tablist">
+    <button class="tab-button active" type="button" role="tab" aria-selected="true" data-tab-target="overviewTab">Overview</button>
+    <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab-target="productsTab">Products</button>
+    <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab-target="propertiesTab">Properties</button>
+    <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab-target="geometryTab">Geometry</button>
+    <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab-target="entitiesTab">Entities</button>
+  </nav>
+  <div class="toolbar">
+    <input id="searchInput" class="search" type="search" placeholder="搜尋目前頁籤">
+    <div id="columnControls" class="column-controls" aria-label="欄位顯示"></div>
   </div>
-  <input id="searchInput" class="search" type="search" placeholder="搜尋 StepId、類型、名稱、Pset、geometry type">
-  <h2>Products</h2>
-  <div class="table-wrap"><table data-filterable><thead><tr><th>Step</th><th>Type</th><th>Name</th><th>Converted</th><th>Triangles</th><th>Properties</th><th>WGS84 Center</th></tr></thead><tbody>{}</tbody></table></div>
-  <h2>Properties</h2>
-  <div class="table-wrap"><table data-filterable><thead><tr><th>Step</th><th>Product</th><th>Pset</th><th>Property</th><th>Value</th></tr></thead><tbody>{}</tbody></table></div>
-  <h2>Geometry Items</h2>
-  <div class="table-wrap"><table data-filterable><thead><tr><th>Step</th><th>Product</th><th>Identifier</th><th>Representation</th><th>Item</th><th>Resolved Type</th><th>Supported</th></tr></thead><tbody>{}</tbody></table></div>
-  <h2>Top Entity Types</h2>
-  <div class="table-wrap"><table data-filterable><thead><tr><th>Entity Type</th><th>Count</th></tr></thead><tbody>{}</tbody></table></div>
+  <section id="overviewTab" class="tab-panel active" role="tabpanel">
+    <section class="summary">
+      <div class="card">Entities<strong>{}</strong></div>
+      <div class="card">Products<strong>{}</strong></div>
+      <div class="card">Converted<strong>{}</strong></div>
+      <div class="card">Skipped<strong>{}</strong></div>
+      <div class="card">Properties<strong>{}</strong></div>
+      <div class="card">Geometry Items<strong>{}</strong></div>
+    </section>
+    <h2>Coordinate Info</h2>
+    <div class="coord-layout">
+      <div class="table-wrap"><table data-column-toggle><thead><tr><th>Set</th><th>Min</th><th>Max</th><th>Center / Origin</th></tr></thead><tbody>{}</tbody></table></div>
+      <div id="miniMap" class="mini-map"><div class="mini-map-empty">沒有可定位的 WGS84 範圍；請先跑 IFC -> 3D Tiles 轉檔。</div></div>
+    </div>
+  </section>
+  <section id="productsTab" class="tab-panel" role="tabpanel" hidden>
+    <h2>Products</h2>
+    <div class="table-wrap"><table data-filterable data-column-toggle><thead><tr><th>Step</th><th>Type</th><th>Name</th><th>Converted</th><th>Triangles</th><th>Properties</th><th>WGS84 Center</th></tr></thead><tbody>{}</tbody></table></div>
+  </section>
+  <section id="propertiesTab" class="tab-panel" role="tabpanel" hidden>
+    <h2>Properties</h2>
+    <div class="table-wrap"><table data-filterable data-column-toggle><thead><tr><th>Step</th><th>Product</th><th>Pset</th><th>Property</th><th>Value</th></tr></thead><tbody>{}</tbody></table></div>
+  </section>
+  <section id="geometryTab" class="tab-panel" role="tabpanel" hidden>
+    <h2>Geometry Items</h2>
+    <div class="table-wrap"><table data-filterable data-column-toggle><thead><tr><th>Step</th><th>Product</th><th>Identifier</th><th>Representation</th><th>Item</th><th>Resolved Type</th><th>Supported</th></tr></thead><tbody>{}</tbody></table></div>
+  </section>
+  <section id="entitiesTab" class="tab-panel" role="tabpanel" hidden>
+    <h2>Top Entity Types</h2>
+    <div class="table-wrap"><table data-filterable data-column-toggle><thead><tr><th>Entity Type</th><th>Count</th></tr></thead><tbody>{}</tbody></table></div>
+  </section>
   <script type="application/json" id="coordinateInfoData">{}</script>
   <script src="https://www.focusit.com.tw/easymap/easymap/easymap.js"></script>
   <script>
     const searchInput = document.getElementById("searchInput");
-    searchInput.addEventListener("input", () => {{
+    const columnControls = document.getElementById("columnControls");
+    const tabButtons = Array.from(document.querySelectorAll(".tab-button"));
+    const tabPanels = Array.from(document.querySelectorAll(".tab-panel"));
+
+    function activePanel() {{
+      return document.querySelector(".tab-panel.active");
+    }}
+
+    function filterActivePanel() {{
       const q = searchInput.value.trim().toLowerCase();
       document.querySelectorAll("table[data-filterable] tbody tr").forEach(row => {{
+        row.hidden = false;
+      }});
+      const panel = activePanel();
+      if (!panel) {{
+        return;
+      }}
+      panel.querySelectorAll("table[data-filterable] tbody tr").forEach(row => {{
         row.hidden = q && !row.textContent.toLowerCase().includes(q);
       }});
+    }}
+
+    function switchTab(panelId, keepSearch = false) {{
+      if (!keepSearch) {{
+        searchInput.value = "";
+      }}
+      tabButtons.forEach(button => {{
+        const active = button.dataset.tabTarget === panelId;
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-selected", active ? "true" : "false");
+      }});
+      tabPanels.forEach(panel => {{
+        const active = panel.id === panelId;
+        panel.classList.toggle("active", active);
+        panel.hidden = !active;
+      }});
+      filterActivePanel();
+      renderColumnControls();
+    }}
+
+    function toggleColumn(table, index, visible) {{
+      table.querySelectorAll("tr").forEach(row => {{
+        const cell = row.children[index];
+        if (cell) {{
+          cell.hidden = !visible;
+        }}
+      }});
+    }}
+
+    function renderColumnControls() {{
+      columnControls.innerHTML = "";
+      const table = activePanel()?.querySelector("table[data-column-toggle]");
+      if (!table) {{
+        columnControls.hidden = true;
+        return;
+      }}
+      columnControls.hidden = false;
+      table.querySelectorAll("thead th").forEach((th, index) => {{
+        const label = document.createElement("label");
+        label.className = "column-toggle";
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = !th.hidden;
+        input.dataset.columnIndex = String(index);
+        label.append(input, document.createTextNode(th.textContent.trim()));
+        columnControls.append(label);
+      }});
+    }}
+
+    tabButtons.forEach(button => {{
+      button.addEventListener("click", () => switchTab(button.dataset.tabTarget));
     }});
+    searchInput.addEventListener("input", filterActivePanel);
+    columnControls.addEventListener("change", event => {{
+      const input = event.target.closest("input[data-column-index]");
+      if (!input) {{
+        return;
+      }}
+      const table = activePanel()?.querySelector("table[data-column-toggle]");
+      if (table) {{
+        toggleColumn(table, Number(input.dataset.columnIndex), input.checked);
+      }}
+    }});
+    document.addEventListener("click", event => {{
+      const button = event.target.closest("[data-property-step]");
+      if (!button) {{
+        return;
+      }}
+      switchTab("propertiesTab", true);
+      searchInput.value = `#${{button.dataset.propertyStep}}`;
+      filterActivePanel();
+      searchInput.focus();
+    }});
+    renderColumnControls();
+    filterActivePanel();
     function initMiniMap(attempt = 0) {{
       const container = document.getElementById("miniMap");
       const data = JSON.parse(document.getElementById("coordinateInfoData").textContent || "{{}}");

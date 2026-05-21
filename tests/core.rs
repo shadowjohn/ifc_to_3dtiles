@@ -482,6 +482,23 @@ fn revit_like_ifc_wall_converts_to_flat_and_smooth_glb_with_metadata() {
     assert!(info_html.contains("https://www.focusit.com.tw/easymap/easymap/easymap.js"));
     assert!(info_html.contains("new Easymap(\"miniMap\")"));
     assert!(info_html.contains("new dgWKT"));
+    assert!(info_html.contains("<nav class=\"tabs\" role=\"tablist\">"));
+    assert!(info_html.contains("data-tab-target=\"overviewTab\""));
+    assert!(info_html.contains("data-tab-target=\"productsTab\""));
+    assert!(info_html.contains("data-tab-target=\"propertiesTab\""));
+    assert!(info_html.contains("data-tab-target=\"geometryTab\""));
+    assert!(info_html.contains("data-tab-target=\"entitiesTab\""));
+    assert!(info_html.contains("id=\"overviewTab\" class=\"tab-panel active\""));
+    assert!(info_html.contains("id=\"propertiesTab\" class=\"tab-panel\""));
+    assert!(info_html.contains("data-property-step=\"90\""));
+    assert!(info_html.contains("switchTab(\"propertiesTab\", true)"));
+    assert!(info_html.contains("function switchTab(panelId, keepSearch = false)"));
+    assert!(info_html.contains("searchInput.value = \"\";"));
+    assert!(info_html.contains("filterActivePanel()"));
+    assert!(info_html.contains("id=\"columnControls\""));
+    assert!(info_html.contains("data-column-toggle"));
+    assert!(info_html.contains("renderColumnControls()"));
+    assert!(info_html.contains("toggleColumn("));
 
     let products_csv =
         std::fs::read_to_string(out_dir.join("ifc_products.csv")).expect("products csv");

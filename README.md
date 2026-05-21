@@ -97,7 +97,7 @@ ifc_geometry_items.csv
 
 `--source-epsg` 目前支援 `3825`、`3826`、`3827`、`3828`、`4326`、`3857`。其中 `4326` 以 x=longitude、y=latitude 解讀。
 
-座標資訊在一般轉檔流程中最完整：`ifc_products.csv` 會包含每個已轉 product 的 WGS84 bbox / center；`ifc_info.html` 會顯示模型 WGS84 總範圍並用 Easymap CDN 小地圖定位 WGS84 extent。單獨跑 `ifc-info` 時不建立 mesh，座標欄位會留空。
+座標資訊在一般轉檔流程中最完整：`ifc_products.csv` 會包含每個已轉 product 的 WGS84 bbox / center；`ifc_info.html` 會顯示模型 WGS84 總範圍並用 Easymap CDN 小地圖定位 WGS84 extent。HTML report 採頁籤式表格，可在 Products / Properties / Geometry / Entities 間切換、搜尋目前頁籤，並用欄位開關控制表格欄位顯示。單獨跑 `ifc-info` 時不建立 mesh，座標欄位會留空。
 
 ## RVT Input
 

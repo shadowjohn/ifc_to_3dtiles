@@ -837,3 +837,8 @@
   - product-level：每個 converted product 的 WGS84 bbox / center。
   - HTML report 用 Easymap CDN `https://www.focusit.com.tw/easymap/easymap/easymap.js` 建小地圖，以 WGS84 extent 定位模型範圍，座標分量改為逐行顯示避免 x/y/z 黏在一起。
   - `--source-epsg` 轉 WGS84 擴充支援 `3825`、`3826`、`3827`、`3828`、`4326`、`3857`；金門大橋 IFC 可用 `--source-epsg 3825`。
+- 使用者希望 IFC info 更方便看屬性資料；`ifc_info.html` 改為頁籤式表格：
+  - `Overview`：統計卡、WGS84 座標、小地圖。
+  - `Products` / `Properties` / `Geometry` / `Entities`：各自獨立表格。
+  - 搜尋框只篩目前頁籤，`Products` 的 property count 可直接切到 `Properties` 並用 StepId 篩選。
+  - 每個頁籤會依目前表格產生欄位開關，方便隱藏不需要看的欄位。
