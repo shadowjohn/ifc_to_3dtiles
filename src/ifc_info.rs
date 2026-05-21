@@ -13,6 +13,51 @@ use crate::step::{StepIndex, decode_ifc_string, extract_first_ref, extract_refs,
 pub struct ConvertedProductInfo {
     pub ifc_step_id: u32,
     pub triangle_count: usize,
+    pub epsg3826_bounds_min: Option<Epsg3826Coordinate>,
+    pub epsg3826_bounds_max: Option<Epsg3826Coordinate>,
+    pub epsg3826_center: Option<Epsg3826Coordinate>,
+    pub wgs84_bounds_min: Option<Wgs84Coordinate>,
+    pub wgs84_bounds_max: Option<Wgs84Coordinate>,
+    pub wgs84_center: Option<Wgs84Coordinate>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct Epsg3826Coordinate {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+impl Epsg3826Coordinate {
+    pub fn new(x: f64, y: f64, z: f64) -> Self {
+        Self { x, y, z }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct Wgs84Coordinate {
+    pub lon: f64,
+    pub lat: f64,
+    pub height: f64,
+}
+
+impl Wgs84Coordinate {
+    pub fn new(lon: f64, lat: f64, height: f64) -> Self {
+        Self { lon, lat, height }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct IfcCoordinateInfo {
+    pub source_epsg: Option<u32>,
+    pub epsg3826_bounds_min: Option<Epsg3826Coordinate>,
+    pub epsg3826_bounds_max: Option<Epsg3826Coordinate>,
+    pub epsg3826_center: Option<Epsg3826Coordinate>,
+    pub epsg3826_origin: Option<Epsg3826Coordinate>,
+    pub wgs84_bounds_min: Option<Wgs84Coordinate>,
+    pub wgs84_bounds_max: Option<Wgs84Coordinate>,
+    pub wgs84_center: Option<Wgs84Coordinate>,
+    pub wgs84_origin: Option<Wgs84Coordinate>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -20,6 +65,7 @@ pub struct IfcInfoReport {
     pub input_file: String,
     pub entity_count: usize,
     pub entity_type_counts: BTreeMap<String, usize>,
+    pub coordinate_info: IfcCoordinateInfo,
     pub product_count: usize,
     pub converted_product_count: usize,
     pub skipped_product_count: usize,
@@ -42,6 +88,12 @@ pub struct IfcProductInfo {
     pub representation_step_id: u32,
     pub converted: bool,
     pub triangle_count: usize,
+    pub epsg3826_bounds_min: Option<Epsg3826Coordinate>,
+    pub epsg3826_bounds_max: Option<Epsg3826Coordinate>,
+    pub epsg3826_center: Option<Epsg3826Coordinate>,
+    pub wgs84_bounds_min: Option<Wgs84Coordinate>,
+    pub wgs84_bounds_max: Option<Wgs84Coordinate>,
+    pub wgs84_center: Option<Wgs84Coordinate>,
     pub property_count: usize,
     pub geometry_item_count: usize,
 }
@@ -151,9 +203,25 @@ pub fn write_ifc_info_outputs(
     index: &StepIndex,
     converted_products: &[ConvertedProductInfo],
 ) -> Result<IfcInfoReport> {
+    write_ifc_info_outputs_with_coordinate_info(
+        input_file,
+        output_dir,
+        index,
+        converted_products,
+        None,
+    )
+}
+
+pub fn write_ifc_info_outputs_with_coordinate_info(
+    input_file: &Path,
+    output_dir: &Path,
+    index: &StepIndex,
+    converted_products: &[ConvertedProductInfo],
+    coordinate_info: Option<IfcCoordinateInfo>,
+) -> Result<IfcInfoReport> {
     fs::create_dir_all(output_dir)
         .with_context(|| format!("建立 IFC info 輸出目錄失敗：{}", output_dir.display()))?;
-    let report = build_ifc_info_report(input_file, index, converted_products);
+    let report = build_ifc_info_report(input_file, index, converted_products, coordinate_info);
     fs::write(
         output_dir.join("ifc_info.json"),
         serde_json::to_vec_pretty(&report)?,
@@ -183,10 +251,11 @@ pub fn build_ifc_info_report(
     input_file: &Path,
     index: &StepIndex,
     converted_products: &[ConvertedProductInfo],
+    coordinate_info: Option<IfcCoordinateInfo>,
 ) -> IfcInfoReport {
     let converted = converted_products
         .iter()
-        .map(|item| (item.ifc_step_id, item.triangle_count))
+        .map(|item| (item.ifc_step_id, item))
         .collect::<HashMap<_, _>>();
     let entity_type_counts = entity_type_counts(index);
     let psets = collect_property_sets(index);
@@ -199,9 +268,9 @@ pub fn build_ifc_info_report(
     for core in cores {
         let product_properties = psets.get(&core.ifc_step_id).cloned().unwrap_or_default();
         let product_geometry_items = collect_geometry_items(index, &core);
-        let triangle_count = converted
-            .get(&core.ifc_step_id)
-            .copied()
+        let converted_product = converted.get(&core.ifc_step_id).copied();
+        let triangle_count = converted_product
+            .map(|product| product.triangle_count)
             .unwrap_or_default();
         for property in &product_properties {
             properties.push(IfcPropertyInfo {
@@ -226,6 +295,12 @@ pub fn build_ifc_info_report(
             representation_step_id: core.representation_step_id,
             converted: triangle_count > 0,
             triangle_count,
+            epsg3826_bounds_min: converted_product.and_then(|product| product.epsg3826_bounds_min),
+            epsg3826_bounds_max: converted_product.and_then(|product| product.epsg3826_bounds_max),
+            epsg3826_center: converted_product.and_then(|product| product.epsg3826_center),
+            wgs84_bounds_min: converted_product.and_then(|product| product.wgs84_bounds_min),
+            wgs84_bounds_max: converted_product.and_then(|product| product.wgs84_bounds_max),
+            wgs84_center: converted_product.and_then(|product| product.wgs84_center),
             property_count: product_properties.len(),
             geometry_item_count: product_geometry_items.len(),
         });
@@ -236,6 +311,7 @@ pub fn build_ifc_info_report(
         input_file: input_file.display().to_string(),
         entity_count: index.len(),
         entity_type_counts,
+        coordinate_info: coordinate_info.unwrap_or_default(),
         product_count: products.len(),
         converted_product_count,
         skipped_product_count: products.len().saturating_sub(converted_product_count),
@@ -498,28 +574,52 @@ fn property_value_text(input: &str) -> String {
 
 fn render_products_csv(products: &[IfcProductInfo]) -> String {
     let mut out = String::from(
-        "ifc_step_id,global_id,ifc_type,name,description,object_type,tag,representation_step_id,converted,triangle_count,property_count,geometry_item_count\n",
+        "ifc_step_id,global_id,ifc_type,name,description,object_type,tag,representation_step_id,converted,triangle_count,property_count,geometry_item_count,epsg3826_min_x,epsg3826_min_y,epsg3826_min_z,epsg3826_max_x,epsg3826_max_y,epsg3826_max_z,epsg3826_center_x,epsg3826_center_y,epsg3826_center_z,wgs84_min_lon,wgs84_min_lat,wgs84_min_height,wgs84_max_lon,wgs84_max_lat,wgs84_max_height,wgs84_center_lon,wgs84_center_lat,wgs84_center_height\n",
     );
     for product in products {
-        write_csv_row(
-            &mut out,
-            &[
-                product.ifc_step_id.to_string(),
-                product.global_id.clone(),
-                product.ifc_type.clone(),
-                product.name.clone(),
-                product.description.clone(),
-                product.object_type.clone(),
-                product.tag.clone(),
-                product.representation_step_id.to_string(),
-                product.converted.to_string(),
-                product.triangle_count.to_string(),
-                product.property_count.to_string(),
-                product.geometry_item_count.to_string(),
-            ],
-        );
+        let mut values = vec![
+            product.ifc_step_id.to_string(),
+            product.global_id.clone(),
+            product.ifc_type.clone(),
+            product.name.clone(),
+            product.description.clone(),
+            product.object_type.clone(),
+            product.tag.clone(),
+            product.representation_step_id.to_string(),
+            product.converted.to_string(),
+            product.triangle_count.to_string(),
+            product.property_count.to_string(),
+            product.geometry_item_count.to_string(),
+        ];
+        push_epsg3826_csv_values(&mut values, product.epsg3826_bounds_min);
+        push_epsg3826_csv_values(&mut values, product.epsg3826_bounds_max);
+        push_epsg3826_csv_values(&mut values, product.epsg3826_center);
+        push_wgs84_csv_values(&mut values, product.wgs84_bounds_min);
+        push_wgs84_csv_values(&mut values, product.wgs84_bounds_max);
+        push_wgs84_csv_values(&mut values, product.wgs84_center);
+        write_csv_row(&mut out, &values);
     }
     out
+}
+
+fn push_epsg3826_csv_values(values: &mut Vec<String>, coord: Option<Epsg3826Coordinate>) {
+    if let Some(coord) = coord {
+        values.push(coord.x.to_string());
+        values.push(coord.y.to_string());
+        values.push(coord.z.to_string());
+    } else {
+        values.extend(["".to_string(), "".to_string(), "".to_string()]);
+    }
+}
+
+fn push_wgs84_csv_values(values: &mut Vec<String>, coord: Option<Wgs84Coordinate>) {
+    if let Some(coord) = coord {
+        values.push(coord.lon.to_string());
+        values.push(coord.lat.to_string());
+        values.push(coord.height.to_string());
+    } else {
+        values.extend(["".to_string(), "".to_string(), "".to_string()]);
+    }
 }
 
 fn render_properties_csv(properties: &[IfcPropertyInfo]) -> String {
@@ -597,18 +697,22 @@ fn neutralize_csv_formula(value: &str) -> String {
 }
 
 fn render_info_html(report: &IfcInfoReport) -> String {
+    let coordinate_rows = render_coordinate_rows(&report.coordinate_info);
+    let map_json = serde_json::to_string(&report.coordinate_info).unwrap_or_else(|_| "{}".into());
     let product_rows = report
         .products
         .iter()
         .map(|product| {
             format!(
-                "<tr><td>#{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                "<tr><td>#{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
                 product.ifc_step_id,
                 escape_html(&product.ifc_type),
                 escape_html(&product.name),
                 product.converted,
                 product.triangle_count,
-                product.property_count
+                product.property_count,
+                escape_html(&format_epsg3826(product.epsg3826_center)),
+                escape_html(&format_wgs84(product.wgs84_center))
             )
         })
         .collect::<String>();
@@ -668,6 +772,9 @@ fn render_info_html(report: &IfcInfoReport) -> String {
     .summary {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin: 18px 0; }}
     .card {{ padding: 12px; border: 1px solid #d7e1e7; border-radius: 8px; background: white; }}
     .card strong {{ display: block; font-size: 22px; }}
+    .coord-layout {{ display: grid; grid-template-columns: minmax(260px, 1fr) minmax(320px, 520px); gap: 12px; align-items: stretch; }}
+    .mini-map {{ min-height: 280px; border: 1px solid #d7e1e7; background: #dfe8ec; position: relative; overflow: hidden; }}
+    .mini-map-empty {{ padding: 16px; color: #60717c; }}
     table {{ width: 100%; border-collapse: collapse; margin: 8px 0 18px; background: white; }}
     th, td {{ padding: 7px 8px; border: 1px solid #d7e1e7; font-size: 12px; text-align: left; vertical-align: top; }}
     th {{ background: #eaf2f6; position: sticky; top: 0; }}
@@ -688,15 +795,22 @@ fn render_info_html(report: &IfcInfoReport) -> String {
     <div class="card">Properties<strong>{}</strong></div>
     <div class="card">Geometry Items<strong>{}</strong></div>
   </section>
+  <h2>Coordinate Info</h2>
+  <div class="coord-layout">
+    <div class="table-wrap"><table><thead><tr><th>Set</th><th>Min</th><th>Max</th><th>Center / Origin</th></tr></thead><tbody>{}</tbody></table></div>
+    <div id="miniMap" class="mini-map"><div class="mini-map-empty">沒有可定位的 WGS84 範圍；請先跑 IFC -> 3D Tiles 轉檔。</div></div>
+  </div>
   <input id="searchInput" class="search" type="search" placeholder="搜尋 StepId、類型、名稱、Pset、geometry type">
   <h2>Products</h2>
-  <div class="table-wrap"><table data-filterable><thead><tr><th>Step</th><th>Type</th><th>Name</th><th>Converted</th><th>Triangles</th><th>Properties</th></tr></thead><tbody>{}</tbody></table></div>
+  <div class="table-wrap"><table data-filterable><thead><tr><th>Step</th><th>Type</th><th>Name</th><th>Converted</th><th>Triangles</th><th>Properties</th><th>EPSG:3826 Center</th><th>WGS84 Center</th></tr></thead><tbody>{}</tbody></table></div>
   <h2>Properties</h2>
   <div class="table-wrap"><table data-filterable><thead><tr><th>Step</th><th>Product</th><th>Pset</th><th>Property</th><th>Value</th></tr></thead><tbody>{}</tbody></table></div>
   <h2>Geometry Items</h2>
   <div class="table-wrap"><table data-filterable><thead><tr><th>Step</th><th>Product</th><th>Identifier</th><th>Representation</th><th>Item</th><th>Resolved Type</th><th>Supported</th></tr></thead><tbody>{}</tbody></table></div>
   <h2>Top Entity Types</h2>
   <div class="table-wrap"><table data-filterable><thead><tr><th>Entity Type</th><th>Count</th></tr></thead><tbody>{}</tbody></table></div>
+  <script type="application/json" id="coordinateInfoData">{}</script>
+  <script src="https://www.focusit.com.tw/easymap/easymap/easymap.js"></script>
   <script>
     const searchInput = document.getElementById("searchInput");
     searchInput.addEventListener("input", () => {{
@@ -705,6 +819,35 @@ fn render_info_html(report: &IfcInfoReport) -> String {
         row.hidden = q && !row.textContent.toLowerCase().includes(q);
       }});
     }});
+    function initMiniMap(attempt = 0) {{
+      const container = document.getElementById("miniMap");
+      const data = JSON.parse(document.getElementById("coordinateInfoData").textContent || "{{}}");
+      if (!container || !data.wgs84_bounds_min || !data.wgs84_bounds_max || !data.wgs84_center) {{
+        return;
+      }}
+      if (typeof Easymap === "undefined" || typeof dgWKT === "undefined") {{
+        if (attempt < 80) {{
+          window.setTimeout(() => initMiniMap(attempt + 1), 100);
+        }}
+        return;
+      }}
+      container.innerHTML = "";
+      const west = Math.min(data.wgs84_bounds_min.lon, data.wgs84_bounds_max.lon);
+      const east = Math.max(data.wgs84_bounds_min.lon, data.wgs84_bounds_max.lon);
+      const south = Math.min(data.wgs84_bounds_min.lat, data.wgs84_bounds_max.lat);
+      const north = Math.max(data.wgs84_bounds_min.lat, data.wgs84_bounds_max.lat);
+      const center = data.wgs84_center;
+      const span = Math.max(Math.abs(east - west), Math.abs(north - south));
+      const zoom = span < 0.001 ? 17 : span < 0.005 ? 16 : span < 0.02 ? 15 : span < 0.08 ? 13 : span < 0.3 ? 11 : 9;
+      const map = new Easymap("miniMap");
+      const rectWkt = `POLYGON((${{west}} ${{south}},${{east}} ${{south}},${{east}} ${{north}},${{west}} ${{north}},${{west}} ${{south}}))`;
+      const extent = new dgWKT([{{ label: "Model WGS84 extent", wkt: rectWkt }}], "EPSG:4326", function () {{}});
+      const icon = new dgIcon("https://www.focusit.com.tw/easymap/easymap/7/imgs/marker.png", 28, 28);
+      const marker = new dgMarker(new dgXY(center.lon, center.lat), icon, false);
+      map.addItem([extent, marker]);
+      map.zoomToXY(new dgXY(center.lon, center.lat), zoom);
+    }}
+    window.addEventListener("load", initMiniMap);
   </script>
 </body>
 </html>
@@ -716,11 +859,43 @@ fn render_info_html(report: &IfcInfoReport) -> String {
         report.skipped_product_count,
         report.property_count,
         report.geometry_item_count,
+        coordinate_rows,
         product_rows,
         property_rows,
         geometry_rows,
-        entity_rows
+        entity_rows,
+        map_json
     )
+}
+
+fn render_coordinate_rows(info: &IfcCoordinateInfo) -> String {
+    format!(
+        "<tr><td>EPSG:{}</td><td>{}</td><td>{}</td><td>center {}<br>origin {}</td></tr>\
+         <tr><td>WGS84</td><td>{}</td><td>{}</td><td>center {}<br>origin {}</td></tr>",
+        info.source_epsg
+            .map(|epsg| epsg.to_string())
+            .unwrap_or_else(|| "3826".to_string()),
+        escape_html(&format_epsg3826(info.epsg3826_bounds_min)),
+        escape_html(&format_epsg3826(info.epsg3826_bounds_max)),
+        escape_html(&format_epsg3826(info.epsg3826_center)),
+        escape_html(&format_epsg3826(info.epsg3826_origin)),
+        escape_html(&format_wgs84(info.wgs84_bounds_min)),
+        escape_html(&format_wgs84(info.wgs84_bounds_max)),
+        escape_html(&format_wgs84(info.wgs84_center)),
+        escape_html(&format_wgs84(info.wgs84_origin))
+    )
+}
+
+fn format_epsg3826(coord: Option<Epsg3826Coordinate>) -> String {
+    coord
+        .map(|coord| format!("x {}, y {}, z {}", coord.x, coord.y, coord.z))
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn format_wgs84(coord: Option<Wgs84Coordinate>) -> String {
+    coord
+        .map(|coord| format!("lon {}, lat {}, h {}", coord.lon, coord.lat, coord.height))
+        .unwrap_or_else(|| "-".to_string())
 }
 
 fn escape_html(text: &str) -> String {

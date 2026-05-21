@@ -16,7 +16,10 @@ use crate::{
         local_placement_matrix, mesh_extruded_area_solid, mesh_faceted_brep,
     },
     glb,
-    ifc_info::{ConvertedProductInfo, write_ifc_info_outputs},
+    ifc_info::{
+        ConvertedProductInfo, Epsg3826Coordinate, IfcCoordinateInfo, Wgs84Coordinate,
+        write_ifc_info_outputs_with_coordinate_info,
+    },
     model::StyleTable,
     step::{
         EntityRecord, StepIndex, decode_ifc_string, extract_first_ref, extract_refs, numbers_in,
@@ -234,6 +237,22 @@ fn convert_file(input: &Path, options: &ConvertOptions) -> Result<PathBuf> {
     let origin_geo = crs::project_to_wgs84(options.source_epsg, source_origin.x, source_origin.y)?;
     let root_transform =
         crs::enu_to_ecef_transform(origin_geo.lon_deg, origin_geo.lat_deg, source_origin.z);
+    let converted_products = build_converted_product_info(&features, options.source_epsg)?;
+    let coordinate_info = IfcCoordinateInfo {
+        source_epsg: Some(options.source_epsg),
+        epsg3826_bounds_min: Some(epsg3826_coord(source_bounds.min)),
+        epsg3826_bounds_max: Some(epsg3826_coord(source_bounds.max)),
+        epsg3826_center: Some(epsg3826_coord(source_bounds.center())),
+        epsg3826_origin: Some(epsg3826_coord(source_origin)),
+        wgs84_bounds_min: Some(wgs84_coord(options.source_epsg, source_bounds.min)?),
+        wgs84_bounds_max: Some(wgs84_coord(options.source_epsg, source_bounds.max)?),
+        wgs84_center: Some(wgs84_coord(options.source_epsg, source_bounds.center())?),
+        wgs84_origin: Some(Wgs84Coordinate::new(
+            origin_geo.lon_deg,
+            origin_geo.lat_deg,
+            source_origin.z,
+        )),
+    };
 
     let mut root_bounds = Bounds::empty();
     for feature in &mut features {
@@ -276,14 +295,13 @@ fn convert_file(input: &Path, options: &ConvertOptions) -> Result<PathBuf> {
             &skipped_unsupported_items,
         ))?,
     )?;
-    let converted_products = features
-        .iter()
-        .map(|feature| ConvertedProductInfo {
-            ifc_step_id: feature.metadata.ifc_step_id,
-            triangle_count: feature.mesh.triangle_count(),
-        })
-        .collect::<Vec<_>>();
-    write_ifc_info_outputs(input, &output_dir, &index, &converted_products)?;
+    write_ifc_info_outputs_with_coordinate_info(
+        input,
+        &output_dir,
+        &index,
+        &converted_products,
+        Some(coordinate_info),
+    )?;
 
     let tile_result = write_tiles(
         &tiles_dir,
@@ -354,6 +372,42 @@ fn convert_file(input: &Path, options: &ConvertOptions) -> Result<PathBuf> {
 
     info!("輸出完成：{}", output_dir.display());
     Ok(output_dir)
+}
+
+fn build_converted_product_info(
+    features: &[Feature],
+    source_epsg: u32,
+) -> Result<Vec<ConvertedProductInfo>> {
+    features
+        .iter()
+        .map(|feature| {
+            let bounds = feature.mesh.bounds;
+            let center = bounds.center();
+            Ok(ConvertedProductInfo {
+                ifc_step_id: feature.metadata.ifc_step_id,
+                triangle_count: feature.mesh.triangle_count(),
+                epsg3826_bounds_min: Some(epsg3826_coord(bounds.min)),
+                epsg3826_bounds_max: Some(epsg3826_coord(bounds.max)),
+                epsg3826_center: Some(epsg3826_coord(center)),
+                wgs84_bounds_min: Some(wgs84_coord(source_epsg, bounds.min)?),
+                wgs84_bounds_max: Some(wgs84_coord(source_epsg, bounds.max)?),
+                wgs84_center: Some(wgs84_coord(source_epsg, center)?),
+            })
+        })
+        .collect()
+}
+
+fn epsg3826_coord(point: Vec3) -> Epsg3826Coordinate {
+    Epsg3826Coordinate::new(point.x, point.y, point.z)
+}
+
+fn wgs84_coord(source_epsg: u32, point: Vec3) -> Result<Wgs84Coordinate> {
+    let lonlat = crs::project_to_wgs84(source_epsg, point.x, point.y)?;
+    Ok(Wgs84Coordinate::new(
+        lonlat.lon_deg,
+        lonlat.lat_deg,
+        point.z,
+    ))
 }
 
 fn write_tiles(

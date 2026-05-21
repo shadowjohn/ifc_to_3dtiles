@@ -415,16 +415,50 @@ fn revit_like_ifc_wall_converts_to_flat_and_smooth_glb_with_metadata() {
     assert_eq!(metadata[0]["name"], "Basic Wall");
     assert_eq!(metadata[0]["psets"]["Pset_WallCommon"]["Reference"], "W1");
 
+    let info_json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(out_dir.join("ifc_info.json")).expect("info json"))
+            .expect("info json parse");
+    assert_eq!(info_json["coordinate_info"]["source_epsg"], 3826);
+    assert_eq!(
+        info_json["coordinate_info"]["epsg3826_bounds_min"],
+        serde_json::json!({"x": 0.0, "y": 0.0, "z": 0.0})
+    );
+    assert_eq!(
+        info_json["coordinate_info"]["epsg3826_bounds_max"],
+        serde_json::json!({"x": 1.0, "y": 1.0, "z": 1.0})
+    );
+    assert_eq!(
+        info_json["coordinate_info"]["epsg3826_origin"],
+        serde_json::json!({"x": 0.5, "y": 0.5, "z": 0.5})
+    );
+    assert!(info_json["coordinate_info"]["wgs84_origin"]["lon"].is_number());
+    assert!(info_json["coordinate_info"]["wgs84_bounds_min"]["lat"].is_number());
+    assert_eq!(
+        info_json["products"][0]["epsg3826_center"],
+        serde_json::json!({"x": 0.5, "y": 0.5, "z": 0.5})
+    );
+    assert!(info_json["products"][0]["wgs84_center"]["lon"].is_number());
+
     let info_html = std::fs::read_to_string(out_dir.join("ifc_info.html")).expect("info html");
     assert!(info_html.contains("Basic Wall"));
     assert!(info_html.contains("Pset_WallCommon"));
     assert!(info_html.contains("IFCFACETEDBREP"));
+    assert!(info_html.contains("Coordinate Info"));
+    assert!(info_html.contains("EPSG:3826"));
+    assert!(info_html.contains("WGS84"));
+    assert!(info_html.contains("id=\"miniMap\""));
+    assert!(info_html.contains("https://www.focusit.com.tw/easymap/easymap/easymap.js"));
+    assert!(info_html.contains("new Easymap(\"miniMap\")"));
+    assert!(info_html.contains("new dgWKT"));
 
     let products_csv =
         std::fs::read_to_string(out_dir.join("ifc_products.csv")).expect("products csv");
     assert!(products_csv.contains("ifc_step_id,global_id,ifc_type"));
+    assert!(products_csv.contains("epsg3826_min_x,epsg3826_min_y,epsg3826_min_z"));
+    assert!(products_csv.contains("wgs84_center_lon,wgs84_center_lat,wgs84_center_height"));
     assert!(products_csv.contains("90,WALLGUID,IFCWALL"));
     assert!(products_csv.contains(",true,12"));
+    assert!(products_csv.contains(",0,0,0,1,1,1,0.5,0.5,0.5,"));
 
     let properties_csv =
         std::fs::read_to_string(out_dir.join("ifc_properties.csv")).expect("properties csv");
@@ -530,6 +564,7 @@ fn ifc_info_subcommand_core_exports_html_and_csv_without_converting_tiles() {
         std::fs::read_to_string(output.join("ifc_products.csv")).expect("products csv");
     assert!(products_csv.contains("90,WALLGUID,IFCWALL"));
     assert!(products_csv.contains(",false,0"));
+    assert!(products_csv.contains(",false,0,2,1,,,,,,,,,,,,,,,,,,"));
 }
 
 #[test]

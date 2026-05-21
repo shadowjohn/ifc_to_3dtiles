@@ -12,7 +12,7 @@ Rust CLI for converting IFC2X3 models into standalone GLB plus Cesium 3D Tiles 1
 - IFC style color extraction with fallback report.
 - Standalone `<name>_flat.glb` / `<name>_smooth.glb` with glTF `extras` metadata and metadata file pointer.
 - `metadata.json` and `unsupported_geometry_report.json` beside generated tiles.
-- IFC info export beside generated tiles: `ifc_info.html`, `ifc_info.json`, `ifc_products.csv`, `ifc_properties.csv`, `ifc_geometry_items.csv`.
+- IFC info export beside generated tiles: `ifc_info.html`, `ifc_info.json`, `ifc_products.csv`, `ifc_properties.csv`, `ifc_geometry_items.csv`，含 EPSG:3826 / WGS84 座標範圍與 Easymap 小地圖定位。
 - EPSG:3826 to WGS84/ECEF georeferencing via `proj4rs`.
 - Root ENU-to-ECEF transform with local float32 geometry.
 - Spatial tiling with configurable feature / triangle limits.
@@ -94,6 +94,8 @@ ifc_geometry_items.csv
 ```
 
 `--input` 也可指定 IFC 目錄；此時每個 `.ifc` 會在 `--output\<ifc-name>\` 各自輸出一份 report。
+
+座標資訊在一般轉檔流程中最完整：`ifc_products.csv` 會包含每個已轉 product 的 EPSG:3826 bbox / center 與 WGS84 bbox / center；`ifc_info.html` 會顯示模型總範圍並用 Easymap CDN 小地圖定位 WGS84 extent。單獨跑 `ifc-info` 時不建立 mesh，座標欄位會留空。
 
 ## RVT Input
 
