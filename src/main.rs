@@ -16,6 +16,7 @@ use ifc_to_3dtiles::{
     },
     convert_path,
     geometry_preview::write_geometry_preview_outputs,
+    ifc_info::write_ifc_info_path,
     inspect::discover_sources,
     inspect_drilldown::write_drilldown_outputs,
     inspect_review::write_review_report_html,
@@ -212,6 +213,14 @@ enum Command {
         #[arg(long)]
         output: Option<PathBuf>,
     },
+    #[command(name = "ifc-info")]
+    IfcInfo {
+        #[arg(long)]
+        input: PathBuf,
+
+        #[arg(long)]
+        output: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -320,7 +329,16 @@ fn run_command(command: &Command) -> Result<()> {
         Command::PublishApproved { input, output } => run_publish_approved(input, output),
         Command::RuntimePublish { input, output } => run_runtime_publish(input, output),
         Command::GeometryPreview { input, output } => run_geometry_preview(input, output),
+        Command::IfcInfo { input, output } => run_ifc_info(input, output),
     }
+}
+
+fn run_ifc_info(input: &Path, output: &Path) -> Result<()> {
+    let outputs = write_ifc_info_path(input, output)?;
+    for output in outputs {
+        println!("{}", output.display());
+    }
+    Ok(())
 }
 
 fn run_inspect(input: &Path, output: &Path, source_epsg: u32) -> Result<()> {

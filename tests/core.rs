@@ -388,6 +388,11 @@ fn revit_like_ifc_wall_converts_to_flat_and_smooth_glb_with_metadata() {
     assert!(out_dir.join("revit_wall_smooth.glb").is_file());
     assert!(out_dir.join("metadata.json").is_file());
     assert!(out_dir.join("unsupported_geometry_report.json").is_file());
+    assert!(out_dir.join("ifc_info.html").is_file());
+    assert!(out_dir.join("ifc_info.json").is_file());
+    assert!(out_dir.join("ifc_products.csv").is_file());
+    assert!(out_dir.join("ifc_properties.csv").is_file());
+    assert!(out_dir.join("ifc_geometry_items.csv").is_file());
     assert!(out_dir.join("tileset_smooth_90.json").is_file());
     assert!(
         out_dir
@@ -409,6 +414,27 @@ fn revit_like_ifc_wall_converts_to_flat_and_smooth_glb_with_metadata() {
     assert_eq!(metadata[0]["ifc_type"], "IFCWALL");
     assert_eq!(metadata[0]["name"], "Basic Wall");
     assert_eq!(metadata[0]["psets"]["Pset_WallCommon"]["Reference"], "W1");
+
+    let info_html = std::fs::read_to_string(out_dir.join("ifc_info.html")).expect("info html");
+    assert!(info_html.contains("Basic Wall"));
+    assert!(info_html.contains("Pset_WallCommon"));
+    assert!(info_html.contains("IFCFACETEDBREP"));
+
+    let products_csv =
+        std::fs::read_to_string(out_dir.join("ifc_products.csv")).expect("products csv");
+    assert!(products_csv.contains("ifc_step_id,global_id,ifc_type"));
+    assert!(products_csv.contains("90,WALLGUID,IFCWALL"));
+    assert!(products_csv.contains(",true,12"));
+
+    let properties_csv =
+        std::fs::read_to_string(out_dir.join("ifc_properties.csv")).expect("properties csv");
+    assert!(properties_csv.contains("90,WALLGUID,IFCWALL"));
+    assert!(properties_csv.contains("Pset_WallCommon,Reference,W1"));
+
+    let geometry_csv =
+        std::fs::read_to_string(out_dir.join("ifc_geometry_items.csv")).expect("geometry csv");
+    assert!(geometry_csv.contains("90,WALLGUID,IFCWALL"));
+    assert!(geometry_csv.contains("Body,Brep,61,IFCFACETEDBREP"));
 
     let smooth_90_tileset: serde_json::Value = serde_json::from_slice(
         &std::fs::read(out_dir.join("tileset_smooth_90.json")).expect("smooth 90 tileset"),
@@ -480,6 +506,29 @@ fn unsupported_report_includes_skipped_empty_products() {
     )
     .expect("unsupported report json");
     assert_eq!(report["unsupported_items"]["IFCEXTRUDEDAREASOLID"], 1);
+}
+
+#[test]
+fn ifc_info_subcommand_core_exports_html_and_csv_without_converting_tiles() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let input = temp.path().join("revit_wall.ifc");
+    std::fs::write(&input, revit_like_ifc_wall()).expect("write ifc fixture");
+    let output = temp.path().join("ifc_info");
+
+    let outputs =
+        ifc_to_3dtiles::ifc_info::write_ifc_info_path(&input, &output).expect("write ifc info");
+
+    assert_eq!(outputs, vec![output.clone()]);
+    assert!(output.join("ifc_info.html").is_file());
+    assert!(output.join("ifc_products.csv").is_file());
+    assert!(output.join("ifc_properties.csv").is_file());
+    assert!(output.join("ifc_geometry_items.csv").is_file());
+    assert!(!output.join("tileset.json").exists());
+
+    let products_csv =
+        std::fs::read_to_string(output.join("ifc_products.csv")).expect("products csv");
+    assert!(products_csv.contains("90,WALLGUID,IFCWALL"));
+    assert!(products_csv.contains(",false,0"));
 }
 
 #[test]

@@ -16,6 +16,7 @@ use crate::{
         local_placement_matrix, mesh_extruded_area_solid, mesh_faceted_brep,
     },
     glb,
+    ifc_info::{ConvertedProductInfo, write_ifc_info_outputs},
     model::StyleTable,
     step::{
         EntityRecord, StepIndex, decode_ifc_string, extract_first_ref, extract_refs, numbers_in,
@@ -275,6 +276,14 @@ fn convert_file(input: &Path, options: &ConvertOptions) -> Result<PathBuf> {
             &skipped_unsupported_items,
         ))?,
     )?;
+    let converted_products = features
+        .iter()
+        .map(|feature| ConvertedProductInfo {
+            ifc_step_id: feature.metadata.ifc_step_id,
+            triangle_count: feature.mesh.triangle_count(),
+        })
+        .collect::<Vec<_>>();
+    write_ifc_info_outputs(input, &output_dir, &index, &converted_products)?;
 
     let tile_result = write_tiles(
         &tiles_dir,

@@ -819,3 +819,15 @@
 - `index_maplibre_three.html` / `index_three.html` 補可見「底圖」標籤，選項統一為 `EMAP5`、`Google 街景圖`、`Google 航照圖`、`OSM`。
 - `three_viewer_common.js` 的 MapLibre raster basemap label 同步改為 `Google 街景圖`；value 維持 `googleRoadmap` 以避免破壞既有狀態相容性。
 - 使用者已確認 template 內有出現底圖選擇器。
+
+### IFC Info Export
+
+- 使用者希望能匯出 IFC info，提供 HTML / CSV 檢查細節。
+- 新增 `ifc-info` CLI 子指令，可只讀 IFC 並輸出：
+  - `ifc_info.html`
+  - `ifc_info.json`
+  - `ifc_products.csv`
+  - `ifc_properties.csv`
+  - `ifc_geometry_items.csv`
+- 一般 IFC -> 3D Tiles 轉檔也會自動在 `out\<ifc-name>\` 產生同一組 IFC info，不需要額外再跑一次。
+- report 目前涵蓋 product 清單、property set / single value、shape representation item、resolved geometry type、supported flag、converted flag、triangle count，以及 top entity type 統計。

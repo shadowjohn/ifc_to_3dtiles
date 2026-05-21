@@ -9,6 +9,7 @@ pub mod geometry;
 pub mod geometry_preview;
 pub mod georef;
 pub mod glb;
+pub mod ifc_info;
 pub mod inspect;
 pub mod inspect_drilldown;
 pub mod inspect_review;

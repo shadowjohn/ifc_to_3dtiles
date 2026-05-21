@@ -12,6 +12,7 @@ Rust CLI for converting IFC2X3 models into standalone GLB plus Cesium 3D Tiles 1
 - IFC style color extraction with fallback report.
 - Standalone `<name>_flat.glb` / `<name>_smooth.glb` with glTF `extras` metadata and metadata file pointer.
 - `metadata.json` and `unsupported_geometry_report.json` beside generated tiles.
+- IFC info export beside generated tiles: `ifc_info.html`, `ifc_info.json`, `ifc_products.csv`, `ifc_properties.csv`, `ifc_geometry_items.csv`.
 - EPSG:3826 to WGS84/ECEF georeferencing via `proj4rs`.
 - Root ENU-to-ECEF transform with local float32 geometry.
 - Spatial tiling with configurable feature / triangle limits.
@@ -73,6 +74,26 @@ cargo build --release
 注意：`--output` 請填 parent folder，例如 `.\out`。程式會自動建立 `out\<ifc-name>\`。如果填 `out\DJB-M-SU-_`，會變成 `out\DJB-M-SU-_\DJB-M-SU-_`。
 
 預設 tiling 目標偏向互動載入：`--tile-max-triangles 20000` 約落在 2-3MB 級距。若單一 IFC product 本身超過 triangle budget，converter 會再按 triangle chunk 拆成多個 b3dm；這只是分包，不會減面或降低畫質。
+
+一般 IFC -> 3D Tiles 轉檔完成後，程式會自動在 `out\<ifc-name>\` 產生一組 IFC info 檢查檔：
+
+```text
+ifc_info.html
+ifc_info.json
+ifc_products.csv
+ifc_properties.csv
+ifc_geometry_items.csv
+```
+
+若只想匯出 IFC 資訊、不產 GLB / tiles，可使用獨立指令：
+
+```powershell
+.\target\release\ifc_to_3dtiles.exe ifc-info `
+  --input .\DJB-M-SU-_.ifc `
+  --output .\out\DJB-M-SU-_info
+```
+
+`--input` 也可指定 IFC 目錄；此時每個 `.ifc` 會在 `--output\<ifc-name>\` 各自輸出一份 report。
 
 ## RVT Input
 
