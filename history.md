@@ -842,3 +842,83 @@
   - `Products` / `Properties` / `Geometry` / `Entities`：各自獨立表格。
   - 搜尋框只篩目前頁籤，`Products` 的 property count 可直接切到 `Properties` 並用 StepId 篩選。
   - 每個頁籤會依目前表格產生欄位開關，方便隱藏不需要看的欄位。
+
+### Cesium PBR / Metal Material Test
+
+- 使用者提供測試目標：`out\CJ02-金門大橋_F03_20260522high\index.html`。
+- 使用者希望改善客戶覺得材質太素的問題，先試金屬材質方向。
+- 已閱讀 Cesium 2024-10-31 PBR / Khronos PBR Neutral tone mapping 分享；重點是新版 glTF PBR、反射與 tone mapping 會讓模型更亮、更接近 glTF 生態系顯示結果。
+- 目前該 viewer 使用 Cesium 1.141，`viewer.scene.highDynamicRange = false`，尚未加入材質 / tone mapper UI。
+- 本次輸出 `conversion_report.json` 顯示 `style_item_count = 0`，88 個 converted features 都使用 fallback 顏色，適合先在 viewer 端用 `CustomShader` 做可切換金屬感實驗，不先改 IFC/GLB 轉檔資料。
+- 使用者架設 `http://localhost/CJ02` 後遇到 500；IIS log 顯示 `500 19 5`，根因是 IIS app pool / anonymous identity 沒有讀取 Desktop 輸出資料夾與 `web.config` 的權限。
+- 已對 `out\CJ02-金門大橋_F03_20260522high` 補 `IIS_IUSRS` 與 `IUSR` read/execute 權限；`/CJ02/`、`index.html`、`tileset.json`、`.b3dm` 皆回 200。
+- 後續瀏覽器發現 `Cesium is not defined`，根因是 `/CJ02/` 下的 `../Cesium-1.141` 會解析成站台根目錄 `/Cesium-1.141`，IIS 未掛出該共用資料夾。
+- 因新增 IIS virtual directory 需要全域 IIS 設定寫入權限且被拒，改用輸出資料夾內修法：`index.html` 的 Cesium 路徑改為 `./Cesium-1.141/...`，並在該資料夾建立 `Cesium-1.141` junction 指向 `out\Cesium-1.141`。
+- 已用瀏覽器 fresh URL 驗證 `/CJ02/?v=20260522-0531` 顯示 Cesium toolbar 且 status 為 `Loaded: tileset.json`。
+- 使用者確認要試金屬材質後，已在 `out\CJ02-金門大橋_F03_20260522high\index.html` 加入 viewer 端材質切換：
+  - `原始`
+  - `銀灰金屬`
+  - `深色金屬`
+  - `高反光測試`
+- 金屬模式使用 Cesium `CustomShader` + `LightingModel.PBR`，調整 diffuse/specular/roughness/emissive，不改原始 tiles / GLB。
+- viewer 已啟用 HDR，並將 post process tonemapper 設為 `Cesium.Tonemapper.PBR_NEUTRAL`，搭配 directional light 讓金屬反光更明顯。
+- 驗證結果：`index.html` 仍無 UTF-8 BOM；`/CJ02/`、Cesium.js、`tileset.json`、第一顆 `.b3dm` 皆 HTTP 200；瀏覽器 fresh tab 可載入 canvas，材質下拉切到 `銀灰金屬` 後狀態顯示 `材質：銀灰金屬（PBR 金屬）`，無 Cesium 錯誤面板。
+- 使用者後續要求大氣層、太陽光、水波、陰影與時間控制都要用開關 / bar：
+  - 新增 `大氣`、`太陽`、`陰影`、`水波` 四個 checkbox，預設皆開啟。
+  - 新增 `時間` range bar，範圍 `00:00` 到 `23:59`，預設用瀏覽器目前時間，也可用 query `time=HH:MM` 指定。
+  - `太陽` 會切換 Cesium sun 顯示與 `SunLight`，`陰影` 會同步 `viewer.shadows`、globe shadow receive mode、tileset shadow mode。
+  - `水波` 使用 Cesium `Material.WaterType` + `waterNormals.jpg` 在 tileset bounding sphere 下方建立一片 viewer 端海面 primitive，並用 requestRender timer 讓水波動畫更新。
+- 除錯記錄：一開始把 `skyAtmosphere` 設為 boolean `true`，Cesium 1.141 內部會把它當物件呼叫 `setDynamicLighting`，造成 `TypeError: s.setDynamicLighting is not a function`。已改為 `skyAtmosphere: undefined` 讓 Cesium 建立預設 `SkyAtmosphere`，並用 `skyBox: undefined` 讓 sun 物件存在；月亮維持隱藏。
+- 驗證結果：marker check 通過、`index.html` 仍無 UTF-8 BOM、`/CJ02/` 與 `waterNormals.jpg` HTTP 200；瀏覽器 reload 後無 Cesium 錯誤面板，四個開關預設 ON，時間 bar 可調整到 `12:00`，畫面可看到明顯陰影。
+- 使用者覺得高反光金屬有「黃金聖戰士」感；本輪先未調材質色調，避免和 UI 排列變更混在一起比較。
+- 使用者要求 `大氣`、`太陽` 移到 `陰影` 那排前面；已在 visual tools 裡加強制 row break，讓第二排順序固定為 `大氣`、`太陽`、`陰影`、`水波`、`時間`。
+- 驗證結果：layout marker 通過、`index.html` 仍無 UTF-8 BOM、`/CJ02/` HTTP 200；瀏覽器量測控制項 top/left 確認 `大氣`、`太陽`、`陰影`、`水波`、`時間` 同排且順序正確，無 Cesium 錯誤面板。
+- 使用者詢問是否可知道模型由哪些項目組成，並在右側列出項目，讓使用者決定哪些零件套高反光材質。
+- 調查結果：
+  - `metadata.json` 有 88 個 converted feature，可用 `name`、`ifc_step_id`、`ifc_type` 建清單。
+  - feature 分組後約 31 組，其中包含 `P44橋柱預力鋼纜`、多個 `金門大橋-橋墩_TYPE *`、以及第一到第十六單元橋台節塊。
+  - 3D Tiles feature property 已可用 `ifc_step_id` 條件精準指定零件。
+- 已新增右側 `項目列表` panel：
+  - 從 `metadata.json` 載入並依 `name` 去掉最後 tag 分組。
+  - 提供搜尋、`全選目前`、`清除高反光`。
+  - 每組 checkbox 勾選後會把該組所有 `ifc_step_id` 加入局部高反光集合。
+- 已擴充材質 `CustomShader`：
+  - 沒有勾選項目時維持原本整體材質邏輯。
+  - 有勾選項目時，shader 會用 `fsInput.metadata.ifc_step_id` 判斷命中的 feature，只對命中項目使用 `高反光測試` 參數。
+  - 當左側材質為 `原始` 時也能只讓勾選項目高反光，方便比較。
+- 驗證結果：marker check 通過、`index.html` 仍無 UTF-8 BOM、`/CJ02/`、`metadata.json`、`tileset.json` HTTP 200；瀏覽器載入後項目清單顯示 `31 組 / 88 件`，搜尋 `鋼纜` 只剩 `P44橋柱預力鋼纜`，勾選後狀態顯示 `局部高反光：1 組`，無 Cesium 錯誤面板。
+- 使用者要求調整 CJ02 viewer 工具列版面：
+  - `底圖` 選項從第二排移到第一排尾端，接在量測工具後面。
+  - `時間` slider 從工具列移到整個圖台底部中央，保留 `00:00` 到 `23:59` 控制與瀏覽器目前時間預設。
+  - `太陽` 與 `大氣` 位置交換，第二排環境開關順序改為 `太陽`、`大氣`、`陰影`、`水波`。
+- 驗證結果：`index.html` 仍無 UTF-8 BOM、`/CJ02/?v=layout-bottomtime-20260522` HTTP 200；瀏覽器 DOM 量測確認底圖在第一排量測工具後方、時間 dock 位於 viewport 底部中央、`太陽` 在 `大氣` 前方，且無 Cesium 錯誤面板。
+- 使用者把 IIS root 改到 `ifc_to_3dtiles\out`，測試 URL 改為 `http://localhost/CJ02/CJ02-金門大橋_F03_20260522high/`；`index.html` 的 Cesium asset 路徑已改回上一層 `../Cesium-1.141/...`，水波 normal map 同步改為上一層。
+- 使用者要求 `透地` 預設開啟；已把按鈕預設改為 `透地 ON`，app state 預設 `undergroundEnabled: true`，並在 viewer 初始化後套用 `globe.depthTestAgainstTerrain = false`。
+- 右側 `項目列表` 每組右側新增 `定位` 按鈕：
+  - 讀取 `ifc_info.json` 的 converted product `wgs84_center` / bounds，以 `ifc_step_id` 對回 metadata 項目分組。
+  - 點定位會飛到該組中心，狀態列顯示 `定位：<名稱> · lon, lat`，並在 Cesium 中加青色 point + label 作為位置提示。
+  - 無定位資料時按鈕會 disabled，但目前 CJ02 的 31 組都有可用定位資料。
+- 驗證結果：需求檢查紅綠流程通過；inline scripts parse 通過；`index.html` 仍無 UTF-8 BOM；`http://localhost/CJ02/CJ02-金門大橋_F03_20260522high/`、`/CJ02/Cesium-1.141/Build/Cesium/Cesium.js`、`ifc_info.json` 皆 HTTP 200。瀏覽器實測新 URL 載入後 `透地 ON`、項目清單 `31 組 / 88 件`、31 個定位按鈕可用，點第一個 `第一單元_橋台節塊` 後狀態顯示 `定位：第一單元_橋台節塊 · 118.263211, 24.444712`，列表出現 1 個 located row，無 Cesium 錯誤面板。
+- 使用者要求點模型時，右邊 `項目列表` 也要捲到該筆並 focus；已新增模型選取到列表的聯動：
+  - `handleFeatureSelection` 取得 picked feature 後，讀取 `ifc_step_id`，用右側 group 的 `stepIds` 對回項目組。
+  - 對回後設定 `focusedGroupKey`，必要時清空搜尋條件讓該筆可見，重新 render 後 `scrollIntoView({ block: "center" })`，並把 DOM focus 放到該 row。
+  - 右側 row 會加 `.model-focused` outline；點空白或切換模式清除模型選取時，列表焦點框也會同步清掉。
+- 驗證結果：需求檢查紅綠流程通過；inline scripts parse 通過；`index.html` 仍無 UTF-8 BOM；`http://localhost/CJ02/CJ02-金門大橋_F03_20260522high/?v=model-focus-static-20260522` HTTP 200。瀏覽器實測先定位到 `第一單元_橋台節塊`，再點模型附近後，右側同名 row 變成 `.model-focused`，DOM focus 在該 row，無 Cesium 錯誤面板。
+- 使用者發現右側 `項目列表` 與 Cesium 屬性細節 InfoBox 會互相遮蓋；已調整 CSS：
+  - 桌面版 `.cesium-infoBox` 固定保留右側項目列表寬度，停在項目列表左邊。
+  - 窄視窗下 InfoBox 改到上方區塊，右側項目列表維持底部區域，避免互蓋。
+- 使用者詢問夜晚時光線是否能整個暗下來；已新增時間 bar 驅動的夜間暗化：
+  - 新增 `nightDimmer` overlay，只蓋 Cesium 圖台，不蓋工具列或右側 panel。
+  - `getNightFactor()` 以時間計算夜晚/黎明/白天/黃昏係數，午夜最大、白天為 0。
+  - `applyTimeOfDay()` 會同步更新 dimmer opacity，並讓 Cesium light intensity 依夜晚係數下降。
+- 驗證結果：需求檢查紅綠流程通過；inline scripts parse 通過；`index.html` 仍無 UTF-8 BOM；`http://localhost/CJ02/CJ02-金門大橋_F03_20260522high/?v=night-static-20260522` HTTP 200。瀏覽器實測 `time=00:00` 時 dimmer opacity 為 `0.580`，白天時間 dimmer opacity 為 `0.000`；選到模型後 InfoBox 右邊界 `1092`、項目列表左邊界 `1104`，無重疊且無 Cesium 錯誤面板。
+- 使用者詢問右側 `項目列表` 為什麼點擊後會自己偷捲；根因是 checkbox、定位、全選目前、清除高反光與清除模型選取都會呼叫 `renderItemGroups()`，而該函式用 `replaceChildren()` 重建列表時沒有保留 `itemList.scrollTop`。
+- 已把 `renderItemGroups(options)` 加入 `preserveScroll` 選項；清單自身互動改用 `renderItemGroups({ preserveScroll: true })`，點模型後對應右側 row 的 `scrollIntoView()` 行為則維持不變。
+- 驗證結果：紅燈檢查先確認缺少 `preserveScroll` 後，修正後全部通過；inline scripts parse 通過；`index.html` 仍無 UTF-8 BOM；`http://localhost/CJ02/CJ02-金門大橋_F03_20260522high/?v=item-scroll-static-20260522` HTTP 200。瀏覽器實測把項目清單捲到 `scrollTop=620` 後，點可見 `定位` 與 checkbox，兩次 `scrollTop` delta 都是 `0`，目前頁面無新增錯誤。
+- 使用者回報右側項目個別勾選高亮材質看起來沒有成功；根因是舊式 b3dm batch table 的 `ifc_step_id` 可被 InfoBox / `Cesium3DTileStyle` 讀到，但不能可靠作為 `CustomShader` fragment metadata 欄位。只改用 `featureIds.featureId_0` 也不行，因為每個 tile 的 batch id 都從 0 重新開始，會誤亮其他 tile。
+- 已把個別高亮改為 overlay tileset 架構：
+  - 主 tileset 用 `Cesium3DTileStyle` 依勾選的 `ifc_step_id` 隱藏被高亮項目。
+  - 第二份 `highlightTileset` 只顯示被勾選項目，並套用 `高反光測試` CustomShader，達成個別項目高亮材質。
+  - 原本點模型選取用的 selected overlay 保持獨立；base style 現在會同時合併模型選取與項目高亮條件。
+  - 移除局部高亮 shader 對 `fsInput.metadata.ifc_step_id` 的依賴，避免 GPU metadata 不存在時靜默失效。
+- 驗證結果：紅燈檢查先確認缺 overlay / style condition / metadata 依賴問題後，修正後全部通過；inline scripts parse 通過；`index.html` 仍無 UTF-8 BOM。瀏覽器實測 `material=original` 與 `material=mirror` 兩種 URL 下，勾選第一筆後 `data-highlight-overlay=ready`，狀態列顯示 `局部高反光：1 組（高亮材質）`，且無 highlight / CustomShader / metadata console 錯誤。
