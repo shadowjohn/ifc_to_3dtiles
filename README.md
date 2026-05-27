@@ -106,6 +106,25 @@ ifc_geometry_items.csv
 
 座標資訊在一般轉檔流程中最完整：`ifc_products.csv` 會包含每個已轉 product 的 WGS84 bbox / center；`ifc_info.html` 會顯示模型 WGS84 總範圍並用 Easymap CDN 小地圖定位 WGS84 extent。HTML report 採頁籤式表格，可在 Products / Properties / Geometry / Entities 間切換、搜尋目前頁籤，並用欄位開關控制表格欄位顯示。單獨跑 `ifc-info` 時不建立 mesh，座標欄位會留空。
 
+## GLB to 3D Tiles
+
+既有 `.glb` 可用 `glb-to-3dtiles` 轉成 b3dm tiles 與 `tileset.json`。這條路線不做 IFC 屬性解析、不產 BIM batch metadata，適合先把已整理好的 GLB 放進 Cesium demo。
+
+GLB 轉檔會依 `--tile-target-bytes` 近似控制單顆 b3dm 大小，預設約 2.8MB；若遇到單一 indexed triangle primitive 過大，工具會在 primitive 內切 index range 並重建小 GLB。內嵌 image bufferView 會輸出到 `tiles/textures/` 並由各 tile 共用，避免每顆 b3dm 重複塞整包貼圖。
+
+```powershell
+.\target\release\ifc_to_3dtiles.exe glb-to-3dtiles `
+  --input "..\Terrain Remaked.glb" `
+  --output .\out `
+  --longitude 120.644660 `
+  --latitude 24.102594 `
+  --height 0 `
+  --tile-target-bytes 2500000 `
+  --overwrite
+```
+
+`--longitude` / `--latitude` 是 WGS84 模型錨點；GLB 本身會保留原始局部座標，tileset root transform 負責把它放到地球上。
+
 ## RVT Input
 
 RVT 需要本機合法 Revit 2025-2027，並先建 Revit bridge：

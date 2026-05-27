@@ -940,3 +940,27 @@
   - 連續弧面相鄰面會平滑成一致法線。
   - 圓形擠出 segments 隨半徑提高但最多 64。
   - `tiles_smooth_90` 與 `tiles_smooth` 不再是同一份 b3dm。
+
+### 2026-05-27 GLB 單檔包成 3D Tiles
+
+- 使用者詢問能否利用 `ifc_to_3dtiles` 將既有 GLB 轉成 3D Tiles，並提供 `C:\Users\johnho\Desktop\rvt_to_glb\Terrain Remaked.glb`。
+- 已檢查該 GLB：version 2、約 75MB、POSITION accessor 範圍約數百公尺，屬局部模型座標。
+- 使用者提供 demo 錨點 `120.644660,24.102594`；此點先作為 WGS84 root transform anchor，高度預設 0m。
+- 新增 `glb-to-3dtiles` 子命令：
+  - 讀取 GLB JSON chunk 的 POSITION accessor `min` / `max` 建立 bounding volume。
+  - 將原 GLB 包成單顆 `tiles/tile_0000.b3dm`。
+  - 輸出 `tileset.json` 與 `glb_3dtiles_report.json`。
+  - 此路線不解析 IFC 屬性、不拆 mesh、不產 BIM batch metadata，定位由 `--longitude` / `--latitude` / `--height` 控制。
+- 已在 `run.bat` 加入 `Terrain Remaked.glb` 的測試命令。
+
+### 2026-05-27 GLB 分磚與貼圖外掛化
+
+- 使用者回報 `Terrain Remaked.glb` 轉出單顆 `tile_0000.b3dm` 約 74MB，要求切碎到單顆約 2-3MB。
+- 已檢查來源 `procedural-city-5.zip`：GLB 內有 67 張內嵌 texture image bufferView，zip 內另有 texture pack；目前實際使用的 `Terrain Remaked.glb` 已是貼圖內嵌版本。
+- `glb-to-3dtiles` 改為：
+  - 內嵌 image bufferView 輸出一次到 `tiles/textures/`，tile GLB 以相對 URI 共用貼圖，避免每顆 b3dm 重複包整組貼圖。
+  - 依 `--tile-target-bytes` 切 mesh primitive。
+  - 若單一 indexed triangle primitive 本身過大，會切 index range、重建小範圍 vertex/accessor/bufferView，並重新計算 POSITION bounds。
+  - 保留 root `extensionsUsed` / `extensionsRequired`，避免材質 extension 在切片後遺失宣告。
+- `run.bat` 的 `Terrain Remaked.glb` demo 改用 `--tile-target-bytes 2500000`。
+- 實測輸出 `out\Terrain Remaked`：16 顆 b3dm，最大約 2.34 MiB，67 張貼圖外掛化共約 42.6MB。

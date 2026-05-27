@@ -5,6 +5,7 @@ use ifc_to_3dtiles::{
     convert::{ConvertOptions, NormalMode, median_origin},
     crs,
     geometry::{self, MeshBuildOptions},
+    glb_tiles::{GlbToTilesOptions, glb_bounds_from_bytes},
     model::StyleTable,
     revit::{
         RevitVersion, detect_revit_installations_in_roots, missing_revit_installation_message,
@@ -64,6 +65,124 @@ fn b3dm_header_uses_padded_sections_and_batch_length() {
         (28 + u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize) % 8,
         0
     );
+}
+
+#[test]
+fn glb_bounds_are_extracted_from_position_accessors() {
+    let glb = minimal_glb_with_bounds(&[[-10.0, -2.0, -3.0], [1.0, 2.0, 3.0]]);
+
+    let bounds = glb_bounds_from_bytes(&glb).expect("glb bounds");
+
+    assert_eq!(bounds.min.to_array(), [-10.0, -2.0, -3.0]);
+    assert_eq!(bounds.max.to_array(), [1.0, 2.0, 3.0]);
+}
+
+#[test]
+fn glb_to_3dtiles_wraps_single_glb_at_wgs84_anchor() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let input = temp.path().join("terrain.glb");
+    std::fs::write(
+        &input,
+        minimal_glb_with_bounds(&[[-137.0, -0.5, -128.0], [128.0, 1.0, 128.0]]),
+    )
+    .expect("write glb fixture");
+    let output = temp.path().join("out");
+
+    let out_dir = ifc_to_3dtiles::glb_tiles::glb_to_3dtiles(&GlbToTilesOptions {
+        input,
+        output,
+        longitude: 120.644660,
+        latitude: 24.102594,
+        height: 0.0,
+        tile_target_bytes: 2_800_000,
+        overwrite: true,
+    })
+    .expect("wrap glb");
+
+    assert!(out_dir.join("tiles").join("tile_0000.b3dm").is_file());
+    assert!(out_dir.join("tileset.json").is_file());
+    assert!(out_dir.join("glb_3dtiles_report.json").is_file());
+
+    let tileset: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(out_dir.join("tileset.json")).expect("tileset"))
+            .expect("tileset json");
+    assert_eq!(
+        tileset["root"]["children"][0]["content"]["uri"],
+        "tiles/tile_0000.b3dm"
+    );
+    assert_eq!(
+        tileset["root"]["boundingVolume"]["box"][0],
+        serde_json::json!(-4.5)
+    );
+    assert_eq!(
+        tileset["root"]["transform"][12],
+        serde_json::json!(crs::ecef_from_lon_lat_height(120.644660, 24.102594, 0.0)[0])
+    );
+}
+
+#[test]
+fn glb_to_3dtiles_splits_primitives_by_target_size() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let input = temp.path().join("split.glb");
+    std::fs::write(&input, minimal_split_glb()).expect("write split glb fixture");
+    let output = temp.path().join("out");
+
+    let out_dir = ifc_to_3dtiles::glb_tiles::glb_to_3dtiles(&GlbToTilesOptions {
+        input,
+        output,
+        longitude: 120.644660,
+        latitude: 24.102594,
+        height: 0.0,
+        tile_target_bytes: 48,
+        overwrite: true,
+    })
+    .expect("split glb");
+
+    assert!(out_dir.join("tiles").join("tile_0000.b3dm").is_file());
+    assert!(out_dir.join("tiles").join("tile_0001.b3dm").is_file());
+
+    let tileset: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(out_dir.join("tileset.json")).expect("tileset"))
+            .expect("tileset json");
+    assert_eq!(tileset["root"]["children"].as_array().unwrap().len(), 2);
+
+    let report: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(out_dir.join("glb_3dtiles_report.json")).expect("report"),
+    )
+    .expect("report json");
+    assert_eq!(report["tile_count"], 2);
+    assert_eq!(report["tile_target_bytes"], 48);
+    assert_eq!(report["tiles"][0]["primitive_count"], 1);
+}
+
+#[test]
+fn glb_to_3dtiles_splits_oversized_indexed_primitives() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let input = temp.path().join("indexed.glb");
+    std::fs::write(&input, minimal_indexed_split_glb()).expect("write indexed glb fixture");
+    let output = temp.path().join("out");
+
+    let out_dir = ifc_to_3dtiles::glb_tiles::glb_to_3dtiles(&GlbToTilesOptions {
+        input,
+        output,
+        longitude: 120.644660,
+        latitude: 24.102594,
+        height: 0.0,
+        tile_target_bytes: 40,
+        overwrite: true,
+    })
+    .expect("split indexed glb");
+
+    assert!(out_dir.join("tiles").join("tile_0000.b3dm").is_file());
+    assert!(out_dir.join("tiles").join("tile_0001.b3dm").is_file());
+
+    let report: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(out_dir.join("glb_3dtiles_report.json")).expect("report"),
+    )
+    .expect("report json");
+    assert_eq!(report["tile_count"], 2);
+    assert_eq!(report["tiles"][0]["primitive_count"], 1);
+    assert_eq!(report["tiles"][1]["primitive_count"], 1);
 }
 
 #[test]
@@ -762,6 +881,179 @@ fn read_glb_json(path: impl AsRef<Path>) -> serde_json::Value {
     let json_length = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
     assert_eq!(&bytes[16..20], b"JSON");
     serde_json::from_slice(&bytes[20..20 + json_length]).expect("glb json")
+}
+
+fn minimal_glb_with_bounds(bounds: &[[f64; 3]; 2]) -> Vec<u8> {
+    let json = serde_json::json!({
+        "asset": { "version": "2.0" },
+        "scenes": [{ "nodes": [0] }],
+        "scene": 0,
+        "nodes": [{ "mesh": 0 }],
+        "meshes": [{
+            "primitives": [{
+                "attributes": { "POSITION": 0 },
+                "mode": 4
+            }]
+        }],
+        "accessors": [{
+            "componentType": 5126,
+            "count": 3,
+            "type": "VEC3",
+            "min": bounds[0],
+            "max": bounds[1]
+        }]
+    });
+    let mut json_bytes = serde_json::to_vec(&json).expect("json");
+    while !json_bytes.len().is_multiple_of(4) {
+        json_bytes.push(b' ');
+    }
+    let total_len = 12 + 8 + json_bytes.len();
+    let mut glb = Vec::with_capacity(total_len);
+    glb.extend_from_slice(b"glTF");
+    glb.extend_from_slice(&2u32.to_le_bytes());
+    glb.extend_from_slice(&(total_len as u32).to_le_bytes());
+    glb.extend_from_slice(&(json_bytes.len() as u32).to_le_bytes());
+    glb.extend_from_slice(b"JSON");
+    glb.extend_from_slice(&json_bytes);
+    glb
+}
+
+fn minimal_split_glb() -> Vec<u8> {
+    let mut bin = Vec::new();
+    let mut buffer_views = Vec::new();
+    let mut accessors = Vec::new();
+    let bounds = [
+        [[0.0, 0.0, 0.0], [1.0, 1.0, 0.0]],
+        [[2.0, 0.0, 0.0], [3.0, 1.0, 0.0]],
+    ];
+    for (index, bound) in bounds.iter().enumerate() {
+        let offset = bin.len();
+        for point in [
+            [bound[0][0], bound[0][1], bound[0][2]],
+            [bound[1][0], bound[0][1], bound[0][2]],
+            [bound[0][0], bound[1][1], bound[0][2]],
+        ] {
+            for value in point {
+                bin.extend_from_slice(&(value as f32).to_le_bytes());
+            }
+        }
+        buffer_views.push(serde_json::json!({
+            "buffer": 0,
+            "byteOffset": offset,
+            "byteLength": bin.len() - offset,
+            "target": 34962
+        }));
+        accessors.push(serde_json::json!({
+            "bufferView": index,
+            "componentType": 5126,
+            "count": 3,
+            "type": "VEC3",
+            "min": bound[0],
+            "max": bound[1]
+        }));
+    }
+    let json = serde_json::json!({
+        "asset": { "version": "2.0" },
+        "buffers": [{ "byteLength": bin.len() }],
+        "bufferViews": buffer_views,
+        "accessors": accessors,
+        "scenes": [{ "nodes": [0] }],
+        "scene": 0,
+        "nodes": [{ "mesh": 0 }],
+        "meshes": [{
+            "primitives": [
+                { "attributes": { "POSITION": 0 }, "mode": 4 },
+                { "attributes": { "POSITION": 1 }, "mode": 4 }
+            ]
+        }]
+    });
+    build_glb(json, bin)
+}
+
+fn minimal_indexed_split_glb() -> Vec<u8> {
+    let mut bin = Vec::new();
+    let positions_offset = bin.len();
+    for point in [
+        [0.0f32, 0.0, 0.0],
+        [1.0f32, 0.0, 0.0],
+        [0.0f32, 1.0, 0.0],
+        [1.0f32, 1.0, 0.0],
+    ] {
+        for value in point {
+            bin.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+    let indices_offset = bin.len();
+    for index in [0u16, 1, 2, 1, 3, 2] {
+        bin.extend_from_slice(&index.to_le_bytes());
+    }
+    let json = serde_json::json!({
+        "asset": { "version": "2.0" },
+        "buffers": [{ "byteLength": bin.len() }],
+        "bufferViews": [
+            {
+                "buffer": 0,
+                "byteOffset": positions_offset,
+                "byteLength": indices_offset - positions_offset,
+                "target": 34962
+            },
+            {
+                "buffer": 0,
+                "byteOffset": indices_offset,
+                "byteLength": bin.len() - indices_offset,
+                "target": 34963
+            }
+        ],
+        "accessors": [
+            {
+                "bufferView": 0,
+                "componentType": 5126,
+                "count": 4,
+                "type": "VEC3",
+                "min": [0.0, 0.0, 0.0],
+                "max": [1.0, 1.0, 0.0]
+            },
+            {
+                "bufferView": 1,
+                "componentType": 5123,
+                "count": 6,
+                "type": "SCALAR"
+            }
+        ],
+        "scenes": [{ "nodes": [0] }],
+        "scene": 0,
+        "nodes": [{ "mesh": 0 }],
+        "meshes": [{
+            "primitives": [{
+                "attributes": { "POSITION": 0 },
+                "indices": 1,
+                "mode": 4
+            }]
+        }]
+    });
+    build_glb(json, bin)
+}
+
+fn build_glb(json: serde_json::Value, mut bin: Vec<u8>) -> Vec<u8> {
+    let mut json_bytes = serde_json::to_vec(&json).expect("json");
+    while !json_bytes.len().is_multiple_of(4) {
+        json_bytes.push(b' ');
+    }
+    while !bin.len().is_multiple_of(4) {
+        bin.push(0);
+    }
+    let total_len = 12 + 8 + json_bytes.len() + 8 + bin.len();
+    let mut glb = Vec::with_capacity(total_len);
+    glb.extend_from_slice(b"glTF");
+    glb.extend_from_slice(&2u32.to_le_bytes());
+    glb.extend_from_slice(&(total_len as u32).to_le_bytes());
+    glb.extend_from_slice(&(json_bytes.len() as u32).to_le_bytes());
+    glb.extend_from_slice(b"JSON");
+    glb.extend_from_slice(&json_bytes);
+    glb.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+    glb.extend_from_slice(b"BIN\0");
+    glb.extend_from_slice(&bin);
+    glb
 }
 
 fn revit_like_ifc_wall() -> &'static str {

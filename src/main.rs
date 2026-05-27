@@ -16,6 +16,7 @@ use ifc_to_3dtiles::{
     },
     convert_path,
     geometry_preview::write_geometry_preview_outputs,
+    glb_tiles::{GlbToTilesOptions, glb_to_3dtiles},
     ifc_info::write_ifc_info_path,
     inspect::discover_sources,
     inspect_drilldown::write_drilldown_outputs,
@@ -229,6 +230,33 @@ enum Command {
         #[arg(long)]
         output: PathBuf,
     },
+    #[command(name = "glb-to-3dtiles")]
+    GlbTo3dtiles {
+        #[arg(long)]
+        input: PathBuf,
+
+        #[arg(long)]
+        output: PathBuf,
+
+        #[arg(long, help = "WGS84 longitude used as the local model anchor")]
+        longitude: f64,
+
+        #[arg(long, help = "WGS84 latitude used as the local model anchor")]
+        latitude: f64,
+
+        #[arg(long, default_value_t = 0.0, help = "Anchor height in meters")]
+        height: f64,
+
+        #[arg(
+            long,
+            default_value_t = ifc_to_3dtiles::glb_tiles::DEFAULT_GLB_TILE_TARGET_BYTES,
+            help = "Approximate target b3dm bytes per GLB tile"
+        )]
+        tile_target_bytes: usize,
+
+        #[arg(long)]
+        overwrite: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -338,6 +366,23 @@ fn run_command(command: &Command) -> Result<()> {
         Command::RuntimePublish { input, output } => run_runtime_publish(input, output),
         Command::GeometryPreview { input, output } => run_geometry_preview(input, output),
         Command::IfcInfo { input, output } => run_ifc_info(input, output),
+        Command::GlbTo3dtiles {
+            input,
+            output,
+            longitude,
+            latitude,
+            height,
+            tile_target_bytes,
+            overwrite,
+        } => run_glb_to_3dtiles(
+            input,
+            output,
+            *longitude,
+            *latitude,
+            *height,
+            *tile_target_bytes,
+            *overwrite,
+        ),
     }
 }
 
@@ -346,6 +391,28 @@ fn run_ifc_info(input: &Path, output: &Path) -> Result<()> {
     for output in outputs {
         println!("{}", output.display());
     }
+    Ok(())
+}
+
+fn run_glb_to_3dtiles(
+    input: &Path,
+    output: &Path,
+    longitude: f64,
+    latitude: f64,
+    height: f64,
+    tile_target_bytes: usize,
+    overwrite: bool,
+) -> Result<()> {
+    let output_dir = glb_to_3dtiles(&GlbToTilesOptions {
+        input: input.to_path_buf(),
+        output: output.to_path_buf(),
+        longitude,
+        latitude,
+        height,
+        tile_target_bytes,
+        overwrite,
+    })?;
+    println!("{}", output_dir.display());
     Ok(())
 }
 
