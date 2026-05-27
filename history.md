@@ -964,3 +964,4 @@
   - 保留 root `extensionsUsed` / `extensionsRequired`，避免材質 extension 在切片後遺失宣告。
 - `run.bat` 的 `Terrain Remaked.glb` demo 改用 `--tile-target-bytes 2500000`。
 - 實測輸出 `out\Terrain Remaked`：16 顆 b3dm，最大約 2.34 MiB，67 張貼圖外掛化共約 42.6MB。
+- README 已補充 GLB 分磚章節：說明 tile target 語意、indexed primitive 內部分片、內嵌貼圖外掛化、外部貼圖 URI 注意事項、輸出目錄結構、report 欄位與 `Terrain Remaked.glb` 實測結果。
