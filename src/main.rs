@@ -107,7 +107,7 @@ struct Cli {
     #[arg(
         long,
         default_value_t = 90.0,
-        help = "Smooth normal angle threshold, 0..180 degrees"
+        help = "Smart smooth angle threshold, 0..180 degrees; BIM hard edges are preserved"
     )]
     smooth_angle_deg: f64,
 

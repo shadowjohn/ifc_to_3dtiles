@@ -922,3 +922,21 @@
   - 原本點模型選取用的 selected overlay 保持獨立；base style 現在會同時合併模型選取與項目高亮條件。
   - 移除局部高亮 shader 對 `fsInput.metadata.ifc_step_id` 的依賴，避免 GPU metadata 不存在時靜默失效。
 - 驗證結果：紅燈檢查先確認缺 overlay / style condition / metadata 依賴問題後，修正後全部通過；inline scripts parse 通過；`index.html` 仍無 UTF-8 BOM。瀏覽器實測 `material=original` 與 `material=mirror` 兩種 URL 下，勾選第一筆後 `data-highlight-overlay=ready`，狀態列顯示 `局部高反光：1 組（高亮材質）`，且無 highlight / CustomShader / metadata console 錯誤。
+
+### 2026-05-27 BIM 智慧平滑與曲面感知 tessellation
+
+- 使用者指出 BIM 模型不適合全域 smooth shading；正式視覺應採「曲面平滑、結構保稜、曲面感知 tessellation」。
+- 已新增曲面感知 smoothing：
+  - 同 batch / 同 feature 內依頂點位置群組，不跨物件平滑。
+  - 使用面積 + 角點權重產生連續曲面法線。
+  - 90 度頂面/側面、牆角、樓板邊界等硬邊不再被正式 smoothing 吃掉。
+- 圓形擠出由固定 24 段改為依半徑與視覺誤差選擇 24 / 48 / 64 段，避免小構件過肥、大構件太粗。
+- 轉檔輸出語意調整：
+  - `<name>_smooth.glb` 與 `tileset_smooth_90.json` / `tiles_smooth_90\` 為正式智慧平滑。
+  - `<name>_smooth_full.glb` 與 `tileset_smooth.json` / `tiles_smooth\` 為全域 full smooth 診斷，不建議當 BIM 正式視覺。
+  - `conversion_report.json` 新增 `full_smooth_tile_count`。
+- 已補 TDD regression：
+  - 曲面感知 smoothing 會保留 cap/side 硬邊。
+  - 連續弧面相鄰面會平滑成一致法線。
+  - 圓形擠出 segments 隨半徑提高但最多 64。
+  - `tiles_smooth_90` 與 `tiles_smooth` 不再是同一份 b3dm。

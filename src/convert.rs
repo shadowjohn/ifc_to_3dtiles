@@ -90,6 +90,7 @@ pub struct ConversionReport {
     pub style_item_count: usize,
     pub tile_count: usize,
     pub smooth_tile_count: usize,
+    pub full_smooth_tile_count: usize,
     pub normal_mode: String,
     pub smooth_angle_deg: f64,
     pub warnings: Vec<String>,
@@ -111,7 +112,8 @@ enum FeatureBuildResult {
 #[derive(Debug, Default)]
 struct TileWriteResult {
     flat_children: Vec<TileJson>,
-    smooth_children: Vec<TileJson>,
+    smart_children: Vec<TileJson>,
+    full_smooth_children: Vec<TileJson>,
 }
 
 #[derive(Debug, Default)]
@@ -271,7 +273,14 @@ fn convert_file(input: &Path, options: &ConvertOptions) -> Result<PathBuf> {
     }
     let tiles_dir = output_dir.join("tiles");
     fs::create_dir_all(&tiles_dir)?;
-    let smooth_tiles_dir = if options.normal_mode == NormalMode::Both {
+    let smart_tiles_dir = if options.normal_mode == NormalMode::Both {
+        let dir = output_dir.join("tiles_smooth_90");
+        fs::create_dir_all(&dir)?;
+        Some(dir)
+    } else {
+        None
+    };
+    let full_smooth_tiles_dir = if options.normal_mode == NormalMode::Both {
         let dir = output_dir.join("tiles_smooth");
         fs::create_dir_all(&dir)?;
         Some(dir)
@@ -301,7 +310,8 @@ fn convert_file(input: &Path, options: &ConvertOptions) -> Result<PathBuf> {
 
     let tile_result = write_tiles(
         &tiles_dir,
-        smooth_tiles_dir.as_deref(),
+        smart_tiles_dir.as_deref(),
+        full_smooth_tiles_dir.as_deref(),
         &mut features,
         options,
     )?;
@@ -312,20 +322,21 @@ fn convert_file(input: &Path, options: &ConvertOptions) -> Result<PathBuf> {
         serde_json::to_vec_pretty(&tileset)?,
     )?;
     if options.normal_mode == NormalMode::Both {
-        let smooth_tileset =
-            tiles::build_tileset_json(root_transform, &root_bounds, &tile_result.smooth_children);
+        let smart_tileset =
+            tiles::build_tileset_json(root_transform, &root_bounds, &tile_result.smart_children);
+        fs::write(
+            output_dir.join("tileset_smooth_90.json"),
+            serde_json::to_vec_pretty(&smart_tileset)?,
+        )?;
+        let full_smooth_tileset = tiles::build_tileset_json(
+            root_transform,
+            &root_bounds,
+            &tile_result.full_smooth_children,
+        );
         fs::write(
             output_dir.join("tileset_smooth.json"),
-            serde_json::to_vec_pretty(&smooth_tileset)?,
+            serde_json::to_vec_pretty(&full_smooth_tileset)?,
         )?;
-        if is_default_smooth_90(options.smooth_angle_deg) {
-            write_smooth_90_alias(
-                &output_dir,
-                root_transform,
-                &root_bounds,
-                &tile_result.smooth_children,
-            )?;
-        }
     }
 
     let missing_color_total: usize = features
@@ -351,7 +362,12 @@ fn convert_file(input: &Path, options: &ConvertOptions) -> Result<PathBuf> {
         smooth_tile_count: if options.normal_mode == NormalMode::Smooth {
             tile_result.flat_children.len()
         } else {
-            tile_result.smooth_children.len()
+            tile_result.smart_children.len()
+        },
+        full_smooth_tile_count: if options.normal_mode == NormalMode::Both {
+            tile_result.full_smooth_children.len()
+        } else {
+            0
         },
         normal_mode: options.normal_mode.as_str().to_string(),
         smooth_angle_deg: if options.normal_mode == NormalMode::Flat {
@@ -401,7 +417,8 @@ fn wgs84_coord(source_epsg: u32, point: Vec3) -> Result<Wgs84Coordinate> {
 
 fn write_tiles(
     tiles_dir: &Path,
-    smooth_tiles_dir: Option<&Path>,
+    smart_tiles_dir: Option<&Path>,
+    full_smooth_tiles_dir: Option<&Path>,
     features: &mut [Feature],
     options: &ConvertOptions,
 ) -> Result<TileWriteResult> {
@@ -424,7 +441,8 @@ fn write_tiles(
                 meta.batch_id = 0;
                 write_tile_outputs(
                     tiles_dir,
-                    smooth_tiles_dir,
+                    smart_tiles_dir,
+                    full_smooth_tiles_dir,
                     &mut result,
                     tile_index,
                     &tile_mesh,
@@ -464,7 +482,8 @@ fn write_tiles(
 
         write_tile_outputs(
             tiles_dir,
-            smooth_tiles_dir,
+            smart_tiles_dir,
+            full_smooth_tiles_dir,
             &mut result,
             tile_index,
             &tile_mesh,
@@ -481,7 +500,8 @@ fn write_tiles(
 
 fn write_tile_outputs(
     tiles_dir: &Path,
-    smooth_tiles_dir: Option<&Path>,
+    smart_tiles_dir: Option<&Path>,
+    full_smooth_tiles_dir: Option<&Path>,
     result: &mut TileWriteResult,
     tile_index: usize,
     tile_mesh: &Mesh,
@@ -492,7 +512,7 @@ fn write_tile_outputs(
     let filename = format!("tile_{tile_index:04}.b3dm");
     if options.normal_mode == NormalMode::Smooth {
         let smooth_mesh =
-            tile_mesh.with_smoothed_normals_by_position_angle(1e-6, options.smooth_angle_deg);
+            tile_mesh.with_surface_aware_smoothed_normals(1e-6, options.smooth_angle_deg);
         write_b3dm(
             tiles_dir,
             &filename,
@@ -515,17 +535,32 @@ fn write_tile_outputs(
         geometric_error: 0.0,
     });
 
-    if let Some(smooth_tiles_dir) = smooth_tiles_dir {
+    if let Some(smart_tiles_dir) = smart_tiles_dir {
         let smooth_mesh =
-            tile_mesh.with_smoothed_normals_by_position_angle(1e-6, options.smooth_angle_deg);
+            tile_mesh.with_surface_aware_smoothed_normals(1e-6, options.smooth_angle_deg);
         write_b3dm(
-            smooth_tiles_dir,
+            smart_tiles_dir,
             &filename,
             &smooth_mesh,
             metadata.len(),
             &batch_table,
         )?;
-        result.smooth_children.push(TileJson {
+        result.smart_children.push(TileJson {
+            uri: format!("tiles_smooth_90/{filename}"),
+            bounds: smooth_mesh.bounds,
+            geometric_error: 0.0,
+        });
+    }
+    if let Some(full_smooth_tiles_dir) = full_smooth_tiles_dir {
+        let smooth_mesh = tile_mesh.with_smoothed_normals_by_position_angle(1e-6, 180.0);
+        write_b3dm(
+            full_smooth_tiles_dir,
+            &filename,
+            &smooth_mesh,
+            metadata.len(),
+            &batch_table,
+        )?;
+        result.full_smooth_children.push(TileJson {
             uri: format!("tiles_smooth/{filename}"),
             bounds: smooth_mesh.bounds,
             geometric_error: 0.0,
@@ -561,63 +596,6 @@ fn mesh_triangle_range(
     mesh
 }
 
-fn write_smooth_90_alias(
-    output_dir: &Path,
-    root_transform: [f64; 16],
-    root_bounds: &Bounds,
-    smooth_children: &[TileJson],
-) -> Result<()> {
-    let smooth_dir = output_dir.join("tiles_smooth");
-    let smooth_90_dir = output_dir.join("tiles_smooth_90");
-    copy_dir_contents(&smooth_dir, &smooth_90_dir)?;
-
-    let smooth_90_children =
-        retarget_tile_uris(smooth_children, "tiles_smooth/", "tiles_smooth_90/");
-    let smooth_90_tileset =
-        tiles::build_tileset_json(root_transform, root_bounds, &smooth_90_children);
-    fs::write(
-        output_dir.join("tileset_smooth_90.json"),
-        serde_json::to_vec_pretty(&smooth_90_tileset)?,
-    )?;
-    Ok(())
-}
-
-fn is_default_smooth_90(angle: f64) -> bool {
-    (angle - 90.0).abs() < 1e-9
-}
-
-fn retarget_tile_uris(children: &[TileJson], from: &str, to: &str) -> Vec<TileJson> {
-    children
-        .iter()
-        .map(|child| {
-            let mut retargeted = child.clone();
-            if let Some(rest) = retargeted.uri.strip_prefix(from) {
-                retargeted.uri = format!("{to}{rest}");
-            }
-            retargeted
-        })
-        .collect()
-}
-
-fn copy_dir_contents(source: &Path, destination: &Path) -> Result<()> {
-    fs::create_dir_all(destination)
-        .with_context(|| format!("建立目錄失敗：{}", destination.display()))?;
-    for entry in
-        fs::read_dir(source).with_context(|| format!("讀取目錄失敗：{}", source.display()))?
-    {
-        let entry = entry?;
-        let file_type = entry.file_type()?;
-        let target = destination.join(entry.file_name());
-        if file_type.is_dir() {
-            copy_dir_contents(&entry.path(), &target)?;
-        } else if file_type.is_file() {
-            fs::copy(entry.path(), &target)
-                .with_context(|| format!("複製檔案失敗：{}", target.display()))?;
-        }
-    }
-    Ok(())
-}
-
 fn write_standalone_glbs(
     output_dir: &Path,
     input: &Path,
@@ -639,10 +617,19 @@ fn write_standalone_glbs(
         )?;
     }
     if matches!(options.normal_mode, NormalMode::Smooth | NormalMode::Both) {
-        let extras = standalone_glb_extras(input, "smooth", features.len(), &metadata);
-        let smooth = mesh.with_smoothed_normals_by_position_angle(1e-6, options.smooth_angle_deg);
+        let extras = standalone_glb_extras(input, "smart_smooth", features.len(), &metadata);
+        let smooth = mesh.with_surface_aware_smoothed_normals(1e-6, options.smooth_angle_deg);
         fs::write(
             output_dir.join(format!("{stem}_smooth.glb")),
+            glb::build_glb_with_extras(&smooth, Some(extras))?,
+        )?;
+    }
+    if options.normal_mode == NormalMode::Both {
+        let extras =
+            standalone_glb_extras(input, "full_smooth_diagnostic", features.len(), &metadata);
+        let smooth = mesh.with_smoothed_normals_by_position_angle(1e-6, 180.0);
+        fs::write(
+            output_dir.join(format!("{stem}_smooth_full.glb")),
             glb::build_glb_with_extras(&smooth, Some(extras))?,
         )?;
     }

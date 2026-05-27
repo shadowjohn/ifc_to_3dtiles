@@ -4,7 +4,9 @@ use anyhow::{Result, anyhow, bail};
 
 use crate::step::{StepIndex, extract_first_ref, extract_refs, numbers_in, split_arguments};
 
-const CIRCLE_EXTRUSION_SEGMENTS: usize = 24;
+const CIRCLE_EXTRUSION_SEGMENT_CHOICES: [usize; 3] = [24, 48, 64];
+const DEFAULT_CIRCLE_EXTRUSION_MAX_SAGITTA: f64 = 0.025;
+const SURFACE_AWARE_MAX_SMOOTH_ANGLE_DEG: f64 = 60.0;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Vec3 {
@@ -268,6 +270,125 @@ impl Mesh {
 
         smoothed
     }
+
+    pub fn with_surface_aware_smoothed_normals(
+        &self,
+        tolerance: f64,
+        smooth_angle_deg: f64,
+    ) -> Self {
+        let tolerance = if tolerance.is_finite() && tolerance > 0.0 {
+            tolerance
+        } else {
+            1e-6
+        };
+        let smooth_angle_deg = smooth_angle_deg
+            .clamp(0.0, 180.0)
+            .min(SURFACE_AWARE_MAX_SMOOTH_ANGLE_DEG);
+        let cos_limit = smooth_angle_deg.to_radians().cos();
+        let mut groups = HashMap::<(u16, i64, i64, i64), Vec<NormalSample>>::new();
+
+        for sample in self.weighted_normal_samples() {
+            let Some(position) = self.positions.get(sample.index) else {
+                continue;
+            };
+            let batch_id = self
+                .batch_ids
+                .get(sample.index)
+                .copied()
+                .unwrap_or_default();
+            groups
+                .entry(normal_key(batch_id, position, tolerance))
+                .or_default()
+                .push(sample);
+        }
+
+        let mut smoothed = self.clone();
+        for values in groups.values() {
+            for source in values {
+                let mut sum = Vec3::default();
+                for candidate in values {
+                    let alignment = source.normal.dot(candidate.normal);
+                    if alignment >= cos_limit {
+                        sum = sum + candidate.normal * candidate.weight;
+                    }
+                }
+                let normal = if sum.length() > f64::EPSILON {
+                    sum.normalized()
+                } else {
+                    source.normal
+                };
+                if let Some(target) = smoothed.normals.get_mut(source.index) {
+                    *target = normal.to_array();
+                }
+            }
+        }
+
+        smoothed
+    }
+
+    fn weighted_normal_samples(&self) -> Vec<NormalSample> {
+        let mut samples = Vec::with_capacity(self.positions.len());
+        for index in 0..self.positions.len() {
+            samples.push(NormalSample {
+                index,
+                normal: self.vertex_normal_or_default(index),
+                weight: 1.0,
+            });
+        }
+
+        for triangle_start in (0..self.positions.len()).step_by(3) {
+            if triangle_start + 2 >= self.positions.len() {
+                break;
+            }
+            let a = Vec3::new(
+                self.positions[triangle_start][0],
+                self.positions[triangle_start][1],
+                self.positions[triangle_start][2],
+            );
+            let b = Vec3::new(
+                self.positions[triangle_start + 1][0],
+                self.positions[triangle_start + 1][1],
+                self.positions[triangle_start + 1][2],
+            );
+            let c = Vec3::new(
+                self.positions[triangle_start + 2][0],
+                self.positions[triangle_start + 2][1],
+                self.positions[triangle_start + 2][2],
+            );
+            let area = (b - a).cross(c - a).length() * 0.5;
+            if area <= f64::EPSILON {
+                continue;
+            }
+
+            let angles = [
+                corner_angle(a, b, c),
+                corner_angle(b, c, a),
+                corner_angle(c, a, b),
+            ];
+            for (offset, angle) in angles.into_iter().enumerate() {
+                if let Some(sample) = samples.get_mut(triangle_start + offset) {
+                    sample.weight = (area * angle.max(1e-9)).max(1e-9);
+                }
+            }
+        }
+
+        samples
+    }
+
+    fn vertex_normal_or_default(&self, index: usize) -> Vec3 {
+        self.normals
+            .get(index)
+            .map(|normal| Vec3::new(normal[0], normal[1], normal[2]).normalized())
+            .filter(|normal| normal.length() > f64::EPSILON)
+            .unwrap_or_else(|| Vec3::new(0.0, 0.0, 1.0))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NormalSample {
+    index: usize,
+    normal: Vec3,
+    weight: f64,
 }
 
 fn normal_key(batch_id: u16, position: &[f64; 3], tolerance: f64) -> (u16, i64, i64, i64) {
@@ -277,6 +398,35 @@ fn normal_key(batch_id: u16, position: &[f64; 3], tolerance: f64) -> (u16, i64, 
         (position[1] / tolerance).round() as i64,
         (position[2] / tolerance).round() as i64,
     )
+}
+
+fn corner_angle(origin: Vec3, a: Vec3, b: Vec3) -> f64 {
+    let va = a - origin;
+    let vb = b - origin;
+    let denom = va.length() * vb.length();
+    if denom <= f64::EPSILON {
+        return 0.0;
+    }
+    (va.dot(vb) / denom).clamp(-1.0, 1.0).acos()
+}
+
+pub fn circle_extrusion_segments_for_radius(radius: f64, max_sagitta: f64) -> usize {
+    let radius = radius.abs();
+    if radius <= f64::EPSILON {
+        return CIRCLE_EXTRUSION_SEGMENT_CHOICES[0];
+    }
+    let max_sagitta = if max_sagitta.is_finite() && max_sagitta > 0.0 {
+        max_sagitta
+    } else {
+        DEFAULT_CIRCLE_EXTRUSION_MAX_SAGITTA
+    };
+    for segments in CIRCLE_EXTRUSION_SEGMENT_CHOICES {
+        let sagitta = radius * (1.0 - (std::f64::consts::PI / segments as f64).cos());
+        if sagitta <= max_sagitta {
+            return segments;
+        }
+    }
+    *CIRCLE_EXTRUSION_SEGMENT_CHOICES.last().unwrap()
 }
 
 impl Default for Mesh {
@@ -671,9 +821,11 @@ fn mesh_circle_extrusion(
         .transpose()?
         .unwrap_or_else(Mat4::identity);
 
-    let mut local_points = Vec::with_capacity(CIRCLE_EXTRUSION_SEGMENTS);
-    for index in 0..CIRCLE_EXTRUSION_SEGMENTS {
-        let angle = std::f64::consts::TAU * index as f64 / CIRCLE_EXTRUSION_SEGMENTS as f64;
+    let segments =
+        circle_extrusion_segments_for_radius(radius, DEFAULT_CIRCLE_EXTRUSION_MAX_SAGITTA);
+    let mut local_points = Vec::with_capacity(segments);
+    for index in 0..segments {
+        let angle = std::f64::consts::TAU * index as f64 / segments as f64;
         local_points.push(profile_position.transform_point(Vec3::new(
             radius * angle.cos(),
             radius * angle.sin(),
@@ -693,8 +845,8 @@ fn mesh_circle_extrusion(
         .collect();
 
     let mut mesh = Mesh::new();
-    for i in 0..CIRCLE_EXTRUSION_SEGMENTS {
-        let j = (i + 1) % CIRCLE_EXTRUSION_SEGMENTS;
+    for i in 0..segments {
+        let j = (i + 1) % segments;
         append_triangle(
             &mut mesh,
             base[i],

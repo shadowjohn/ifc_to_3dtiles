@@ -10,13 +10,13 @@ Rust CLI for converting IFC2X3 models into standalone GLB plus Cesium 3D Tiles 1
 - RVT -> IFC -> GLB orchestration for local Revit 2025 / 2026 / 2027.
 - Product metadata to Batch Table: IFC id、GlobalId、類型、名稱、樓層、群組、style、顏色、Pset JSON。
 - IFC style color extraction with fallback report.
-- Standalone `<name>_flat.glb` / `<name>_smooth.glb` with glTF `extras` metadata and metadata file pointer.
+- Standalone `<name>_flat.glb` / `<name>_smooth.glb` with glTF `extras` metadata and metadata file pointer. When `--normal-mode both` is used, `<name>_smooth_full.glb` is also written as a diagnostic-only full smooth output.
 - `metadata.json` and `unsupported_geometry_report.json` beside generated tiles.
 - IFC info export beside generated tiles: `ifc_info.html`, `ifc_info.json`, `ifc_products.csv`, `ifc_properties.csv`, `ifc_geometry_items.csv`，含 WGS84 座標範圍與 Easymap 小地圖定位。
 - EPSG:3825 / 3826 / 3827 / 3828 / 4326 / 3857 to WGS84/ECEF georeferencing via `proj4rs`.
 - Root ENU-to-ECEF transform with local float32 geometry.
 - Spatial tiling with configurable feature / triangle limits.
-- Flat and smooth normal output modes.
+- Flat, surface-aware smart smooth, and diagnostic full smooth normal outputs. BIM default smoothing is curve-aware: curved faces are smoothed, structural edges stay sharp.
 - Cesium demo viewer: select, focus display, explode, move-out pad, measurement, basemap switching, render scale control.
 - Three.js comparison viewers:
   - pure Three.js + `3d-tiles-renderer`
@@ -74,6 +74,13 @@ cargo build --release
 注意：`--output` 請填 parent folder，例如 `.\out`。程式會自動建立 `out\<ifc-name>\`。如果填 `out\DJB-M-SU-_`，會變成 `out\DJB-M-SU-_\DJB-M-SU-_`。
 
 預設 tiling 目標偏向互動載入：`--tile-max-triangles 20000` 約落在 2-3MB 級距。若單一 IFC product 本身超過 triangle budget，converter 會再按 triangle chunk 拆成多個 b3dm；這只是分包，不會減面或降低畫質。
+
+法線輸出說明：
+
+- `tileset.json` / `tiles\`：flat shading，保留所有三角面。
+- `tileset_smooth_90.json` / `tiles_smooth_90\`：正式預設的智慧平滑；同一連續曲面內加權平滑，頂面/側面、牆角、樓板邊界等硬邊保留。
+- `tileset_smooth.json` / `tiles_smooth\`：全域 full smooth 診斷輸出，只用來比較法線問題，不建議當 BIM 正式視覺。
+- 圓形擠出不再固定 24 段，會依半徑與視覺誤差在 24 / 48 / 64 段間選擇，避免曲面太粗或 3D Tiles 無限制變肥。
 
 一般 IFC -> 3D Tiles 轉檔完成後，程式會自動在 `out\<ifc-name>\` 產生一組 IFC info 檢查檔：
 
@@ -365,5 +372,5 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\verify_index_page.ps1
 - 不做 Draco / meshopt 壓縮。
 - Viewer 目前預期輸出可包含：
   - `tileset.json`
-  - `tileset_smooth_90.json`
-  - `tileset_smooth.json`
+  - `tileset_smooth_90.json`（智慧平滑）
+  - `tileset_smooth.json`（全域平滑診斷）

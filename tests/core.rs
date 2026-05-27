@@ -314,6 +314,83 @@ fn smooth_normals_respect_angle_threshold() {
 }
 
 #[test]
+fn surface_aware_smoothing_preserves_cap_side_hard_edges() {
+    let mut mesh = geometry::Mesh::new();
+    mesh.positions = vec![
+        [0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+    ];
+    mesh.normals = vec![
+        [1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, 1.0],
+    ];
+    mesh.colors = vec![[1.0, 1.0, 1.0, 1.0]; mesh.positions.len()];
+    mesh.batch_ids = vec![0; mesh.positions.len()];
+
+    let smart = mesh.with_surface_aware_smoothed_normals(1e-6, 90.0);
+
+    assert_eq!(smart.normals[0], [1.0, 0.0, 0.0]);
+    assert_eq!(smart.normals[3], [0.0, 0.0, 1.0]);
+}
+
+#[test]
+fn surface_aware_smoothing_blends_continuous_curved_faces() {
+    let mut mesh = geometry::Mesh::new();
+    mesh.positions = vec![
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+    ];
+    mesh.normals = vec![
+        [1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.9659258262890683, 0.25881904510252074, 0.0],
+        [0.9659258262890683, 0.25881904510252074, 0.0],
+        [0.9659258262890683, 0.25881904510252074, 0.0],
+    ];
+    mesh.colors = vec![[1.0, 1.0, 1.0, 1.0]; mesh.positions.len()];
+    mesh.batch_ids = vec![0; mesh.positions.len()];
+
+    let smart = mesh.with_surface_aware_smoothed_normals(1e-6, 90.0);
+
+    assert!(smart.normals[0][0] > 0.99);
+    assert!(smart.normals[0][1] > 0.12);
+    assert_eq!(smart.normals[0], smart.normals[3]);
+}
+
+#[test]
+fn circle_extrusion_segments_grow_with_radius_without_unbounded_tessellation() {
+    assert_eq!(
+        geometry::circle_extrusion_segments_for_radius(0.5, 0.025),
+        24
+    );
+    assert_eq!(
+        geometry::circle_extrusion_segments_for_radius(5.0, 0.025),
+        48
+    );
+    assert_eq!(
+        geometry::circle_extrusion_segments_for_radius(25.0, 0.025),
+        64
+    );
+    assert_eq!(
+        geometry::circle_extrusion_segments_for_radius(250.0, 0.025),
+        64
+    );
+}
+
+#[test]
 fn revit_detection_finds_supported_install_roots() {
     let temp = tempfile::tempdir().expect("tempdir");
     let autodesk = temp.path().join("Autodesk");
@@ -551,6 +628,26 @@ fn swept_solid_circle_proxy_converts_to_glb_with_metadata() {
     let out_dir = outputs.first().expect("output dir");
     let flat_glb_json = read_glb_json(out_dir.join("revit_cable_flat.glb"));
     assert_eq!(flat_glb_json["accessors"][0]["count"], 288);
+    assert!(out_dir.join("revit_cable_smooth.glb").is_file());
+    assert!(out_dir.join("revit_cable_smooth_full.glb").is_file());
+    assert!(
+        out_dir
+            .join("tiles_smooth")
+            .join("tile_0000.b3dm")
+            .is_file()
+    );
+    assert!(
+        out_dir
+            .join("tiles_smooth_90")
+            .join("tile_0000.b3dm")
+            .is_file()
+    );
+    assert_ne!(
+        std::fs::read(out_dir.join("tiles_smooth").join("tile_0000.b3dm"))
+            .expect("full smooth tile"),
+        std::fs::read(out_dir.join("tiles_smooth_90").join("tile_0000.b3dm"))
+            .expect("smart smooth tile")
+    );
     assert_eq!(
         flat_glb_json["nodes"][0]["extras"]["features"][0]["ifc_type"],
         "IFCBUILDINGELEMENTPROXY"
