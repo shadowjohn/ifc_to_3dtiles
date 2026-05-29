@@ -276,6 +276,7 @@
       if (status) status.textContent = "MapLibre Three viewer error: " + (reason || "promise rejected");
     });
   </script>
+  <script src="./config.js"></script>
   <script src="../vendor/maplibre/maplibre-gl.js"></script>
   <script type="importmap">
     {
@@ -288,7 +289,7 @@
     }
   </script>
   <script type="module">
-    import { bootIfcThreeViewer } from "../three_viewer_common.js";
+    import { bootIfcThreeViewer } from "./three_viewer_common.js";
     bootIfcThreeViewer({ mode: "maplibre" });
   </script>
 </body>

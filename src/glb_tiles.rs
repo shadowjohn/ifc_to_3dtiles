@@ -10,7 +10,7 @@ use serde_json::{Map, Value, json};
 
 use crate::{
     b3dm, crs,
-    geometry::{Bounds, Vec3},
+    geometry::{Bounds, Mat4, Vec3},
     tiles::{self, TileJson},
 };
 
@@ -37,6 +37,8 @@ pub struct GlbToTilesReport {
     pub longitude: f64,
     pub latitude: f64,
     pub height: f64,
+    pub source_up_axis: String,
+    pub viewer_content_up_axis: String,
     pub byte_length: usize,
     pub tile_target_bytes: usize,
     pub bounds_min: [f64; 3],
@@ -71,6 +73,7 @@ struct PrimitiveRecord {
     mesh_index: usize,
     primitive_index: usize,
     node_index: Option<usize>,
+    node_transform: Mat4,
     bounds: Bounds,
     estimated_bytes: usize,
     index_start: Option<usize>,
@@ -81,6 +84,12 @@ struct PrimitiveRecord {
 struct TextureAsset {
     image_json: Value,
     byte_length: usize,
+}
+
+#[derive(Debug, Clone)]
+struct MeshNodeInstance {
+    node_index: Option<usize>,
+    transform: Mat4,
 }
 
 #[derive(Debug, Default)]
@@ -162,7 +171,7 @@ pub fn glb_to_3dtiles(options: &GlbToTilesOptions) -> Result<PathBuf> {
             .with_context(|| format!("寫入 b3dm 失敗：{}", filename))?;
         children.push(TileJson {
             uri: format!("tiles/{filename}"),
-            bounds: tile_bounds,
+            bounds: root_bounds,
             geometric_error: 0.0,
         });
         tile_reports.push(GlbTileReport {
@@ -196,6 +205,8 @@ pub fn glb_to_3dtiles(options: &GlbToTilesOptions) -> Result<PathBuf> {
         longitude: options.longitude,
         latitude: options.latitude,
         height: options.height,
+        source_up_axis: "gltf-y-up".to_string(),
+        viewer_content_up_axis: "z".to_string(),
         byte_length: glb.len(),
         tile_target_bytes: target_bytes,
         bounds_min: root_bounds.min.to_array(),
@@ -260,17 +271,8 @@ fn parse_glb(glb: &[u8]) -> Result<ParsedGlb> {
 
 fn glb_bounds_from_document(document: &Value) -> Result<Bounds> {
     let mut bounds = Bounds::empty();
-    let accessors = value_array(document, "accessors")?;
-    for accessor_index in position_accessor_indices(document) {
-        let accessor = accessors
-            .get(accessor_index)
-            .with_context(|| format!("POSITION accessor index 超出範圍：{accessor_index}"))?;
-        let min = accessor_vec3(accessor, "min")
-            .with_context(|| format!("POSITION accessor #{accessor_index} 缺少 min"))?;
-        let max = accessor_vec3(accessor, "max")
-            .with_context(|| format!("POSITION accessor #{accessor_index} 缺少 max"))?;
-        bounds.include(min);
-        bounds.include(max);
+    for primitive in primitive_records(document)? {
+        bounds.include_bounds(&primitive.bounds);
     }
     if !bounds.is_valid() {
         bail!("GLB 沒有可用 POSITION accessor min/max，無法建立 3D Tiles bounding volume");
@@ -337,17 +339,19 @@ fn externalize_image_buffer_views(
 fn primitive_records(document: &Value) -> Result<Vec<PrimitiveRecord>> {
     let meshes = value_array(document, "meshes")?;
     let accessors = value_array(document, "accessors")?;
-    let nodes_by_mesh = nodes_by_mesh(document);
+    let nodes_by_mesh = mesh_node_instances_by_mesh(document);
     let mut records = Vec::new();
 
     for (mesh_index, mesh) in meshes.iter().enumerate() {
         let Some(primitives) = mesh.get("primitives").and_then(Value::as_array) else {
             continue;
         };
-        let node_indices = nodes_by_mesh
-            .get(&mesh_index)
-            .cloned()
-            .unwrap_or_else(|| vec![None]);
+        let node_instances = nodes_by_mesh.get(&mesh_index).cloned().unwrap_or_else(|| {
+            vec![MeshNodeInstance {
+                node_index: None,
+                transform: Mat4::identity(),
+            }]
+        });
         for (primitive_index, primitive) in primitives.iter().enumerate() {
             let position_index = primitive
                 .get("attributes")
@@ -363,14 +367,16 @@ fn primitive_records(document: &Value) -> Result<Vec<PrimitiveRecord>> {
             let max = accessor_vec3(position_accessor, "max")
                 .with_context(|| format!("POSITION accessor #{position_index} 缺少 max"))?;
             let geometry_views = primitive_geometry_buffer_views(primitive, document);
-            for node_index in &node_indices {
-                let mut bounds = Bounds::empty();
-                bounds.include(min);
-                bounds.include(max);
+            let mut local_bounds = Bounds::empty();
+            local_bounds.include(min);
+            local_bounds.include(max);
+            for node_instance in &node_instances {
+                let bounds = transform_bounds(&local_bounds, node_instance.transform);
                 records.push(PrimitiveRecord {
                     mesh_index,
                     primitive_index,
-                    node_index: *node_index,
+                    node_index: node_instance.node_index,
+                    node_transform: node_instance.transform,
                     bounds,
                     estimated_bytes: estimate_record_bytes(&geometry_views, document),
                     index_start: None,
@@ -443,7 +449,7 @@ fn split_oversized_primitives(
             slice.estimated_bytes = record.estimated_bytes.saturating_mul(count) / total_indices;
             slice.estimated_bytes = slice.estimated_bytes.max(1);
             if let Ok(bounds) = bounds_for_index_slice(parsed, primitive, start, count) {
-                slice.bounds = bounds;
+                slice.bounds = transform_bounds(&bounds, slice.node_transform);
             }
             split_records.push(slice);
             start += count;
@@ -452,19 +458,201 @@ fn split_oversized_primitives(
     Ok(split_records)
 }
 
-fn nodes_by_mesh(document: &Value) -> BTreeMap<usize, Vec<Option<usize>>> {
-    let mut map = BTreeMap::<usize, Vec<Option<usize>>>::new();
+fn mesh_node_instances_by_mesh(document: &Value) -> BTreeMap<usize, Vec<MeshNodeInstance>> {
+    let mut map = BTreeMap::<usize, Vec<MeshNodeInstance>>::new();
     let Some(nodes) = document.get("nodes").and_then(Value::as_array) else {
         return map;
     };
+    let world_transforms = node_world_transforms(document);
     for (node_index, node) in nodes.iter().enumerate() {
         if let Some(mesh_index) = node.get("mesh").and_then(Value::as_u64) {
             map.entry(mesh_index as usize)
                 .or_default()
-                .push(Some(node_index));
+                .push(MeshNodeInstance {
+                    node_index: Some(node_index),
+                    transform: world_transforms
+                        .get(node_index)
+                        .copied()
+                        .unwrap_or_else(Mat4::identity),
+                });
         }
     }
     map
+}
+
+fn node_world_transforms(document: &Value) -> Vec<Mat4> {
+    let Some(nodes) = document.get("nodes").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut transforms = vec![Mat4::identity(); nodes.len()];
+    let mut visited = vec![false; nodes.len()];
+    let roots = scene_root_nodes(document, nodes.len());
+    for root in roots {
+        visit_node_transform(root, Mat4::identity(), nodes, &mut transforms, &mut visited);
+    }
+    for index in 0..nodes.len() {
+        if !visited[index] {
+            visit_node_transform(
+                index,
+                Mat4::identity(),
+                nodes,
+                &mut transforms,
+                &mut visited,
+            );
+        }
+    }
+    transforms
+}
+
+fn scene_root_nodes(document: &Value, node_count: usize) -> Vec<usize> {
+    let Some(scenes) = document.get("scenes").and_then(Value::as_array) else {
+        return (0..node_count).collect();
+    };
+    let scene_index = document
+        .get("scene")
+        .and_then(Value::as_u64)
+        .map(|index| index as usize)
+        .filter(|index| *index < scenes.len())
+        .unwrap_or(0);
+    let Some(scene_nodes) = scenes
+        .get(scene_index)
+        .and_then(|scene| scene.get("nodes"))
+        .and_then(Value::as_array)
+    else {
+        return (0..node_count).collect();
+    };
+    scene_nodes
+        .iter()
+        .filter_map(Value::as_u64)
+        .map(|index| index as usize)
+        .filter(|index| *index < node_count)
+        .collect()
+}
+
+fn visit_node_transform(
+    node_index: usize,
+    parent_transform: Mat4,
+    nodes: &[Value],
+    transforms: &mut [Mat4],
+    visited: &mut [bool],
+) {
+    if node_index >= nodes.len() || visited[node_index] {
+        return;
+    }
+    let local_transform = gltf_node_local_transform(&nodes[node_index]);
+    let world_transform = parent_transform * local_transform;
+    transforms[node_index] = world_transform;
+    visited[node_index] = true;
+    if let Some(children) = nodes[node_index].get("children").and_then(Value::as_array) {
+        for child in children {
+            if let Some(child_index) = child.as_u64().map(|index| index as usize) {
+                visit_node_transform(child_index, world_transform, nodes, transforms, visited);
+            }
+        }
+    }
+}
+
+fn gltf_node_local_transform(node: &Value) -> Mat4 {
+    if let Some(matrix) = node.get("matrix").and_then(Value::as_array) {
+        return mat4_from_gltf_matrix(matrix).unwrap_or_else(Mat4::identity);
+    }
+    let translation = vec3_array(node.get("translation"), [0.0, 0.0, 0.0]);
+    let rotation = vec4_array(node.get("rotation"), [0.0, 0.0, 0.0, 1.0]);
+    let scale = vec3_array(node.get("scale"), [1.0, 1.0, 1.0]);
+    translation_matrix(translation)
+        * rotation_matrix_from_quaternion(rotation)
+        * scale_matrix(scale)
+}
+
+fn mat4_from_gltf_matrix(values: &[Value]) -> Option<Mat4> {
+    if values.len() < 16 {
+        return None;
+    }
+    let mut m = [[0.0; 4]; 4];
+    for row in 0..4 {
+        for col in 0..4 {
+            m[row][col] = values.get(col * 4 + row)?.as_f64()?;
+        }
+    }
+    Some(Mat4 { m })
+}
+
+fn vec3_array(value: Option<&Value>, fallback: [f64; 3]) -> Vec3 {
+    let Some(values) = value.and_then(Value::as_array) else {
+        return Vec3::new(fallback[0], fallback[1], fallback[2]);
+    };
+    Vec3::new(
+        values
+            .first()
+            .and_then(Value::as_f64)
+            .unwrap_or(fallback[0]),
+        values.get(1).and_then(Value::as_f64).unwrap_or(fallback[1]),
+        values.get(2).and_then(Value::as_f64).unwrap_or(fallback[2]),
+    )
+}
+
+fn vec4_array(value: Option<&Value>, fallback: [f64; 4]) -> [f64; 4] {
+    let Some(values) = value.and_then(Value::as_array) else {
+        return fallback;
+    };
+    [
+        values
+            .first()
+            .and_then(Value::as_f64)
+            .unwrap_or(fallback[0]),
+        values.get(1).and_then(Value::as_f64).unwrap_or(fallback[1]),
+        values.get(2).and_then(Value::as_f64).unwrap_or(fallback[2]),
+        values.get(3).and_then(Value::as_f64).unwrap_or(fallback[3]),
+    ]
+}
+
+fn translation_matrix(translation: Vec3) -> Mat4 {
+    let mut matrix = Mat4::identity();
+    matrix.m[0][3] = translation.x;
+    matrix.m[1][3] = translation.y;
+    matrix.m[2][3] = translation.z;
+    matrix
+}
+
+fn scale_matrix(scale: Vec3) -> Mat4 {
+    let mut matrix = Mat4::identity();
+    matrix.m[0][0] = scale.x;
+    matrix.m[1][1] = scale.y;
+    matrix.m[2][2] = scale.z;
+    matrix
+}
+
+fn rotation_matrix_from_quaternion(rotation: [f64; 4]) -> Mat4 {
+    let [x, y, z, w] = rotation;
+    let xx = x * x;
+    let yy = y * y;
+    let zz = z * z;
+    let xy = x * y;
+    let xz = x * z;
+    let yz = y * z;
+    let wx = w * x;
+    let wy = w * y;
+    let wz = w * z;
+    Mat4 {
+        m: [
+            [1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy), 0.0],
+            [2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx), 0.0],
+            [2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy), 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+    }
+}
+
+fn transform_bounds(bounds: &Bounds, transform: Mat4) -> Bounds {
+    let mut result = Bounds::empty();
+    for x in [bounds.min.x, bounds.max.x] {
+        for y in [bounds.min.y, bounds.max.y] {
+            for z in [bounds.min.z, bounds.max.z] {
+                result.include(transform.transform_point(Vec3::new(x, y, z)));
+            }
+        }
+    }
+    result
 }
 
 fn primitive_geometry_buffer_views(primitive: &Value, document: &Value) -> BTreeSet<usize> {
@@ -1380,29 +1568,6 @@ fn accessor_type_components(accessor_type: &str) -> Result<usize> {
         "MAT4" => Ok(16),
         _ => bail!("accessor type 不支援：{accessor_type}"),
     }
-}
-
-fn position_accessor_indices(document: &Value) -> Vec<usize> {
-    let Some(meshes) = document.get("meshes").and_then(Value::as_array) else {
-        return Vec::new();
-    };
-    let mut indices = Vec::new();
-    for mesh in meshes {
-        let Some(primitives) = mesh.get("primitives").and_then(Value::as_array) else {
-            continue;
-        };
-        for primitive in primitives {
-            let Some(index) = primitive
-                .get("attributes")
-                .and_then(|attrs| attrs.get("POSITION"))
-                .and_then(Value::as_u64)
-            else {
-                continue;
-            };
-            indices.push(index as usize);
-        }
-    }
-    indices
 }
 
 fn accessor_vec3(accessor: &Value, name: &str) -> Option<Vec3> {

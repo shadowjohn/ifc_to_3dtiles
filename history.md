@@ -965,3 +965,113 @@
 - `run.bat` 的 `Terrain Remaked.glb` demo 改用 `--tile-target-bytes 2500000`。
 - 實測輸出 `out\Terrain Remaked`：16 顆 b3dm，最大約 2.34 MiB，67 張貼圖外掛化共約 42.6MB。
 - README 已補充 GLB 分磚章節：說明 tile target 語意、indexed primitive 內部分片、內嵌貼圖外掛化、外部貼圖 URI 注意事項、輸出目錄結構、report 欄位與 `Terrain Remaked.glb` 實測結果。
+
+### 2026-05-29 HTML template 共用設定
+
+- 使用者確認之後會自行把 `out\html_template` 複製到新輸出資料夾測試；本次只專注修改該範本資料夾。
+- 新增 `out\html_template\config.js` 作為 `index.html`、`index_three.html`、`index_maplibre_three.html` 的共用預設設定來源。
+- 共用設定涵蓋底圖、法線模式、畫質、自動畫質、焦點、爆炸、移出方向、地面顯示；Three / MapLibre Three 另支援 `contentUpAxis` 與 `doubleSided`。
+- `contentUpAxis: "auto"` 會以 `glb_3dtiles_report.json` 判斷 GLB-derived tiles 是否需要額外軸向修正；新版 GLB output 由 report 標示為 viewer Z-up，legacy 無 report 時才 fallback 到 Y-up。IFC/RVT tiles 預設維持 Z-up。遇到特殊模型可在 `config.js` 或 URL query 強制 `y` / `z`。
+- Three 系列 viewer 的 module import 改成同資料夾 `./three_viewer_common.js`，讓 `html_template` 複製進單一輸出資料夾後可以自包含 viewer common 檔。
+
+### 2026-05-29 GLB 外皮消失修正
+
+- 使用者回報 `Terrain Remaked.glb` 轉成 3D Tiles 後，`index_three.html` 可看到地面與部分物件，但房子外皮沒有完整出現。
+- 根因不是來源 GLB 缺資料，而是 GLB 分磚是 material / primitive slice，不是空間 tile；若 Three 3D Tiles renderer 只依目前視角載入部分 child tile，外牆、地面、透明材質等 slice 會被拆散顯示。
+- `glb-to-3dtiles` 調整：
+  - root transform 維持標準 ENU -> ECEF，符合 3D Tiles 對 glTF Y-up content 的處理方式。
+  - `glb_3dtiles_report.json` 新增 `source_up_axis: "gltf-y-up"` 與 `viewer_content_up_axis: "z"`；Three 3D Tiles renderer 已處理 glTF content orientation，新版 template auto 模式不再額外旋轉 GLB output。
+  - GLB child tile bounding volume 改共用 root bounds，避免 material slice 被當成獨立空間 tile 裁掉。
+  - GLB bounds 會套用 node transform，避免 source GLB 節點位移後 bounding volume 不準。
+- `out\html_template\three_viewer_common.js` 調整：
+  - GLB-derived tiles 會套用 DoubleSide，降低背面裁切造成的牆面消失。
+  - GLB-derived material-slice tiles 會主動 queue root children，並提高 3D Tiles renderer cache 設定，避免只載入部分材質 slice。
+  - Three viewer 點選效果改為只顯示黃色 bounding border，不再用黃色半透明 mesh 填滿整個物件，避免選取焦點過度刺眼。
+- 使用者後續發現部分角度整個模型消失；根因是 Three 3D Tiles renderer 在貼近或進入模型 bounding volume 的視角會把 GLB material-slice children 判為 `visible/active = 0`，但資料其實仍在 cache。
+  - 已新增 GLB visibility guard：記錄已載入的 GLB tile scene，renderer update 後把 material-slice scene 保持可見，並把 mesh `frustumCulled` 關閉。
+  - performance panel 若 renderer stats 與 guard 狀態不同，會以 guarded label 顯示，方便判讀這類非空間分磚的視角保護。
+- 實測 `Terrain Remaked.glb` 暫存輸出：`--tile-target-bytes 1500000` 產生 28 顆 b3dm；Three viewer auto / z 模式顯示 `double side on`、`visible/loaded/active tiles 28/28/28`，房子外皮、路面貼圖與 `rooftop_tank` 所在的 `tile_0027.b3dm` 都完整出現。
+- 使用者回報黃色選取框仍不對，期望可標到建物本身；根因是 GLB output 每顆 b3dm 只有單一 batch metadata，無法像 IFC 一樣直接以 BIM feature 選取。
+  - Three viewer 對 GLB-derived tiles 改用命中三角形的 connected component 產生選取框，避免框到整個 material slice / tile。
+  - 針對屋頂這類水平 component，選取框會自動向下延伸到地面並略放大 footprint，使 demo 可呈現「建物本身」的黃色外框；IFC/RVT 有 batch metadata 的正式 BIM 選取邏輯不受影響。
+- 使用者回報 Cesium `index.html` 拉近瀏覽時模型會被地圖/水面遮掉。
+  - 根因同樣與 GLB material-slice tiles 及近距離 depth test 有關；`透地 OFF` 時相機貼近或穿入地面/水面範圍，Cesium 的 terrain depth 會把模型內容擋掉。
+  - Cesium template 改為偵測 `glb_3dtiles_report.json`：GLB-derived tiles 預設 `underground: auto`，並開啟近距離 depth guard。
+  - GLB Cesium tileset 載入時使用較保守設定：`maximumScreenSpaceError = 0`、關閉 moving request culling / children bounds culling、提高 cache，避免非空間分磚在拉近時被裁切或卸載。
+
+### 2026-05-29 Cesium 版亮色背景與模型打光
+
+- 使用者回報主管覺得 `index.html` 的光澤亮度比 `index_three.html` 差，懷疑是 Cesium 版黑色宇宙背景造成觀感偏暗。
+- `out\html_template\index.html` 改為亮色 Cesium visual preset：
+  - CSS / `scene.backgroundColor` / `globe.baseColor` 預設改成與 Three viewer 接近的淡藍 `#bfdde7`。
+  - 新增 `DirectionalLight`，預設 `lightIntensity: 4.2`，避免無天空盒時模型只吃到偏暗的預設光。
+  - 對 tileset 套用 `imageBasedLightingFactor` 與 `lightColor` boost，讓 GLB 來源的建物貼圖在 Cesium 裡不要比 Three 版本悶太多。
+- `out\html_template\config.js` 新增 Cesium 可調參數：`backgroundColor`、`globeBaseColor`、`lightIntensity`、`imageBasedLighting`、`modelLightBoost`；也支援 URL query 覆蓋，方便現場微調展示亮度。
+- 使用者覺得簡化版 `index.html` 太陽春，要求改回 `out\CJ02-金門大橋_F03_20260522high\index.html` 的完整 viewer 版本當 template 基底。
+  - `out\html_template\index.html` 已改用高版 Cesium viewer：保留右側項目列表、材質模式、太陽 / 大氣 / 陰影 / 水波、時間列、局部高反光與定位功能。
+  - 同步移植本輪新增的 `config.js` 載入、亮色背景 / globe base、模型光照 boost、GLB close-view depth guard、GLB tileset 保守載入設定。
+  - `config.js` 的 Cesium 區塊新增 `materialMode`、`atmosphere`、`sun`、`shadow`、`water`、`time`，讓高版 viewer 的預設開關也能集中調整。
+- 主管仍覺得 `Terrain Remaked` 在 Cesium 版偏暗；已把預設改成偏展示用途：
+  - `lightIntensity` 從 4.2 提到 6.0，`imageBasedLighting` 從 1.45 提到 2.1，`modelLightBoost` 從 1.35 提到 1.75。
+  - `shadowDarkness` 新增並預設 0.12，降低 Cesium shadow map 對模型立面的壓暗。
+  - 新增 `displayBrightness` / `displayContrast`，原始材質模式也會套 viewer 端 display boost CustomShader；這只影響 HTML viewer 顯示，不改 b3dm / glb / texture 檔。
+- 使用者要求陰影暗度統一減少 40%；已將 `shadowDarkness` 從 0.12 調成 0.072，並新增 `shadowLift: 0.4` 讓 viewer 端 shader 對低亮部做一致補光，避免只有 Cesium 投影變淡、建物背光面仍過黑。
+
+### 2026-05-29 Cesium 陰影與原色校正
+
+- 使用者回報上一版「陰影關閉會過曝、陰影開啟又太黑，模型顏色不對」。
+- 重新檢查後確認：Cesium `shadowMap.darkness` 是陰影中的最低可見度，數值越高陰影越亮；上一版把 `0.12` 乘 0.6 變成 `0.072` 反而讓陰影更黑。
+- 另一個問題是 `displayBrightness` / `shadowLift` 的 CustomShader 會把深色材質往白色混合，造成貼圖與立面顏色被洗掉。
+- `out\html_template\config.js` 與 `index.html` 預設改回保色取向：
+  - `lightIntensity: 3.8`
+  - `imageBasedLighting: 1.25`
+  - `modelLightBoost: 1.1`
+  - `displayBrightness: 0`
+  - `displayContrast: 1.0`
+  - `shadowDarkness: 0.55`
+  - `shadowLift: 0`
+- 原始材質模式在 display/shadow lift 都為 0 時不再套 CustomShader，讓 Cesium 優先保留 GLB/B3DM 原貼圖顏色；陰影亮度改由 `shadowMap.darkness` 控制。
+- 高版 Cesium template 回填後一度把 `water` 預設開回來，會用透明水面覆蓋場景並造成泛白；已恢復 `water: false`，`index.html` 無 config 時的 fallback 也改成水波預設關。
+- 使用者確認保色版仍偏暗；保留 `displayBrightness: 0` / `shadowLift: 0` 不用洗白 shader，改以環境補光微調：
+  - `lightIntensity` 從 3.8 提到 4.4
+  - `imageBasedLighting` 從 1.25 提到 1.55
+  - `modelLightBoost` 從 1.1 提到 1.25
+  - `shadowDarkness` 從 0.55 提到 0.68，讓陰影面更透但保留陰影形狀。
+- 與 `index_three.html` 同角度比較後，使用者覺得 Three 的畫質與亮度更自然；Cesium 版新增 `ambientFill: 0.16`。
+  - `ambientFill` 以原材質顏色加少量 emissive，模擬 Three.js 的環境補光。
+  - 與 `displayBrightness` / `shadowLift` 不同，它不把暗色混成白色，主要改善背光面過暗與玻璃格線悶黑。
+  - 支援 URL query：`ambientFill` / `ambient-fill` / `fillLight` / `fill-light`。
+
+### 2026-05-29 Sketchfab 光影 preset
+
+- 使用者提供 Sketchfab 原始模型頁 `Procedural City 5`，要求 `index_three.html` 與 `index.html` 盡量抄原站光影。
+- 已從 Sketchfab embed HTML 的 `js-dom-data-prefetched-data` 解析公開 viewer 設定：
+  - background color: `[0.86667, 0.86667, 0.86667]`
+  - environment: enabled, exposure `1.2`, lightIntensity `5`, rotation `5.5417`
+  - postProcess: TAA enabled、SSR enabled、SSAO enabled（radius `7.5637`、intensity `0.6927`）、sharpen `0.2`
+  - toneMapping: enabled, method `filmic`, exposure `1`
+  - model lighting: `lighting.enable = false`，材質側大量啟用 Matcap / EmitColor；因此主要觀感不是 GIS 太陽直射，而是環境光、Matcap、film tone 與 AO。
+- `out\html_template\config.js` 新增 `visualPreset: "sketchfab"`，並把 Three / MapLibre Three / Cesium 預設往 Sketchfab 方向調整。
+- Three 系列 viewer：
+  - 支援 `backgroundColor`、`toneMapping`、`toneMappingExposure`、`ambientIntensity`、`directionLightIntensity`、`fillLightIntensity`。
+  - 預設使用灰色背景 `#dddddd`、ACES Filmic tone mapping、exposure `1.2`、HemisphereLight + warm/cool/fill directional lights，模擬 Sketchfab environment lighting。
+- Cesium viewer：
+  - 預設灰色背景 / globe base `#dddddd`。
+  - `toneMapping: "filmic"`，`imageBasedLighting: 2.35`，`modelLightBoost: 1.35`，`ambientFill: 0.24`。
+  - Sketchfab preset 下預設關閉 atmosphere / sun / shadow，避免 Cesium 的 GIS 太陽直射把模型帶回白天 BIM 觀感；保留 `sun` / `shadow` query 與 config 可手動開回。
+
+### 2026-05-29 環境補光與既有水痕反射
+
+- 使用者指出模型地面本身已有水痕貼圖，問題不是缺一層水面，而是 Cesium / Three 對既有濕痕的反射與各角度亮度不足。
+- `out\html_template\config.js` 新增可調參數：
+  - Cesium：`reflectionBoost`、`reflectionRoughness`、`cameraFillLight`、`cameraFillLightIntensity`。
+  - Three / MapLibre Three：`reflectionBoost`、`reflectionRoughness`、`cameraFillLightIntensity`。
+- Cesium `index.html`：
+  - 在 Sketchfab preset 下預設啟用跟隨相機方向的柔和 `DirectionalLight`，改善繞模型瀏覽時背光面忽暗的問題。
+  - 原始材質 CustomShader 增加 `specular` boost 與 roughness 上限，讓既有水痕/濕地面貼圖吃到更多環境高光，而不是覆蓋一大片透明水面。
+  - 支援 URL query：`reflectionBoost`、`reflectionRoughness`、`cameraFillLight`、`cameraFillLightIntensity`。
+- Three / MapLibre Three：
+  - 載入 `RoomEnvironment` 產生 scene environment map，讓 PBR 材質有可反射的環境來源。
+  - 對載入的 tile material 套用 `envMapIntensity`、roughness 上限與輕微 metalness，提升既有濕痕/玻璃高光。
+  - 新增 camera fill light，讓瀏覽角度改變時亮度更穩。
+- 驗證時曾抓到 Cesium `CustomShader` fragment compile error：`u_reflectionBoost` / `u_reflectionRoughness` 在 display boost shader 被引用但未宣告；已補齊 uniforms 後重測載入正常。

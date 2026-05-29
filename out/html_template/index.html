@@ -10,6 +10,11 @@
   <link rel="stylesheet" href="../Cesium-1.141/Build/Cesium/Widgets/widgets.css">
   <script src="../Cesium-1.141/Build/Cesium/Cesium.js"></script>
   <style>
+    :root {
+      --item-panel-outer-width: 362px;
+      --night-dim-opacity: 0;
+    }
+
     html,
     body,
     #cesiumContainer {
@@ -18,8 +23,17 @@
       margin: 0;
       padding: 0;
       overflow: hidden;
-      background: #0b0f14;
+      background: #bfdde7;
       font-family: "Microsoft JhengHei", "Segoe UI", sans-serif;
+    }
+
+    .night-dimmer {
+      position: absolute;
+      inset: 0;
+      z-index: 6;
+      pointer-events: none;
+      background: rgba(2, 6, 23, var(--night-dim-opacity));
+      transition: background 0.18s ease;
     }
 
     .tool-panel {
@@ -30,7 +44,7 @@
       display: grid;
       gap: 8px;
       align-items: start;
-      width: min(1120px, calc(100vw - 24px));
+      width: min(1120px, calc(100vw - 380px));
       padding: 8px;
       color: #f8fafc;
       background: rgba(15, 23, 42, 0.86);
@@ -90,7 +104,9 @@
     }
 
     .basemap-control,
+    .material-control,
     .normal-control,
+    .time-control,
     .render-scale-control,
     .explode-control,
     .move-control {
@@ -107,7 +123,8 @@
       font-size: 13px;
     }
 
-    .auto-render-control {
+    .auto-render-control,
+    .scene-toggle-control {
       display: inline-flex;
       gap: 5px;
       align-items: center;
@@ -121,17 +138,40 @@
       white-space: nowrap;
     }
 
-    .auto-render-control input {
+    .auto-render-control input,
+    .scene-toggle-control input {
       width: 14px;
       height: 14px;
       accent-color: #60a5fa;
     }
 
-    .basemap-control {
+    .visual-tools-row-break {
+      flex-basis: 100%;
+      width: 0;
+      height: 0;
+    }
+
+    .time-dock {
+      position: absolute;
+      left: 50%;
+      bottom: 12px;
+      z-index: 20;
+      transform: translateX(-50%);
+      pointer-events: auto;
+    }
+
+    .time-dock .time-control {
+      width: clamp(320px, 34vw, 460px);
+      grid-template-columns: auto minmax(180px, 1fr) 48px;
+    }
+
+    .basemap-control,
+    .material-control {
       grid-template-columns: auto minmax(120px, 170px);
     }
 
-    .basemap-control select {
+    .basemap-control select,
+    .material-control select {
       width: 100%;
       height: 26px;
       color: #e5e7eb;
@@ -142,6 +182,7 @@
     }
 
     .normal-control input,
+    .time-control input,
     .render-scale-control input,
     .explode-control input,
     .move-control input {
@@ -150,6 +191,7 @@
     }
 
     .normal-value,
+    .time-value,
     .render-scale-value,
     .explode-value,
     .move-value {
@@ -224,7 +266,9 @@
     }
 
     .cesium-infoBox {
-      max-width: min(460px, calc(100vw - 24px));
+      right: calc(var(--item-panel-outer-width) + 24px) !important;
+      width: min(460px, calc(100vw - 410px)) !important;
+      max-width: none;
     }
 
     .feature-table {
@@ -248,10 +292,203 @@
       font-weight: 600;
     }
 
+    .item-panel {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      z-index: 22;
+      display: grid;
+      grid-template-rows: auto auto auto minmax(0, 1fr);
+      gap: 8px;
+      width: 340px;
+      max-height: calc(100vh - 24px);
+      padding: 10px;
+      color: #f8fafc;
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 6px;
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.24);
+      backdrop-filter: blur(8px);
+    }
+
+    .item-panel-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: start;
+    }
+
+    .item-panel-title {
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .item-summary {
+      color: #cbd5e1;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .item-search {
+      width: 100%;
+      height: 30px;
+      min-width: 0;
+      padding: 0 9px;
+      color: #e5e7eb;
+      background: rgba(30, 41, 59, 0.92);
+      border: 1px solid rgba(148, 163, 184, 0.44);
+      border-radius: 5px;
+      font-size: 13px;
+      box-sizing: border-box;
+    }
+
+    .item-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .item-action-button {
+      height: 28px;
+      padding: 0 9px;
+      color: #e5e7eb;
+      background: rgba(30, 41, 59, 0.92);
+      border: 1px solid rgba(148, 163, 184, 0.44);
+      border-radius: 5px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .item-action-button:hover {
+      color: #ffffff;
+      background: #2563eb;
+      border-color: #60a5fa;
+    }
+
+    .item-list {
+      display: grid;
+      gap: 6px;
+      min-height: 0;
+      overflow: auto;
+      padding-right: 2px;
+    }
+
+    .item-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      padding: 8px;
+      color: #e5e7eb;
+      background: rgba(15, 23, 42, 0.58);
+      border: 1px solid rgba(148, 163, 184, 0.24);
+      border-radius: 5px;
+    }
+
+    .item-row.located {
+      border-color: rgba(34, 211, 238, 0.8);
+      background: rgba(8, 47, 73, 0.62);
+    }
+
+    .item-row.model-focused {
+      outline: 2px solid rgba(167, 139, 250, 0.9);
+      outline-offset: 2px;
+    }
+
+    .item-row-main {
+      display: grid;
+      grid-template-columns: 16px minmax(0, 1fr);
+      gap: 8px;
+      align-items: start;
+      min-width: 0;
+      cursor: pointer;
+    }
+
+    .item-row-main input {
+      width: 14px;
+      height: 14px;
+      margin: 2px 0 0;
+      accent-color: #facc15;
+    }
+
+    .item-row:has(input:checked) {
+      border-color: rgba(250, 204, 21, 0.72);
+      background: rgba(113, 63, 18, 0.58);
+    }
+
+    .item-locate-button {
+      height: 28px;
+      min-width: 48px;
+      padding: 0 8px;
+      color: #e0f2fe;
+      background: rgba(14, 116, 144, 0.78);
+      border: 1px solid rgba(103, 232, 249, 0.46);
+      border-radius: 5px;
+      font-size: 12px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .item-locate-button:hover,
+    .item-locate-button:focus-visible {
+      color: #ffffff;
+      background: #0891b2;
+      border-color: #67e8f9;
+    }
+
+    .item-locate-button:disabled {
+      color: #94a3b8;
+      background: rgba(30, 41, 59, 0.7);
+      border-color: rgba(148, 163, 184, 0.24);
+      cursor: not-allowed;
+    }
+
+    .item-name {
+      display: block;
+      color: #f8fafc;
+      font-size: 13px;
+      line-height: 1.35;
+      word-break: break-word;
+    }
+
+    .item-meta {
+      display: block;
+      margin-top: 3px;
+      color: #cbd5e1;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .item-empty {
+      padding: 10px;
+      color: #cbd5e1;
+      background: rgba(15, 23, 42, 0.58);
+      border: 1px solid rgba(148, 163, 184, 0.24);
+      border-radius: 5px;
+      font-size: 13px;
+    }
+
     @media (max-width: 720px) {
       .tool-panel {
         right: 12px;
         width: auto;
+      }
+
+      .item-panel {
+        top: auto;
+        left: 12px;
+        right: 12px;
+        bottom: 88px;
+        width: auto;
+        max-height: 42vh;
+      }
+
+      .cesium-infoBox {
+        top: 12px !important;
+        left: 12px !important;
+        right: 12px !important;
+        width: auto !important;
+        max-height: 38vh;
       }
 
       .toolbar-row,
@@ -260,7 +497,9 @@
       }
 
       .basemap-control,
+      .material-control,
       .normal-control,
+      .time-control,
       .render-scale-control,
       .explode-control,
       .move-control {
@@ -274,26 +513,37 @@
         bottom: 54px;
         text-align: left;
       }
+
+      .time-dock {
+        left: 12px;
+        right: 12px;
+        bottom: 96px;
+        transform: none;
+      }
+
+      .time-dock .time-control {
+        width: 100%;
+        grid-template-columns: auto minmax(96px, 1fr) 44px;
+      }
     }
   </style>
 </head>
 <body>
   <div id="cesiumContainer"></div>
+  <div id="nightDimmer" class="night-dimmer" aria-hidden="true"></div>
 
   <div id="toolPanel" class="tool-panel" aria-label="3D Tiles 工具列">
     <div class="toolbar-row primary-tools">
       <div class="tool-group mode-tools">
         <button class="tool-button active" type="button" data-mode="select">選取</button>
         <button class="tool-button" type="button" id="focusToggle" aria-pressed="false">焦點 OFF</button>
-        <button class="tool-button" type="button" id="undergroundToggle" aria-pressed="false">透地 OFF</button>
+        <button class="tool-button" type="button" id="undergroundToggle" aria-pressed="true">透地 ON</button>
       </div>
       <div class="tool-group measure-tools">
         <button class="tool-button" type="button" data-mode="distance">量距</button>
         <button class="tool-button" type="button" data-mode="area">量面</button>
         <button class="tool-button" type="button" id="clearMeasureButton">清除</button>
       </div>
-    </div>
-    <div class="toolbar-row settings-tools">
       <div class="tool-group basemap-tools">
         <label class="basemap-control">
           <span>底圖</span>
@@ -305,11 +555,22 @@
           </select>
         </label>
       </div>
+    </div>
+    <div class="toolbar-row settings-tools">
       <div class="tool-group visual-tools">
         <label class="normal-control">
           <span>法線</span>
           <input id="normalModeSlider" type="range" min="0" max="2" value="0" step="1">
           <span id="normalModeValue" class="normal-value">平面</span>
+        </label>
+        <label class="material-control">
+          <span>材質</span>
+          <select id="materialSelect" aria-label="材質模式">
+            <option value="original" selected>原始</option>
+            <option value="silver">銀灰金屬</option>
+            <option value="dark">深色金屬</option>
+            <option value="mirror">高反光測試</option>
+          </select>
         </label>
         <label class="render-scale-control">
           <span>畫質</span>
@@ -319,6 +580,23 @@
         <label class="auto-render-control">
           <input id="autoRenderScaleToggle" type="checkbox" checked>
           <span>自動</span>
+        </label>
+        <span class="visual-tools-row-break" aria-hidden="true"></span>
+        <label class="scene-toggle-control">
+          <input id="sunToggle" type="checkbox" checked>
+          <span>太陽</span>
+        </label>
+        <label class="scene-toggle-control">
+          <input id="atmosphereToggle" type="checkbox" checked>
+          <span>大氣</span>
+        </label>
+        <label class="scene-toggle-control">
+          <input id="shadowToggle" type="checkbox" checked>
+          <span>陰影</span>
+        </label>
+        <label class="scene-toggle-control">
+          <input id="waterToggle" type="checkbox" checked>
+          <span>水波</span>
         </label>
       </div>
       <div class="tool-group explode-tools">
@@ -348,18 +626,49 @@
     </div>
   </div>
 
+  <aside id="itemPanel" class="item-panel" aria-label="模型項目列表">
+    <div class="item-panel-header">
+      <div>
+        <div class="item-panel-title">項目列表</div>
+        <div id="itemSummary" class="item-summary">Loading metadata...</div>
+      </div>
+    </div>
+    <input id="itemSearch" class="item-search" type="search" placeholder="搜尋項目" aria-label="搜尋項目">
+    <div class="item-actions">
+      <button id="highlightVisibleItemsButton" class="item-action-button" type="button">全選目前</button>
+      <button id="clearItemHighlightsButton" class="item-action-button" type="button">清除高反光</button>
+    </div>
+    <div id="itemList" class="item-list"></div>
+  </aside>
+
+  <div id="timeDock" class="time-dock" aria-label="時間控制">
+    <label class="time-control">
+      <span>時間</span>
+      <input id="timeOfDaySlider" type="range" min="0" max="1439" step="1">
+      <span id="timeOfDayValue" class="time-value">--:--</span>
+    </label>
+  </div>
+
   <div id="status" class="status">Loading tileset.json...</div>
   <div id="measureResult" class="measure-result">選取模式</div>
 
+  <script src="./config.js"></script>
   <script>
     (async function () {
       const status = document.getElementById("status");
       const measureResult = document.getElementById("measureResult");
+      const nightDimmer = document.getElementById("nightDimmer");
       const normalModeSlider = document.getElementById("normalModeSlider");
       const normalModeValue = document.getElementById("normalModeValue");
       const renderScaleSlider = document.getElementById("renderScaleSlider");
       const renderScaleValue = document.getElementById("renderScaleValue");
       const autoRenderScaleToggle = document.getElementById("autoRenderScaleToggle");
+      const atmosphereToggle = document.getElementById("atmosphereToggle");
+      const sunToggle = document.getElementById("sunToggle");
+      const shadowToggle = document.getElementById("shadowToggle");
+      const waterToggle = document.getElementById("waterToggle");
+      const timeOfDaySlider = document.getElementById("timeOfDaySlider");
+      const timeOfDayValue = document.getElementById("timeOfDayValue");
       const explodeSlider = document.getElementById("explodeSlider");
       const explodeValue = document.getElementById("explodeValue");
       const moveOutSlider = document.getElementById("moveOutSlider");
@@ -368,18 +677,138 @@
       const focusToggle = document.getElementById("focusToggle");
       const undergroundToggle = document.getElementById("undergroundToggle");
       const basemapSelect = document.getElementById("basemapSelect");
+      const materialSelect = document.getElementById("materialSelect");
+      const itemSummary = document.getElementById("itemSummary");
+      const itemSearch = document.getElementById("itemSearch");
+      const itemList = document.getElementById("itemList");
+      const highlightVisibleItemsButton = document.getElementById("highlightVisibleItemsButton");
+      const clearItemHighlightsButton = document.getElementById("clearItemHighlightsButton");
       const query = new URLSearchParams(location.search);
-      const tilesetName = query.get("tileset") || "tileset.json";
+      const viewerConfig = getViewerConfig("cesium", query);
+      const tilesetName = query.get("tileset") || viewerConfig.tileset || "tileset.json";
       const tilesetUrl = "./" + tilesetName.replace(/^\/+/, "");
       const smooth90TilesetUrl = "./tileset_smooth_90.json";
       const smoothTilesetUrl = "./tileset_smooth.json";
+      const metadataUrl = "./metadata.json";
+      const ifcInfoUrl = "./ifc_info.json";
+      const waterNormalMapUrl = "../Cesium-1.141/Build/Cesium/Assets/Textures/waterNormals.jpg";
       const normalModes = [
         { mode: "flat", label: "平面", url: tilesetUrl },
         { mode: "smooth90", label: "90°", url: smooth90TilesetUrl },
         { mode: "smooth", label: "全平滑", url: smoothTilesetUrl }
       ];
+      const materialModes = {
+        original: {
+          label: "原始",
+          metallic: 0.0,
+          roughness: 1.0,
+          tint: [1.0, 1.0, 1.0],
+          tintStrength: 0.0,
+          brightness: 0.0,
+          contrast: 1.0,
+          specularBoost: 1.0
+        },
+        silver: {
+          label: "銀灰金屬",
+          metallic: 0.92,
+          roughness: 0.22,
+          tint: [0.78, 0.82, 0.86],
+          tintStrength: 0.72,
+          brightness: 0.05,
+          contrast: 1.12,
+          specularBoost: 1.15
+        },
+        dark: {
+          label: "深色金屬",
+          metallic: 0.95,
+          roughness: 0.18,
+          tint: [0.28, 0.31, 0.34],
+          tintStrength: 0.82,
+          brightness: 0.04,
+          contrast: 1.18,
+          specularBoost: 1.25
+        },
+        mirror: {
+          label: "高反光測試",
+          metallic: 1.0,
+          roughness: 0.06,
+          tint: [0.90, 0.92, 0.95],
+          tintStrength: 0.78,
+          brightness: 0.08,
+          contrast: 1.22,
+          specularBoost: 1.45
+        }
+      };
       const AUTO_RENDER_SCALE_MOVING = 0.5;
       const AUTO_RENDER_SCALE_RESTORED = 1.0;
+      const GLB_CLOSE_VIEW_DEPTH_FACTOR = 2.8;
+      const GLB_CLOSE_VIEW_MIN_DISTANCE = 40.0;
+      const DEFAULT_CESIUM_BACKGROUND = "#dddddd";
+      const DEFAULT_CESIUM_LIGHT_INTENSITY = 3.2;
+      const DEFAULT_CESIUM_IMAGE_BASED_LIGHTING = 2.35;
+      const DEFAULT_CESIUM_MODEL_LIGHT_BOOST = 1.35;
+      const DEFAULT_CESIUM_REFLECTION_BOOST = 0.38;
+      const DEFAULT_CESIUM_REFLECTION_ROUGHNESS = 0.28;
+      const DEFAULT_CESIUM_CAMERA_FILL_LIGHT = true;
+      const DEFAULT_CESIUM_CAMERA_FILL_LIGHT_INTENSITY = 3.4;
+      const DEFAULT_CESIUM_AMBIENT_FILL = 0.24;
+      const DEFAULT_CESIUM_DISPLAY_BRIGHTNESS = 0;
+      const DEFAULT_CESIUM_DISPLAY_CONTRAST = 1.02;
+      const DEFAULT_CESIUM_SHADOW_DARKNESS = 0.68;
+      const DEFAULT_CESIUM_SHADOW_LIFT = 0;
+      const glbReport = await readGlbTilesReportOptions();
+      const visualPreset = normalizeVisualPreset(viewerConfig.visualPreset, "sketchfab");
+      const initialNormalMode = normalizeNormalMode(viewerConfig.normalMode, "flat");
+      const initialRenderScale = clampNumber(viewerConfig.renderScale, 0.5, 1.0, AUTO_RENDER_SCALE_RESTORED);
+      const initialAutoRenderScale = toBool(viewerConfig.autoRenderScale, true);
+      const initialBasemap = normalizeBasemap(viewerConfig.basemap, "emap5");
+      const undergroundSetting = normalizeAutoBoolean(viewerConfig.underground);
+      const initialUnderground = undergroundSetting === "auto" ? glbReport.isGlbOutput : undergroundSetting;
+      const closeViewDepthGuard = toBool(viewerConfig.closeViewDepthGuard, true);
+      const cesiumBackground = normalizeCssColor(viewerConfig.backgroundColor, DEFAULT_CESIUM_BACKGROUND);
+      const cesiumGlobeBase = normalizeCssColor(viewerConfig.globeBaseColor, cesiumBackground);
+      const cesiumToneMapping = normalizeToneMapping(viewerConfig.toneMapping, visualPreset === "sketchfab" ? "filmic" : "pbrNeutral");
+      const cesiumLightIntensity = clampNumber(viewerConfig.lightIntensity, 0.5, 8.0, DEFAULT_CESIUM_LIGHT_INTENSITY);
+      const cesiumImageBasedLighting = clampNumber(
+        viewerConfig.imageBasedLighting,
+        0.0,
+        3.0,
+        DEFAULT_CESIUM_IMAGE_BASED_LIGHTING
+      );
+      const cesiumModelLightBoost = clampNumber(viewerConfig.modelLightBoost, 0.5, 3.0, DEFAULT_CESIUM_MODEL_LIGHT_BOOST);
+      const cesiumReflectionBoost = clampNumber(viewerConfig.reflectionBoost, 0.0, 1.0, DEFAULT_CESIUM_REFLECTION_BOOST);
+      const cesiumReflectionRoughness = clampNumber(
+        viewerConfig.reflectionRoughness,
+        0.02,
+        1.0,
+        DEFAULT_CESIUM_REFLECTION_ROUGHNESS
+      );
+      const cesiumCameraFillLight = toBool(viewerConfig.cameraFillLight, DEFAULT_CESIUM_CAMERA_FILL_LIGHT);
+      const cesiumCameraFillLightIntensity = clampNumber(
+        viewerConfig.cameraFillLightIntensity,
+        0.0,
+        8.0,
+        DEFAULT_CESIUM_CAMERA_FILL_LIGHT_INTENSITY
+      );
+      const cesiumAmbientFill = clampNumber(viewerConfig.ambientFill, 0.0, 0.5, DEFAULT_CESIUM_AMBIENT_FILL);
+      const cesiumDisplayBrightness = clampNumber(
+        viewerConfig.displayBrightness,
+        0.0,
+        0.6,
+        DEFAULT_CESIUM_DISPLAY_BRIGHTNESS
+      );
+      const cesiumDisplayContrast = clampNumber(viewerConfig.displayContrast, 0.75, 1.4, DEFAULT_CESIUM_DISPLAY_CONTRAST);
+      const cesiumShadowDarkness = clampNumber(viewerConfig.shadowDarkness, 0.0, 1.0, DEFAULT_CESIUM_SHADOW_DARKNESS);
+      const cesiumShadowLift = clampNumber(viewerConfig.shadowLift, 0.0, 1.0, DEFAULT_CESIUM_SHADOW_LIFT);
+      const initialMaterialMode = normalizeMaterialMode(viewerConfig.materialMode || viewerConfig.material, "original");
+      const initialAtmosphere = toBool(viewerConfig.atmosphere, visualPreset !== "sketchfab");
+      const initialSun = toBool(viewerConfig.sun, visualPreset !== "sketchfab");
+      const initialShadow = toBool(viewerConfig.shadow, visualPreset !== "sketchfab");
+      const initialWater = toBool(viewerConfig.water, false);
+      const initialTimeMinutes = getInitialTimeMinutes(viewerConfig.time);
+      const initialFocus = toBool(viewerConfig.focus, false);
+      const initialExplode = clampNumber(viewerConfig.explode, 0, 100, 0);
+      const initialMoveOut = clampNumber(viewerConfig.moveOut, 0, 100, 0);
       const moveDirections = {
         n: { x: 0, y: 1, label: "北" },
         ne: { x: 1, y: 1, label: "東北" },
@@ -390,20 +819,29 @@
         w: { x: -1, y: 0, label: "西" },
         nw: { x: -1, y: 1, label: "西北" }
       };
+      const initialMoveDirection = normalizeMoveDirection(viewerConfig.moveDirection, "sw");
       const appState = {
         mode: "select",
         shadingMode: "flat",
-        renderScale: AUTO_RENDER_SCALE_RESTORED,
-        renderScaleTarget: AUTO_RENDER_SCALE_RESTORED,
+        renderScale: initialRenderScale,
+        renderScaleTarget: initialRenderScale,
         debugRenderScale: query.get("debugScale") === "1",
-        autoRenderScaleEnabled: true,
+        visualPreset,
+        materialMode: initialMaterialMode,
+        atmosphereEnabled: initialAtmosphere,
+        sunEnabled: initialSun,
+        shadowEnabled: initialShadow,
+        waterEnabled: initialWater,
+        timeMinutes: initialTimeMinutes,
+        nightFactor: 0,
+        autoRenderScaleEnabled: initialAutoRenderScale,
         cameraMoving: false,
         renderScaleRestoreTimer: null,
-        focusEnabled: false,
-        undergroundEnabled: false,
-        basemap: "emap5",
-        moveOutDirection: "sw",
-        moveOutVector: moveDirections.sw,
+        focusEnabled: initialFocus,
+        undergroundEnabled: initialUnderground,
+        basemap: initialBasemap,
+        moveOutDirection: initialMoveDirection,
+        moveOutVector: moveDirections[initialMoveDirection],
         moveOutAmount: 0,
         tileset: null,
         tilesets: { flat: null, smooth90: null, smooth: null },
@@ -411,6 +849,21 @@
         selectedTileset: null,
         selectedTilesets: { flat: null, smooth90: null, smooth: null },
         selectedTilesetPromises: { flat: null, smooth90: null, smooth: null },
+        highlightTileset: null,
+        highlightTilesets: { flat: null, smooth90: null, smooth: null },
+        highlightTilesetPromises: { flat: null, smooth90: null, smooth: null },
+        waterPrimitive: null,
+        waterRenderTimer: null,
+        materialShaders: { flat: null, smooth90: null, smooth: null },
+        highlightShaders: { flat: null, smooth90: null, smooth: null },
+        itemGroups: [],
+        visibleItemGroups: [],
+        itemInfoByStepId: {},
+        itemLocationEntity: null,
+        locatedGroupKey: null,
+        focusedGroupKey: null,
+        highlightedGroupKeys: new Set(),
+        highlightedStepIds: new Set(),
         selectedShader: null,
         selectedShaders: { flat: null, smooth90: null, smooth: null },
         selectedFeature: null,
@@ -421,6 +874,26 @@
         measureLineEntity: null,
         measurePolygonEntity: null,
         measureLabelEntity: null,
+        primaryBoundingSphere: null,
+        isGlbTilesOutput: glbReport.isGlbOutput,
+        closeViewDepthGuard,
+        closeViewDepthGuardActive: false,
+        cesiumBackground,
+        cesiumGlobeBase,
+        cesiumToneMapping,
+        cesiumLightIntensity,
+        cesiumImageBasedLighting,
+        cesiumModelLightBoost,
+        cesiumReflectionBoost,
+        cesiumReflectionRoughness,
+        cesiumCameraFillLight,
+        cesiumCameraFillLightIntensity,
+        cameraFillLightBound: false,
+        cesiumAmbientFill,
+        cesiumDisplayBrightness,
+        cesiumDisplayContrast,
+        cesiumShadowDarkness,
+        cesiumShadowLift,
         selectedCondition: ""
       };
 
@@ -440,29 +913,31 @@
         fullscreenButton: true,
         infoBox: true,
         selectionIndicator: true,
-        skyBox: false,
-        skyAtmosphere: false,
-        sun: false,
-        moon: false,
+        skyBox: undefined,
+        skyAtmosphere: undefined,
+        shadows: true,
         requestRenderMode: true,
         maximumRenderTimeChange: Infinity
       });
 
       window.viewer = viewer;
-      applyRenderScale(AUTO_RENDER_SCALE_RESTORED);
-      setBasemap("emap5", { silent: true });
+      window.appState = appState;
       configureArcgisLikeNavigation(viewer);
       configureAutoRenderScale(viewer);
+      configureCloseViewDepthGuard(viewer);
+      applyCesiumVisualPreset(viewer);
+      configureMaterialLighting(viewer);
       setupToolPanel();
+      setupItemPanel();
+      loadItemGroups();
 
-      viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString("#111827");
       viewer.scene.globe.show = true;
       viewer.scene.globe.depthTestAgainstTerrain = true;
       viewer.scene.globe.translucency.enabled = false;
       viewer.scene.globe.translucency.frontFaceAlpha = 1.0;
       viewer.scene.globe.translucency.backFaceAlpha = 1.0;
-      viewer.scene.highDynamicRange = false;
       viewer.scene.pickTranslucentDepth = true;
+      applyInitialConfig();
       viewer.scene.renderError.addEventListener(function (scene, error) {
         const detail = describeError(error);
         console.error("Cesium renderError", error);
@@ -477,7 +952,13 @@
         tileset.show = true;
         appState.tileset = tileset;
         window.tileset = tileset;
+        applyMaterialMode(appState.materialMode, { silent: true });
+        createWaterSurfaceForTileset(tileset);
+        applyEnvironmentToggles({ silent: true });
         await zoomToPrimaryTilesetArea(viewer, tileset);
+        if (initialNormalMode !== "flat") {
+          await setShadingMode(initialNormalMode);
+        }
         status.textContent = "Loaded: " + tilesetName;
 
         const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
@@ -621,6 +1102,10 @@
       }
 
       function setupToolPanel() {
+        syncMaterialModeUi(appState.materialMode);
+        syncEnvironmentToggleUi();
+        syncTimeOfDayUi(appState.timeMinutes);
+
         document.querySelectorAll("[data-mode]").forEach(function (button) {
           button.addEventListener("click", function () {
             setMode(button.getAttribute("data-mode"));
@@ -642,6 +1127,34 @@
 
         basemapSelect.addEventListener("change", function () {
           setBasemap(basemapSelect.value);
+        });
+
+        materialSelect.addEventListener("change", function () {
+          applyMaterialMode(materialSelect.value);
+        });
+
+        atmosphereToggle.addEventListener("change", function () {
+          appState.atmosphereEnabled = atmosphereToggle.checked;
+          applyEnvironmentToggles();
+        });
+
+        sunToggle.addEventListener("change", function () {
+          appState.sunEnabled = sunToggle.checked;
+          applyEnvironmentToggles();
+        });
+
+        shadowToggle.addEventListener("change", function () {
+          appState.shadowEnabled = shadowToggle.checked;
+          applyEnvironmentToggles();
+        });
+
+        waterToggle.addEventListener("change", function () {
+          appState.waterEnabled = waterToggle.checked;
+          applyEnvironmentToggles();
+        });
+
+        timeOfDaySlider.addEventListener("input", function () {
+          applyTimeOfDay(Number(timeOfDaySlider.value));
         });
 
         normalModeSlider.addEventListener("input", function () {
@@ -696,6 +1209,539 @@
         });
       }
 
+      function applyInitialConfig() {
+        setBasemap(appState.basemap, { silent: true });
+        setAutoRenderScaleEnabled(appState.autoRenderScaleEnabled);
+        applyRenderScale(appState.renderScaleTarget);
+        if (appState.focusEnabled) {
+          setFocusEnabled(true);
+        } else {
+          focusToggle.setAttribute("aria-pressed", "false");
+          focusToggle.textContent = "焦點 OFF";
+        }
+        setUndergroundEnabled(appState.undergroundEnabled, { silent: true });
+        setMoveDirection(initialMoveDirection);
+        explodeSlider.value = String(initialExplode);
+        applyExplosion(initialExplode / 100);
+        moveOutSlider.value = String(initialMoveOut);
+        applyMoveOut(initialMoveOut / 100);
+        syncNormalModeUi(initialNormalMode);
+        applyEnvironmentToggles({ silent: true });
+        applyTimeOfDay(appState.timeMinutes, { silent: true });
+      }
+
+      function applyCesiumVisualPreset(viewer) {
+        const background = Cesium.Color.fromCssColorString(appState.cesiumBackground);
+        const globeBase = Cesium.Color.fromCssColorString(appState.cesiumGlobeBase);
+        document.body.style.backgroundColor = appState.cesiumBackground;
+        viewer.scene.backgroundColor = background;
+        viewer.scene.globe.baseColor = globeBase;
+        viewer.scene.highDynamicRange = true;
+        if (viewer.scene.fog) {
+          viewer.scene.fog.enabled = false;
+        }
+        viewer.scene.requestRender();
+      }
+
+      function setupItemPanel() {
+        itemSearch.addEventListener("input", function () {
+          renderItemGroups();
+        });
+
+        itemList.addEventListener("change", function (event) {
+          const input = event.target;
+          if (!input || input.type !== "checkbox" || !input.dataset.groupKey) {
+            return;
+          }
+          setItemGroupHighlighted(input.dataset.groupKey, input.checked);
+        });
+
+        itemList.addEventListener("click", function (event) {
+          const button = event.target.closest(".item-locate-button");
+          if (!button || !button.dataset.groupKey) {
+            return;
+          }
+
+          event.preventDefault();
+          event.stopPropagation();
+          locateItemGroup(button.dataset.groupKey);
+        });
+
+        highlightVisibleItemsButton.addEventListener("click", function () {
+          appState.visibleItemGroups.forEach(function (group) {
+            appState.highlightedGroupKeys.add(group.key);
+          });
+          rebuildHighlightedStepIds();
+          renderItemGroups({ preserveScroll: true });
+          applyItemMaterialHighlights();
+        });
+
+        clearItemHighlightsButton.addEventListener("click", function () {
+          appState.highlightedGroupKeys.clear();
+          rebuildHighlightedStepIds();
+          renderItemGroups({ preserveScroll: true });
+          applyItemMaterialHighlights();
+        });
+      }
+
+      async function loadItemGroups() {
+        try {
+          const metadataResponse = await fetch(metadataUrl);
+          if (!metadataResponse.ok) {
+            throw new Error("HTTP " + metadataResponse.status);
+          }
+          const features = await metadataResponse.json();
+          appState.itemInfoByStepId = await loadItemLocationInfo();
+          appState.itemGroups = buildItemGroups(Array.isArray(features) ? features : [], appState.itemInfoByStepId);
+          renderItemGroups();
+        } catch (error) {
+          itemSummary.textContent = "metadata.json load failed";
+          itemList.replaceChildren(createItemEmpty("無法載入項目列表"));
+          console.warn("metadata list unavailable", error);
+        }
+      }
+
+      async function loadItemLocationInfo() {
+        try {
+          const response = await fetch(ifcInfoUrl);
+          if (!response.ok) {
+            throw new Error("HTTP " + response.status);
+          }
+
+          const info = await response.json();
+          return buildItemInfoByStepId(Array.isArray(info.products) ? info.products : []);
+        } catch (error) {
+          console.warn("item location info unavailable", error);
+          return {};
+        }
+      }
+
+      function buildItemInfoByStepId(products) {
+        const infoByStepId = {};
+        products.forEach(function (product) {
+          const stepId = Number(product.ifc_step_id);
+          if (!isFinite(stepId)) {
+            return;
+          }
+
+          const center = parseWgs84Point(product.wgs84_center);
+          const min = parseWgs84Point(product.wgs84_bounds_min);
+          const max = parseWgs84Point(product.wgs84_bounds_max);
+          if (!center || !min || !max) {
+            return;
+          }
+
+          infoByStepId[stepId] = { center: center, min: min, max: max };
+        });
+        return infoByStepId;
+      }
+
+      function parseWgs84Point(value) {
+        if (!value) {
+          return null;
+        }
+
+        const lon = Number(value.lon);
+        const lat = Number(value.lat);
+        const height = Number(value.height);
+        if (!isFinite(lon) || !isFinite(lat)) {
+          return null;
+        }
+
+        return {
+          lon: lon,
+          lat: lat,
+          height: isFinite(height) ? height : 0
+        };
+      }
+
+      function buildItemGroups(features, itemInfoByStepId) {
+        const groupMap = {};
+        features.forEach(function (feature) {
+          const stepId = Number(feature.ifc_step_id);
+          if (!isFinite(stepId)) {
+            return;
+          }
+
+          const groupName = getItemGroupName(feature);
+          const ifcType = feature.ifc_type || "IFC";
+          const key = ifcType + "|" + groupName;
+          if (!groupMap[key]) {
+          groupMap[key] = {
+            key: key,
+            name: groupName,
+            displayName: formatItemGroupName(groupName),
+            ifcType: ifcType,
+            count: 0,
+            triangleCount: 0,
+            stepIds: [],
+            batchIds: [],
+            locationCount: 0,
+            locationSum: { lon: 0, lat: 0, height: 0 },
+            locationMin: { lon: Infinity, lat: Infinity, height: Infinity },
+              locationMax: { lon: -Infinity, lat: -Infinity, height: -Infinity },
+              location: null
+            };
+          }
+
+          groupMap[key].count += 1;
+          groupMap[key].triangleCount += Number(feature.triangle_count) || 0;
+          groupMap[key].stepIds.push(stepId);
+          if (isFinite(Number(feature.batch_id))) {
+            groupMap[key].batchIds.push(Number(feature.batch_id));
+          }
+          addItemLocationToGroup(groupMap[key], itemInfoByStepId[stepId]);
+        });
+
+        return Object.keys(groupMap).map(function (key) {
+          return finalizeItemGroupLocation(groupMap[key]);
+        }).sort(function (a, b) {
+          if (a.ifcType !== b.ifcType) {
+            return a.ifcType.localeCompare(b.ifcType, "zh-Hant");
+          }
+          return a.displayName.localeCompare(b.displayName, "zh-Hant", { numeric: true });
+        });
+      }
+
+      function addItemLocationToGroup(group, location) {
+        if (!location || !location.center || !location.min || !location.max) {
+          return;
+        }
+
+        group.locationCount += 1;
+        group.locationSum.lon += location.center.lon;
+        group.locationSum.lat += location.center.lat;
+        group.locationSum.height += location.center.height;
+        group.locationMin.lon = Math.min(group.locationMin.lon, location.min.lon);
+        group.locationMin.lat = Math.min(group.locationMin.lat, location.min.lat);
+        group.locationMin.height = Math.min(group.locationMin.height, location.min.height);
+        group.locationMax.lon = Math.max(group.locationMax.lon, location.max.lon);
+        group.locationMax.lat = Math.max(group.locationMax.lat, location.max.lat);
+        group.locationMax.height = Math.max(group.locationMax.height, location.max.height);
+      }
+
+      function finalizeItemGroupLocation(group) {
+        if (!group.locationCount) {
+          delete group.locationCount;
+          delete group.locationSum;
+          delete group.locationMin;
+          delete group.locationMax;
+          return group;
+        }
+
+        group.location = {
+          center: {
+            lon: group.locationSum.lon / group.locationCount,
+            lat: group.locationSum.lat / group.locationCount,
+            height: group.locationSum.height / group.locationCount
+          },
+          min: group.locationMin,
+          max: group.locationMax,
+          count: group.locationCount
+        };
+        group.location.range = getLocationRangeMeters(group.location);
+        delete group.locationCount;
+        delete group.locationSum;
+        delete group.locationMin;
+        delete group.locationMax;
+        return group;
+      }
+
+      function getItemGroupName(feature) {
+        const name = feature.name || feature.global_id || "未分類項目";
+        const lastColon = name.lastIndexOf(":");
+        if (lastColon > 0) {
+          return name.slice(0, lastColon);
+        }
+        return name;
+      }
+
+      function formatItemGroupName(name) {
+        const parts = String(name).split(":").filter(Boolean);
+        if (parts.length === 2 && parts[0] === parts[1]) {
+          return parts[0];
+        }
+        return parts.join(" / ") || "未分類項目";
+      }
+
+      function normalizeItemText(value) {
+        return String(value || "").toLowerCase();
+      }
+
+      function renderItemGroups(options) {
+        const preserveScroll = options && options.preserveScroll;
+        const previousScrollTop = preserveScroll ? itemList.scrollTop : 0;
+        const term = normalizeItemText(itemSearch.value);
+        const groups = appState.itemGroups.filter(function (group) {
+          if (!term) {
+            return true;
+          }
+          return normalizeItemText(group.displayName + " " + group.name + " " + group.ifcType).includes(term);
+        });
+        appState.visibleItemGroups = groups;
+
+        itemList.replaceChildren();
+        if (!groups.length) {
+          itemList.appendChild(createItemEmpty(appState.itemGroups.length ? "沒有符合的項目" : "Loading metadata..."));
+        } else {
+          groups.forEach(function (group) {
+            itemList.appendChild(createItemRow(group));
+          });
+        }
+        if (preserveScroll) {
+          const maxScrollTop = Math.max(0, itemList.scrollHeight - itemList.clientHeight);
+          itemList.scrollTop = Math.min(previousScrollTop, maxScrollTop);
+        }
+
+        const highlightedCount = appState.highlightedGroupKeys.size;
+        const featureCount = appState.itemGroups.reduce(function (sum, group) {
+          return sum + group.count;
+        }, 0);
+        itemSummary.textContent = appState.itemGroups.length + " 組 / " + featureCount + " 件" +
+          (highlightedCount ? " · 高反光 " + highlightedCount + " 組" : "");
+      }
+
+      function createItemEmpty(text) {
+        const empty = document.createElement("div");
+        empty.className = "item-empty";
+        empty.textContent = text;
+        return empty;
+      }
+
+      function createItemRow(group) {
+        const row = document.createElement("div");
+        row.className = "item-row" +
+          (appState.locatedGroupKey === group.key ? " located" : "") +
+          (appState.focusedGroupKey === group.key ? " model-focused" : "");
+        row.dataset.groupKey = group.key;
+        row.tabIndex = -1;
+
+        const label = document.createElement("label");
+        label.className = "item-row-main";
+
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.dataset.groupKey = group.key;
+        checkbox.checked = appState.highlightedGroupKeys.has(group.key);
+
+        const body = document.createElement("span");
+        const name = document.createElement("span");
+        name.className = "item-name";
+        name.textContent = group.displayName;
+
+        const meta = document.createElement("span");
+        meta.className = "item-meta";
+        meta.textContent = group.ifcType + " · " + group.count + " 件" +
+          (group.triangleCount > 0 ? " · " + formatCount(group.triangleCount) + " triangles" : "");
+
+        body.appendChild(name);
+        body.appendChild(meta);
+        label.appendChild(checkbox);
+        label.appendChild(body);
+
+        const locateButton = document.createElement("button");
+        locateButton.type = "button";
+        locateButton.className = "item-locate-button";
+        locateButton.dataset.groupKey = group.key;
+        locateButton.textContent = "定位";
+        locateButton.title = group.location ? "定位到 " + group.displayName : "沒有定位資訊";
+        locateButton.disabled = !group.location;
+
+        row.appendChild(label);
+        row.appendChild(locateButton);
+        return row;
+      }
+
+      function formatCount(value) {
+        return Math.round(Number(value) || 0).toLocaleString("en-US");
+      }
+
+      function setItemGroupHighlighted(groupKey, highlighted) {
+        if (highlighted) {
+          appState.highlightedGroupKeys.add(groupKey);
+        } else {
+          appState.highlightedGroupKeys.delete(groupKey);
+        }
+        rebuildHighlightedStepIds();
+        renderItemGroups({ preserveScroll: true });
+        applyItemMaterialHighlights();
+      }
+
+      function rebuildHighlightedStepIds() {
+        appState.highlightedStepIds = new Set();
+        appState.itemGroups.forEach(function (group) {
+          if (!appState.highlightedGroupKeys.has(group.key)) {
+            return;
+          }
+          group.stepIds.forEach(function (stepId) {
+            appState.highlightedStepIds.add(stepId);
+          });
+        });
+      }
+
+      function focusItemGroupForFeature(feature) {
+        const stepId = getFeatureStepId(feature);
+        if (!isFinite(stepId)) {
+          return;
+        }
+
+        const group = findItemGroupByStepId(stepId);
+        if (!group) {
+          return;
+        }
+
+        appState.focusedGroupKey = group.key;
+        if (!appState.visibleItemGroups.some(function (visibleGroup) {
+          return visibleGroup.key === group.key;
+        })) {
+          itemSearch.value = "";
+        }
+        renderItemGroups();
+        scrollFocusedItemGroupIntoView(group.key);
+      }
+
+      function getFeatureStepId(feature) {
+        if (!feature || !feature.getProperty) {
+          return NaN;
+        }
+
+        const stepId = Number(feature.getProperty("ifc_step_id"));
+        return isFinite(stepId) ? stepId : NaN;
+      }
+
+      function findItemGroupByStepId(stepId) {
+        return appState.itemGroups.find(function (group) {
+          return group.stepIds.some(function (groupStepId) {
+            return Number(groupStepId) === stepId;
+          });
+        }) || null;
+      }
+
+      function scrollFocusedItemGroupIntoView(groupKey) {
+        window.setTimeout(function () {
+          const row = Array.from(itemList.querySelectorAll(".item-row")).find(function (itemRow) {
+            return itemRow.dataset.groupKey === groupKey;
+          });
+          if (!row) {
+            return;
+          }
+
+          row.scrollIntoView({ block: "center", inline: "nearest" });
+          if (row.focus) {
+            try {
+              row.focus({ preventScroll: true });
+            } catch (error) {
+              row.focus();
+            }
+          }
+        }, 0);
+      }
+
+      function locateItemGroup(groupKey) {
+        const group = appState.itemGroups.find(function (item) {
+          return item.key === groupKey;
+        });
+
+        if (!group || !group.location) {
+          status.textContent = "這個項目沒有可用定位資訊";
+          return;
+        }
+
+        appState.locatedGroupKey = group.key;
+        renderItemGroups({ preserveScroll: true });
+
+        const location = group.location;
+        const center = location.center;
+        const focusPosition = Cesium.Cartesian3.fromDegrees(center.lon, center.lat, center.height);
+        const markerPosition = Cesium.Cartesian3.fromDegrees(
+          center.lon,
+          center.lat,
+          getItemLocationMarkerHeight(location)
+        );
+        const range = Math.max(location.range, 80);
+        const sphere = new Cesium.BoundingSphere(focusPosition, Math.max(range * 0.2, 12));
+
+        showItemLocationHint(group, markerPosition);
+        viewer.camera.flyToBoundingSphere(sphere, {
+          duration: 0.8,
+          offset: new Cesium.HeadingPitchRange(
+            Cesium.Math.toRadians(20),
+            Cesium.Math.toRadians(-52),
+            range
+          )
+        });
+        status.textContent = "定位：" + group.displayName + " · " + formatWgs84Center(center);
+        measureResult.textContent = "定位：" + group.displayName;
+        viewer.scene.requestRender();
+      }
+
+      function showItemLocationHint(group, position) {
+        if (appState.itemLocationEntity) {
+          viewer.entities.remove(appState.itemLocationEntity);
+        }
+
+        appState.itemLocationEntity = viewer.entities.add({
+          name: "定位：" + group.displayName,
+          position: position,
+          point: {
+            pixelSize: 12,
+            color: Cesium.Color.fromCssColorString("#22d3ee"),
+            outlineColor: Cesium.Color.WHITE,
+            outlineWidth: 2,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY
+          },
+          label: {
+            text: "定位：" + shortenItemLabel(group.displayName),
+            font: "14px Microsoft JhengHei, sans-serif",
+            fillColor: Cesium.Color.WHITE,
+            showBackground: true,
+            backgroundColor: Cesium.Color.fromCssColorString("#0e7490").withAlpha(0.9),
+            pixelOffset: new Cesium.Cartesian2(0, -30),
+            verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY
+          }
+        });
+      }
+
+      function getItemLocationMarkerHeight(location) {
+        return Math.max(location.center.height, location.max.height, 0) + 8;
+      }
+
+      function getLocationRangeMeters(location) {
+        const latRadians = Cesium.Math.toRadians((location.min.lat + location.max.lat) * 0.5);
+        const lonMeters = Math.abs(location.max.lon - location.min.lon) * 111320 * Math.max(0.1, Math.cos(latRadians));
+        const latMeters = Math.abs(location.max.lat - location.min.lat) * 110540;
+        const heightMeters = Math.abs(location.max.height - location.min.height);
+        return Math.max(80, Math.min(5000, Math.max(lonMeters, latMeters, heightMeters) * 4 + 60));
+      }
+
+      function formatWgs84Center(center) {
+        return center.lon.toFixed(6) + ", " + center.lat.toFixed(6);
+      }
+
+      function shortenItemLabel(value) {
+        const text = String(value || "項目");
+        return text.length > 28 ? text.slice(0, 27) + "..." : text;
+      }
+
+      function applyItemMaterialHighlights(options) {
+        if (hasLocalMaterialHighlights()) {
+          showHighlightedOverlayForCurrentMode().catch(function (error) {
+            console.warn("highlight overlay unavailable", error);
+            applyBaseTilesetStyle();
+          });
+        } else {
+          hideHighlightedOverlays();
+          applyBaseTilesetStyle();
+        }
+
+        if (!options || !options.silent) {
+          const count = appState.highlightedGroupKeys.size;
+          status.textContent = count ? "局部高反光：" + count + " 組" : "局部高反光已清除";
+        }
+        viewer.scene.requestRender();
+      }
+
       function applyRenderScale(value) {
         const scale = Math.min(1, Math.max(0.5, Number(value) || 0.5));
         appState.renderScaleTarget = scale;
@@ -738,6 +1784,38 @@
         viewer.camera.moveStart.addEventListener(lowerRenderScaleDuringMove);
         viewer.camera.moveEnd.addEventListener(restoreRenderScaleAfterMove);
         bindAutoRenderScaleInteractionFallback(viewer.scene.canvas);
+      }
+
+      function configureCloseViewDepthGuard(viewer) {
+        viewer.camera.changed.addEventListener(updateCloseViewDepthGuard);
+        viewer.camera.moveEnd.addEventListener(updateCloseViewDepthGuard);
+        viewer.scene.postRender.addEventListener(function () {
+          updateCloseViewDepthGuard();
+        });
+      }
+
+      function updateCloseViewDepthGuard() {
+        if (!viewer || !appState.isGlbTilesOutput || !appState.closeViewDepthGuard || appState.undergroundEnabled) {
+          setCloseViewDepthGuardActive(false);
+          return;
+        }
+        const sphere = appState.primaryBoundingSphere || (appState.tileset ? getPrimaryBoundingSphere(appState.tileset) : null);
+        if (!sphere || !Cesium.defined(sphere.center) || !isFinite(sphere.radius)) {
+          setCloseViewDepthGuardActive(false);
+          return;
+        }
+        const cameraPosition = viewer.camera.positionWC || viewer.camera.position;
+        const distanceToSurface = Cesium.Cartesian3.distance(cameraPosition, sphere.center) - sphere.radius;
+        const threshold = Math.max(GLB_CLOSE_VIEW_MIN_DISTANCE, sphere.radius * GLB_CLOSE_VIEW_DEPTH_FACTOR);
+        setCloseViewDepthGuardActive(distanceToSurface < threshold);
+      }
+
+      function setCloseViewDepthGuardActive(active) {
+        if (appState.closeViewDepthGuardActive === active) {
+          return;
+        }
+        appState.closeViewDepthGuardActive = active;
+        applyTerrainDepthPolicy(false);
       }
 
       function bindAutoRenderScaleInteractionFallback(canvas) {
@@ -844,6 +1922,521 @@
         normalModeValue.textContent = getNormalModeLabel(mode);
       }
 
+      function getQueryFlag(name, defaultValue) {
+        const value = query.get(name);
+        if (value === null) {
+          return defaultValue;
+        }
+        return !["0", "false", "off", "no"].includes(value.toLowerCase());
+      }
+
+      function getInitialTimeMinutes(configValue) {
+        const value = configValue == null || configValue === "" ? query.get("time") : configValue;
+        if (String(value || "").trim().toLowerCase() === "auto") {
+          const now = new Date();
+          return now.getHours() * 60 + now.getMinutes();
+        }
+        const match = /^(\d{1,2}):(\d{2})$/.exec(value || "");
+        if (match) {
+          const hours = Math.min(23, Math.max(0, Number(match[1]) || 0));
+          const minutes = Math.min(59, Math.max(0, Number(match[2]) || 0));
+          return hours * 60 + minutes;
+        }
+        const numeric = Number(value);
+        if (Number.isFinite(numeric)) {
+          return Math.min(1439, Math.max(0, Math.round(numeric)));
+        }
+
+        const now = new Date();
+        return now.getHours() * 60 + now.getMinutes();
+      }
+
+      function formatTimeMinutes(value) {
+        const minutes = Math.min(1439, Math.max(0, Math.round(Number(value) || 0)));
+        const hoursText = String(Math.floor(minutes / 60)).padStart(2, "0");
+        const minutesText = String(minutes % 60).padStart(2, "0");
+        return hoursText + ":" + minutesText;
+      }
+
+      function syncTimeOfDayUi(value) {
+        const minutes = Math.min(1439, Math.max(0, Math.round(Number(value) || 0)));
+        timeOfDaySlider.value = String(minutes);
+        timeOfDayValue.textContent = formatTimeMinutes(minutes);
+      }
+
+      function applyTimeOfDay(value, options) {
+        const minutes = Math.min(1439, Math.max(0, Math.round(Number(value) || 0)));
+        const date = new Date();
+        date.setHours(Math.floor(minutes / 60), minutes % 60, 0, 0);
+        appState.timeMinutes = minutes;
+        viewer.clock.currentTime = Cesium.JulianDate.fromDate(date);
+        viewer.clock.shouldAnimate = false;
+        syncTimeOfDayUi(minutes);
+        applyNightDimming(minutes);
+
+        if (!options || !options.silent) {
+          status.textContent = "時間：" + formatTimeMinutes(minutes);
+        }
+        viewer.scene.requestRender();
+      }
+
+      function applyNightDimming(minutes) {
+        const nightFactor = getNightFactor(minutes);
+        appState.nightFactor = nightFactor;
+        nightDimmer.style.setProperty("--night-dim-opacity", (nightFactor * 0.58).toFixed(3));
+        configureMaterialLighting(viewer);
+      }
+
+      function getNightFactor(minutes) {
+        if (minutes < 330) {
+          return 1;
+        }
+        if (minutes < 420) {
+          return 1 - ((minutes - 330) / 90);
+        }
+        if (minutes < 1020) {
+          return 0;
+        }
+        if (minutes < 1140) {
+          return (minutes - 1020) / 120;
+        }
+        return 1;
+      }
+
+      function getDaylightIntensity(baseIntensity) {
+        const nightFactor = Math.min(1, Math.max(0, Number(appState.nightFactor) || 0));
+        return Math.max(0.35, baseIntensity * (1 - nightFactor * 0.78));
+      }
+
+      function getMaterialConfig(mode) {
+        const key = materialModes[mode] ? mode : "original";
+        return Object.assign({ id: key }, materialModes[key]);
+      }
+
+      function syncMaterialModeUi(mode) {
+        materialSelect.value = getMaterialConfig(mode).id;
+      }
+
+      function syncEnvironmentToggleUi() {
+        atmosphereToggle.checked = appState.atmosphereEnabled;
+        sunToggle.checked = appState.sunEnabled;
+        shadowToggle.checked = appState.shadowEnabled;
+        waterToggle.checked = appState.waterEnabled;
+      }
+
+      function configureMaterialLighting(viewer) {
+        viewer.scene.highDynamicRange = true;
+
+        if (Cesium.Tonemapper && viewer.scene.postProcessStages) {
+          const tonemapper = getCesiumTonemapper(appState.cesiumToneMapping);
+          if (tonemapper != null) {
+            viewer.scene.postProcessStages.tonemapper = tonemapper;
+          }
+        }
+
+        if (appState.sunEnabled && Cesium.SunLight) {
+          viewer.scene.light = new Cesium.SunLight({
+            color: Cesium.Color.WHITE,
+            intensity: getDaylightIntensity(appState.cesiumLightIntensity)
+          });
+          return;
+        }
+
+        if (appState.cesiumCameraFillLight && Cesium.DirectionalLight) {
+          viewer.scene.light = new Cesium.DirectionalLight({
+            direction: getCameraLightDirection(viewer),
+            color: Cesium.Color.WHITE,
+            intensity: appState.cesiumCameraFillLightIntensity
+          });
+          bindCameraFillLight(viewer);
+          return;
+        }
+
+        if (Cesium.DirectionalLight) {
+          viewer.scene.light = new Cesium.DirectionalLight({
+            direction: Cesium.Cartesian3.normalize(
+              new Cesium.Cartesian3(-0.35, -0.55, -0.76),
+              new Cesium.Cartesian3()
+            ),
+            color: Cesium.Color.WHITE,
+            intensity: getDaylightIntensity(appState.cesiumLightIntensity)
+          });
+        }
+      }
+
+      function getCameraLightDirection(viewer) {
+        const direction = Cesium.Cartesian3.clone(
+          viewer.camera.directionWC || viewer.camera.direction,
+          new Cesium.Cartesian3()
+        );
+        return Cesium.Cartesian3.normalize(direction, direction);
+      }
+
+      function bindCameraFillLight(viewer) {
+        if (appState.cameraFillLightBound) {
+          updateCameraFillLight(viewer);
+          return;
+        }
+        appState.cameraFillLightBound = true;
+        viewer.scene.preRender.addEventListener(function () {
+          updateCameraFillLight(viewer);
+        });
+        updateCameraFillLight(viewer);
+      }
+
+      function updateCameraFillLight(viewer) {
+        if (!appState.cesiumCameraFillLight || appState.sunEnabled || !viewer.scene.light || !Cesium.DirectionalLight) {
+          return;
+        }
+        const direction = getCameraLightDirection(viewer);
+        viewer.scene.light.direction = direction;
+        viewer.scene.light.intensity = appState.cesiumCameraFillLightIntensity;
+      }
+
+      function setWaterAnimationEnabled(enabled) {
+        if (enabled && !appState.waterRenderTimer) {
+          appState.waterRenderTimer = window.setInterval(function () {
+            viewer.scene.requestRender();
+          }, 33);
+          return;
+        }
+
+        if (!enabled && appState.waterRenderTimer) {
+          window.clearInterval(appState.waterRenderTimer);
+          appState.waterRenderTimer = null;
+        }
+      }
+
+      function getShadowMode() {
+        return appState.shadowEnabled ? Cesium.ShadowMode.ENABLED : Cesium.ShadowMode.DISABLED;
+      }
+
+      function applyShadowModeToTileset(tileset) {
+        if (tileset && Cesium.ShadowMode) {
+          tileset.shadows = getShadowMode();
+        }
+      }
+
+      function applyEnvironmentToggles(options) {
+        syncEnvironmentToggleUi();
+        configureMaterialLighting(viewer);
+
+        if (viewer.scene.skyAtmosphere) {
+          viewer.scene.skyAtmosphere.show = appState.atmosphereEnabled;
+        }
+        if (viewer.scene.sun) {
+          viewer.scene.sun.show = appState.sunEnabled;
+        }
+        if (viewer.scene.moon) {
+          viewer.scene.moon.show = false;
+        }
+        if (viewer.scene.globe) {
+          viewer.scene.globe.enableLighting = appState.sunEnabled;
+          viewer.scene.globe.shadows = appState.shadowEnabled ? Cesium.ShadowMode.RECEIVE_ONLY : Cesium.ShadowMode.DISABLED;
+        }
+
+        viewer.shadows = appState.shadowEnabled;
+        if (viewer.scene.shadowMap) {
+          viewer.scene.shadowMap.softShadows = true;
+          viewer.scene.shadowMap.darkness = appState.cesiumShadowDarkness;
+        }
+
+        Object.keys(appState.tilesets).forEach(function (key) {
+          applyShadowModeToTileset(appState.tilesets[key]);
+        });
+        Object.keys(appState.selectedTilesets).forEach(function (key) {
+          applyShadowModeToTileset(appState.selectedTilesets[key]);
+        });
+        Object.keys(appState.highlightTilesets).forEach(function (key) {
+          applyShadowModeToTileset(appState.highlightTilesets[key]);
+        });
+
+        if (appState.waterPrimitive) {
+          appState.waterPrimitive.show = appState.waterEnabled;
+        }
+        setWaterAnimationEnabled(appState.waterEnabled);
+
+        if (!options || !options.silent) {
+          status.textContent = "環境：" +
+            (appState.atmosphereEnabled ? "大氣 " : "") +
+            (appState.sunEnabled ? "太陽 " : "") +
+            (appState.shadowEnabled ? "陰影 " : "") +
+            (appState.waterEnabled ? "水波" : "");
+        }
+        viewer.scene.requestRender();
+      }
+
+      function createWaterSurfaceForTileset(tileset) {
+        if (appState.waterPrimitive || !tileset || !tileset.boundingSphere || !Cesium.Material || !Cesium.Material.WaterType) {
+          return appState.waterPrimitive;
+        }
+
+        const center = Cesium.Cartographic.fromCartesian(tileset.boundingSphere.center);
+        const halfSpanMeters = Math.min(Math.max(tileset.boundingSphere.radius * 1.35, 2500), 12000);
+        const ellipsoidRadius = Cesium.Ellipsoid.WGS84.maximumRadius;
+        const latitudeDelta = halfSpanMeters / ellipsoidRadius;
+        const longitudeDelta = halfSpanMeters / (ellipsoidRadius * Math.max(Math.cos(center.latitude), 0.2));
+        const rectangle = new Cesium.Rectangle(
+          center.longitude - longitudeDelta,
+          Math.max(center.latitude - latitudeDelta, -Cesium.Math.PI_OVER_TWO + 0.0001),
+          center.longitude + longitudeDelta,
+          Math.min(center.latitude + latitudeDelta, Cesium.Math.PI_OVER_TWO - 0.0001)
+        );
+
+        const waterMaterial = new Cesium.Material({
+          fabric: {
+            type: Cesium.Material.WaterType,
+            uniforms: {
+              normalMap: waterNormalMapUrl,
+              specularMap: Cesium.Material.DefaultImageId,
+              baseWaterColor: Cesium.Color.fromCssColorString("#1f6f91").withAlpha(0.58),
+              blendColor: Cesium.Color.fromCssColorString("#7dd3fc").withAlpha(0.42),
+              frequency: 900.0,
+              animationSpeed: 0.025,
+              amplitude: 2.6,
+              specularIntensity: 0.78,
+              fadeFactor: 1.0
+            }
+          }
+        });
+
+        appState.waterPrimitive = viewer.scene.primitives.add(new Cesium.Primitive({
+          geometryInstances: new Cesium.GeometryInstance({
+            geometry: new Cesium.RectangleGeometry({
+              rectangle: rectangle,
+              height: 0.15,
+              vertexFormat: Cesium.EllipsoidSurfaceAppearance.VERTEX_FORMAT
+            })
+          }),
+          appearance: new Cesium.EllipsoidSurfaceAppearance({
+            material: waterMaterial,
+            aboveGround: true
+          }),
+          asynchronous: false,
+          allowPicking: false,
+          show: appState.waterEnabled
+        }));
+        appState.waterPrimitive.shadows = Cesium.ShadowMode.DISABLED;
+        window.waterPrimitive = appState.waterPrimitive;
+        return appState.waterPrimitive;
+      }
+
+      function hasLocalMaterialHighlights() {
+        return appState.highlightedStepIds && appState.highlightedStepIds.size > 0;
+      }
+
+      function formatShaderNumber(value) {
+        return Number(value || 0).toFixed(4);
+      }
+
+      function buildLocalHighlightTest() {
+        return [
+          "    bool localMirror = false;"
+        ];
+      }
+
+      function createMaterialShader(config) {
+        const localConfig = materialModes.mirror;
+        const localTint = "vec3(" +
+          formatShaderNumber(localConfig.tint[0]) + ", " +
+          formatShaderNumber(localConfig.tint[1]) + ", " +
+          formatShaderNumber(localConfig.tint[2]) + ")";
+
+        return new Cesium.CustomShader({
+          mode: Cesium.CustomShaderMode.MODIFY_MATERIAL,
+          lightingModel: Cesium.LightingModel.PBR,
+          uniforms: {
+            u_metallicStrength: {
+              type: Cesium.UniformType.FLOAT,
+              value: config.metallic
+            },
+            u_roughness: {
+              type: Cesium.UniformType.FLOAT,
+              value: config.roughness
+            },
+            u_tintColor: {
+              type: Cesium.UniformType.VEC3,
+              value: new Cesium.Cartesian3(config.tint[0], config.tint[1], config.tint[2])
+            },
+            u_tintStrength: {
+              type: Cesium.UniformType.FLOAT,
+              value: config.tintStrength
+            },
+            u_brightness: {
+              type: Cesium.UniformType.FLOAT,
+              value: config.brightness
+            },
+            u_contrast: {
+              type: Cesium.UniformType.FLOAT,
+              value: config.contrast
+            },
+            u_specularBoost: {
+              type: Cesium.UniformType.FLOAT,
+              value: config.specularBoost
+            },
+            u_reflectionBoost: {
+              type: Cesium.UniformType.FLOAT,
+              value: appState.cesiumReflectionBoost
+            },
+            u_reflectionRoughness: {
+              type: Cesium.UniformType.FLOAT,
+              value: appState.cesiumReflectionRoughness
+            },
+            u_displayBrightness: {
+              type: Cesium.UniformType.FLOAT,
+              value: appState.cesiumDisplayBrightness
+            },
+            u_displayContrast: {
+              type: Cesium.UniformType.FLOAT,
+              value: appState.cesiumDisplayContrast
+            },
+            u_ambientFill: {
+              type: Cesium.UniformType.FLOAT,
+              value: appState.cesiumAmbientFill
+            },
+            u_shadowLift: {
+              type: Cesium.UniformType.FLOAT,
+              value: appState.cesiumShadowLift
+            }
+          },
+          fragmentShaderText: [
+            "void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material)",
+            "{",
+          ].concat(buildLocalHighlightTest()).concat([
+            "    float metallicStrength = localMirror ? " + formatShaderNumber(localConfig.metallic) + " : u_metallicStrength;",
+            "    float roughness = localMirror ? " + formatShaderNumber(localConfig.roughness) + " : u_roughness;",
+            "    float tintStrength = localMirror ? " + formatShaderNumber(localConfig.tintStrength) + " : u_tintStrength;",
+            "    float brightness = localMirror ? " + formatShaderNumber(localConfig.brightness) + " : u_brightness;",
+            "    float contrast = localMirror ? " + formatShaderNumber(localConfig.contrast) + " : u_contrast;",
+            "    float specularBoost = localMirror ? " + formatShaderNumber(localConfig.specularBoost) + " : u_specularBoost;",
+            "    vec3 tintColor = localMirror ? " + localTint + " : u_tintColor;",
+            "    vec3 originalDiffuse = max(material.diffuse, vec3(0.02));",
+            "    vec3 tintedColor = mix(originalDiffuse, tintColor, tintStrength);",
+            "    tintedColor = clamp((tintedColor - vec3(0.5)) * contrast + vec3(0.5), vec3(0.0), vec3(1.0));",
+            "    tintedColor = clamp((tintedColor - vec3(0.5)) * u_displayContrast + vec3(0.5 + u_displayBrightness), vec3(0.0), vec3(1.0));",
+            "    float shadowMask = smoothstep(0.20, 0.85, 1.0 - dot(tintedColor, vec3(0.299, 0.587, 0.114)));",
+            "    tintedColor = mix(tintedColor, vec3(1.0), u_shadowLift * shadowMask);",
+            "    vec3 metallicDiffuse = tintedColor * max(0.02, 1.0 - metallicStrength);",
+            "    material.baseColor.rgb = mix(material.baseColor.rgb, tintedColor, tintStrength);",
+            "    material.diffuse = mix(originalDiffuse, metallicDiffuse, metallicStrength);",
+            "    material.specular = mix(material.specular, tintedColor * specularBoost, metallicStrength);",
+            "    material.specular = max(material.specular, tintedColor * u_reflectionBoost);",
+            "    material.roughness = clamp(mix(material.roughness, roughness, metallicStrength), 0.02, 1.0);",
+            "    material.roughness = min(material.roughness, u_reflectionRoughness);",
+            "    material.emissive += tintedColor * (brightness + u_displayBrightness * 0.35 + u_ambientFill);",
+            "}"
+          ]).join("\n")
+        });
+      }
+
+      function createDisplayBoostShader() {
+        return new Cesium.CustomShader({
+          mode: Cesium.CustomShaderMode.MODIFY_MATERIAL,
+          lightingModel: Cesium.LightingModel.PBR,
+          uniforms: {
+            u_displayBrightness: {
+              type: Cesium.UniformType.FLOAT,
+              value: appState.cesiumDisplayBrightness
+            },
+            u_displayContrast: {
+              type: Cesium.UniformType.FLOAT,
+              value: appState.cesiumDisplayContrast
+            },
+            u_reflectionBoost: {
+              type: Cesium.UniformType.FLOAT,
+              value: appState.cesiumReflectionBoost
+            },
+            u_reflectionRoughness: {
+              type: Cesium.UniformType.FLOAT,
+              value: appState.cesiumReflectionRoughness
+            },
+            u_ambientFill: {
+              type: Cesium.UniformType.FLOAT,
+              value: appState.cesiumAmbientFill
+            },
+            u_shadowLift: {
+              type: Cesium.UniformType.FLOAT,
+              value: appState.cesiumShadowLift
+            }
+          },
+          fragmentShaderText: [
+            "void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material)",
+            "{",
+            "    vec3 baseColor = max(material.baseColor.rgb, vec3(0.02));",
+            "    vec3 diffuseColor = max(material.diffuse, vec3(0.02));",
+            "    baseColor = clamp((baseColor - vec3(0.5)) * u_displayContrast + vec3(0.5 + u_displayBrightness), vec3(0.0), vec3(1.0));",
+            "    diffuseColor = clamp((diffuseColor - vec3(0.5)) * u_displayContrast + vec3(0.5 + u_displayBrightness), vec3(0.0), vec3(1.0));",
+            "    float baseShadowMask = smoothstep(0.20, 0.85, 1.0 - dot(baseColor, vec3(0.299, 0.587, 0.114)));",
+            "    float diffuseShadowMask = smoothstep(0.20, 0.85, 1.0 - dot(diffuseColor, vec3(0.299, 0.587, 0.114)));",
+            "    baseColor = mix(baseColor, vec3(1.0), u_shadowLift * baseShadowMask);",
+            "    diffuseColor = mix(diffuseColor, vec3(1.0), u_shadowLift * diffuseShadowMask);",
+            "    material.baseColor.rgb = baseColor;",
+            "    material.diffuse = diffuseColor;",
+            "    material.specular = max(material.specular, baseColor * u_reflectionBoost);",
+            "    material.roughness = min(material.roughness, u_reflectionRoughness);",
+            "    material.emissive += baseColor * (u_displayBrightness * 0.45 + u_ambientFill);",
+            "}"
+          ].join("\n")
+        });
+      }
+
+      function applyMaterialShaderToTileset(mode, tileset) {
+        if (!tileset || !Cesium.CustomShader || !Cesium.UniformType || !Cesium.CustomShaderMode || !Cesium.LightingModel) {
+          return;
+        }
+
+        const config = getMaterialConfig(appState.materialMode);
+        if (config.id === "original") {
+          if (
+            appState.cesiumDisplayBrightness <= 0 &&
+            Math.abs(appState.cesiumDisplayContrast - 1.0) < 0.001 &&
+            appState.cesiumShadowLift <= 0 &&
+            appState.cesiumAmbientFill <= 0 &&
+            appState.cesiumReflectionBoost <= 0
+          ) {
+            tileset.customShader = undefined;
+            appState.materialShaders[mode] = null;
+            return;
+          }
+          try {
+            const shader = createDisplayBoostShader();
+            tileset.customShader = shader;
+            appState.materialShaders[mode] = shader;
+          } catch (error) {
+            console.warn("display boost CustomShader unavailable", error);
+            tileset.customShader = undefined;
+            appState.materialShaders[mode] = null;
+          }
+          return;
+        }
+
+        try {
+          const shader = createMaterialShader(config);
+          tileset.customShader = shader;
+          appState.materialShaders[mode] = shader;
+        } catch (error) {
+          console.warn("material CustomShader unavailable", error);
+          tileset.customShader = undefined;
+          appState.materialShaders[mode] = null;
+        }
+      }
+
+      function applyMaterialMode(mode, options) {
+        const config = getMaterialConfig(mode);
+        appState.materialMode = config.id;
+        syncMaterialModeUi(config.id);
+        configureMaterialLighting(viewer);
+
+        Object.keys(appState.tilesets).forEach(function (key) {
+          applyMaterialShaderToTileset(key, appState.tilesets[key]);
+        });
+
+        if (!options || !options.silent) {
+          status.textContent = config.id === "original" ? "材質：原始" : "材質：" + config.label + "（PBR 金屬）";
+        }
+        viewer.scene.requestRender();
+      }
+
       async function ensureMainTileset(mode) {
         if (appState.tilesets[mode]) {
           return appState.tilesets[mode];
@@ -853,14 +2446,16 @@
         }
 
         status.textContent = "Loading 法線：" + getNormalModeLabel(mode) + "...";
-        appState.tilesetPromises[mode] = Cesium.Cesium3DTileset.fromUrl(getTilesetUrlForMode(mode), {
-          maximumScreenSpaceError: 8,
-          skipLevelOfDetail: false,
-          enableDebugWireframe: true
-        }).then(function (tileset) {
+        appState.tilesetPromises[mode] = Cesium.Cesium3DTileset.fromUrl(
+          getTilesetUrlForMode(mode),
+          buildTilesetOptions(false)
+        ).then(function (tileset) {
           tileset.show = false;
           appState.tilesets[mode] = tileset;
           viewer.scene.primitives.add(tileset);
+          applyTilesetRuntimeOptions(tileset, false);
+          applyShadowModeToTileset(tileset);
+          applyMaterialShaderToTileset(mode, tileset);
           return tileset;
         }).catch(function (error) {
           appState.tilesetPromises[mode] = null;
@@ -870,6 +2465,73 @@
         });
 
         return appState.tilesetPromises[mode];
+      }
+
+      function buildTilesetOptions(selectedOverlay) {
+        const options = {
+          maximumScreenSpaceError: selectedOverlay ? 4 : 8,
+          skipLevelOfDetail: false
+        };
+        if (!selectedOverlay) {
+          options.enableDebugWireframe = true;
+        }
+        if (appState.isGlbTilesOutput) {
+          options.maximumScreenSpaceError = 0;
+          options.cullRequestsWhileMoving = false;
+          options.cullWithChildrenBounds = false;
+          options.dynamicScreenSpaceError = false;
+          options.immediatelyLoadDesiredLevelOfDetail = true;
+          options.loadSiblings = true;
+          options.preloadFlightDestinations = true;
+          options.preloadWhenHidden = true;
+          options.cacheBytes = 1024 * 1024 * 1024;
+          options.maximumCacheOverflowBytes = 1024 * 1024 * 1024;
+        }
+        return options;
+      }
+
+      function applyTilesetRuntimeOptions(tileset, selectedOverlay) {
+        tileset.maximumScreenSpaceError = appState.isGlbTilesOutput ? 0 : (selectedOverlay ? 4 : 8);
+        applyTilesetVisualPreset(tileset);
+        if (!appState.isGlbTilesOutput) {
+          return;
+        }
+        if ("cullRequestsWhileMoving" in tileset) {
+          tileset.cullRequestsWhileMoving = false;
+        }
+        if ("cullWithChildrenBounds" in tileset) {
+          tileset.cullWithChildrenBounds = false;
+        }
+        if ("dynamicScreenSpaceError" in tileset) {
+          tileset.dynamicScreenSpaceError = false;
+        }
+        if ("preloadWhenHidden" in tileset) {
+          tileset.preloadWhenHidden = true;
+        }
+      }
+
+      function applyTilesetVisualPreset(tileset) {
+        try {
+          if (tileset.imageBasedLighting && "imageBasedLightingFactor" in tileset.imageBasedLighting) {
+            tileset.imageBasedLighting.imageBasedLightingFactor = new Cesium.Cartesian2(
+              appState.cesiumImageBasedLighting,
+              appState.cesiumImageBasedLighting
+            );
+          }
+        } catch (error) {
+          console.warn("imageBasedLightingFactor unavailable", error);
+        }
+        try {
+          if ("lightColor" in tileset) {
+            tileset.lightColor = new Cesium.Cartesian3(
+              appState.cesiumModelLightBoost,
+              appState.cesiumModelLightBoost,
+              appState.cesiumModelLightBoost
+            );
+          }
+        } catch (error) {
+          console.warn("tileset lightColor unavailable", error);
+        }
       }
 
       async function setShadingMode(mode) {
@@ -896,26 +2558,41 @@
             appState.selectedTilesets[key].show = false;
           }
         });
+        Object.keys(appState.highlightTilesets).forEach(function (key) {
+          if (appState.highlightTilesets[key]) {
+            appState.highlightTilesets[key].show = false;
+          }
+        });
 
         appState.shadingMode = mode;
         appState.tileset = nextTileset;
         appState.selectedTileset = appState.selectedTilesets[mode] || null;
         appState.selectedShader = appState.selectedShaders[mode] || null;
+        appState.highlightTileset = appState.highlightTilesets[mode] || null;
+        appState.primaryBoundingSphere = getPrimaryBoundingSphere(nextTileset);
         window.tileset = nextTileset;
         window.selectedTileset = appState.selectedTileset;
+        window.highlightTileset = appState.highlightTileset;
+        applyMaterialShaderToTileset(mode, nextTileset);
+        applyEnvironmentToggles({ silent: true });
+        appState.selectedCondition = selectedCondition || "";
+        applyBaseTilesetStyle();
 
         if (selectedCondition) {
-          appState.selectedCondition = selectedCondition;
-          nextTileset.style = new Cesium.Cesium3DTileStyle(buildBaseSelectionStyle(selectedCondition));
           setWireframeEnabled(appState.focusEnabled);
           await showSelectedOverlayForCondition(selectedCondition);
           updateSelectionStatus();
         } else {
-          nextTileset.style = undefined;
           setWireframeEnabled(false);
+        }
+        if (hasLocalMaterialHighlights()) {
+          showHighlightedOverlayForCurrentMode().catch(function (error) {
+            console.warn("highlight overlay unavailable", error);
+          });
         }
 
         status.textContent = "已切換法線：" + getNormalModeLabel(mode);
+        updateCloseViewDepthGuard();
         viewer.scene.requestRender();
       }
 
@@ -957,19 +2634,33 @@
         measureResult.textContent = "焦點顯示開啟，請點選實體";
       }
 
-      function setUndergroundEnabled(enabled) {
+      function setUndergroundEnabled(enabled, options) {
         appState.undergroundEnabled = enabled;
         undergroundToggle.setAttribute("aria-pressed", enabled ? "true" : "false");
         undergroundToggle.textContent = enabled ? "透地 ON" : "透地 OFF";
+        updateCloseViewDepthGuard();
+        applyTerrainDepthPolicy(!options || !options.silent);
+      }
 
+      function applyTerrainDepthPolicy(announce) {
+        const guardActive = Boolean(appState.closeViewDepthGuardActive && !appState.undergroundEnabled);
+        const depthBlocked = !appState.undergroundEnabled && !guardActive;
         const globe = viewer.scene.globe;
         globe.show = true;
         globe.translucency.enabled = false;
         globe.translucency.frontFaceAlpha = 1.0;
         globe.translucency.backFaceAlpha = 1.0;
-        globe.depthTestAgainstTerrain = !enabled;
+        globe.depthTestAgainstTerrain = depthBlocked;
         viewer.scene.requestRender();
-        measureResult.textContent = enabled ? "透地開啟，地面/水面不遮蔽模型" : "透地關閉，穿入地面/水面部分會被擋住";
+        if (announce) {
+          if (appState.undergroundEnabled) {
+            measureResult.textContent = "透地開啟，地面/水面不遮蔽模型";
+          } else if (guardActive) {
+            measureResult.textContent = "近距離瀏覽保護啟用，暫停地形深度遮蔽";
+          } else {
+            measureResult.textContent = "透地關閉，穿入地面/水面部分會被擋住";
+          }
+        }
       }
 
       async function handleFeatureSelection(position) {
@@ -984,6 +2675,7 @@
         showFeatureInfo(picked);
         await applySelectionStyle(picked);
         updateSelectionStatus();
+        focusItemGroupForFeature(picked);
         viewer.scene.requestRender();
       }
 
@@ -999,7 +2691,7 @@
         }
 
         appState.selectedCondition = condition;
-        tileset.style = new Cesium.Cesium3DTileStyle(buildBaseSelectionStyle(condition));
+        applyBaseTilesetStyle();
         setWireframeEnabled(appState.focusEnabled);
 
         await showSelectedOverlayForCondition(condition);
@@ -1010,9 +2702,51 @@
         if (selectedTileset) {
           selectedTileset.show = true;
           selectedTileset.style = new Cesium.Cesium3DTileStyle(buildSelectedOverlayStyle(condition));
+          applyBaseTilesetStyle();
           applySelectedExplosion(Number(explodeSlider.value) / 100);
           applySelectedMoveOut(Number(moveOutSlider.value) / 100);
         }
+      }
+
+      async function showHighlightedOverlayForCurrentMode() {
+        const condition = buildHighlightedItemCondition();
+        if (!condition) {
+          document.body.dataset.highlightOverlay = "off";
+          hideHighlightedOverlays();
+          applyBaseTilesetStyle();
+          return;
+        }
+
+        document.body.dataset.highlightOverlay = "loading";
+        const highlightTileset = await ensureHighlightTileset();
+        const currentCondition = buildHighlightedItemCondition();
+        if (!highlightTileset || !currentCondition) {
+          document.body.dataset.highlightOverlay = "off";
+          return;
+        }
+
+        highlightTileset.show = true;
+        highlightTileset.style = new Cesium.Cesium3DTileStyle(buildHighlightedOverlayStyle(currentCondition));
+        appState.highlightTileset = highlightTileset;
+        window.highlightTileset = highlightTileset;
+        applyBaseTilesetStyle();
+        document.body.dataset.highlightOverlay = "ready";
+        status.textContent = "局部高反光：" + appState.highlightedGroupKeys.size + " 組（高亮材質）";
+        viewer.scene.requestRender();
+      }
+
+      function hideHighlightedOverlays() {
+        Object.keys(appState.highlightTilesets).forEach(function (mode) {
+          const highlightTileset = appState.highlightTilesets[mode];
+          if (!highlightTileset) {
+            return;
+          }
+          highlightTileset.show = false;
+          highlightTileset.style = undefined;
+        });
+        appState.highlightTileset = null;
+        window.highlightTileset = null;
+        document.body.dataset.highlightOverlay = "off";
       }
 
       function buildSelectedOverlayStyle(condition) {
@@ -1027,19 +2761,63 @@
         };
       }
 
-      function buildBaseSelectionStyle(condition) {
-        const style = {
+      function buildHighlightedOverlayStyle(condition) {
+        const conditions = [];
+        if (appState.selectedCondition) {
+          conditions.push([appState.selectedCondition, "false"]);
+        }
+        conditions.push([condition, "true"]);
+        conditions.push(["true", "false"]);
+        return {
           show: {
-            conditions: [
-              [condition, "false"],
-              ["true", "true"]
-            ]
-          }
+            conditions: conditions
+          },
+          color: "color('#facc15', 1.0)"
         };
+      }
+
+      function buildHighlightedItemCondition() {
+        if (!hasLocalMaterialHighlights()) {
+          return "";
+        }
+        return Array.from(appState.highlightedStepIds).sort(function (a, b) {
+          return a - b;
+        }).map(function (stepId) {
+          return "${ifc_step_id} === " + Number(stepId);
+        }).join(" || ");
+      }
+
+      function buildBaseTilesetStyle() {
+        const style = {};
+        const hiddenConditions = [];
+        const highlightedCondition = buildHighlightedItemCondition();
+        if (appState.selectedCondition) {
+          hiddenConditions.push([appState.selectedCondition, "false"]);
+        }
+        if (highlightedCondition) {
+          hiddenConditions.push([highlightedCondition, "false"]);
+        }
+        if (hiddenConditions.length) {
+          hiddenConditions.push(["true", "true"]);
+          style.show = {
+            conditions: hiddenConditions
+          };
+        }
         if (appState.focusEnabled) {
           style.color = "color('#94a3b8', 0.16)";
         }
-        return style;
+        return Object.keys(style).length ? style : null;
+      }
+
+      function applyBaseTilesetStyle() {
+        const style = buildBaseTilesetStyle();
+        Object.keys(appState.tilesets).forEach(function (mode) {
+          const tileset = appState.tilesets[mode];
+          if (!tileset) {
+            return;
+          }
+          tileset.style = style ? new Cesium.Cesium3DTileStyle(style) : undefined;
+        });
       }
 
       function updateSelectionStatus() {
@@ -1066,18 +2844,16 @@
         appState.selectedFeature = null;
         appState.selectedKey = null;
         appState.selectedCondition = "";
+        appState.focusedGroupKey = null;
+        renderItemGroups({ preserveScroll: true });
         viewer.selectedEntity = undefined;
         clearFocusDisplay();
         viewer.scene.requestRender();
       }
 
       function clearFocusDisplay() {
-        const tileset = appState.tileset;
         appState.selectedCondition = "";
-        if (tileset) {
-          tileset.style = undefined;
-          setWireframeEnabled(false);
-        }
+        setWireframeEnabled(false);
         Object.keys(appState.selectedTilesets).forEach(function (mode) {
           const selectedTileset = appState.selectedTilesets[mode];
           if (selectedTileset) {
@@ -1095,6 +2871,7 @@
         appState.selectedTileset = appState.selectedTilesets[appState.shadingMode] || null;
         appState.selectedShader = appState.selectedShaders[appState.shadingMode] || null;
         window.selectedTileset = appState.selectedTileset;
+        applyBaseTilesetStyle();
       }
 
       function setWireframeEnabled(enabled) {
@@ -1155,6 +2932,57 @@
         return "";
       }
 
+      async function ensureHighlightTileset() {
+        const mode = appState.shadingMode;
+        if (appState.highlightTilesets[mode]) {
+          appState.highlightTileset = appState.highlightTilesets[mode];
+          window.highlightTileset = appState.highlightTileset;
+          return appState.highlightTileset;
+        }
+        if (appState.highlightTilesetPromises[mode]) {
+          return appState.highlightTilesetPromises[mode];
+        }
+
+        appState.highlightTilesetPromises[mode] = Cesium.Cesium3DTileset.fromUrl(
+          getTilesetUrlForMode(mode),
+          buildTilesetOptions(true)
+        ).then(function (highlightTileset) {
+          highlightTileset.show = false;
+          applyTilesetRuntimeOptions(highlightTileset, true);
+          installHighlightMaterialShader(highlightTileset, mode);
+          appState.highlightTilesets[mode] = highlightTileset;
+          if (mode === appState.shadingMode) {
+            appState.highlightTileset = highlightTileset;
+            window.highlightTileset = highlightTileset;
+          }
+          viewer.scene.primitives.add(highlightTileset);
+          applyShadowModeToTileset(highlightTileset);
+          return highlightTileset;
+        }).catch(function (error) {
+          console.warn("highlight overlay unavailable", error);
+          appState.highlightTilesetPromises[mode] = null;
+          return null;
+        });
+
+        return appState.highlightTilesetPromises[mode];
+      }
+
+      function installHighlightMaterialShader(tileset, mode) {
+        if (!Cesium.CustomShader || !Cesium.UniformType) {
+          return;
+        }
+
+        try {
+          const shader = createMaterialShader(getMaterialConfig("mirror"));
+          tileset.customShader = shader;
+          appState.highlightShaders[mode] = shader;
+        } catch (error) {
+          console.warn("highlight CustomShader unavailable", error);
+          tileset.customShader = undefined;
+          appState.highlightShaders[mode] = null;
+        }
+      }
+
       async function ensureSelectedTileset() {
         const mode = appState.shadingMode;
         if (appState.selectedTilesets[mode]) {
@@ -1167,16 +2995,18 @@
           return appState.selectedTilesetPromises[mode];
         }
 
-        appState.selectedTilesetPromises[mode] = Cesium.Cesium3DTileset.fromUrl(getTilesetUrlForMode(mode), {
-          maximumScreenSpaceError: 4,
-          skipLevelOfDetail: false
-        }).then(function (selectedTileset) {
+        appState.selectedTilesetPromises[mode] = Cesium.Cesium3DTileset.fromUrl(
+          getTilesetUrlForMode(mode),
+          buildTilesetOptions(true)
+        ).then(function (selectedTileset) {
           selectedTileset.show = false;
+          applyTilesetRuntimeOptions(selectedTileset, true);
           installSelectedExplosionShader(selectedTileset, mode);
           appState.selectedTilesets[mode] = selectedTileset;
           appState.selectedTileset = selectedTileset;
           window.selectedTileset = selectedTileset;
           viewer.scene.primitives.add(selectedTileset);
+          applyShadowModeToTileset(selectedTileset);
           return selectedTileset;
         }).catch(function (error) {
           console.warn("selected overlay unavailable", error);
@@ -1518,9 +3348,11 @@
         const sphere = getPrimaryBoundingSphere(tileset);
         if (!sphere) {
           await viewer.zoomTo(tileset);
+          updateCloseViewDepthGuard();
           return;
         }
 
+        appState.primaryBoundingSphere = sphere;
         const range = Math.max(sphere.radius * 3.4, 180);
         viewer.camera.flyToBoundingSphere(sphere, {
           duration: 0,
@@ -1530,6 +3362,7 @@
             range
           )
         });
+        updateCloseViewDepthGuard();
         viewer.scene.requestRender();
       }
 
@@ -1573,6 +3406,216 @@
           return tile._boundingVolume.boundingSphere;
         }
         return tile.boundingSphere || null;
+      }
+
+      function getViewerConfig(section, query) {
+        const config = window.IFC_VIEWER_CONFIG || {};
+        const common = readViewerConfig(config.common);
+        const specific = readViewerConfig(config[section]);
+        return applyQueryOverrides(Object.assign({}, common, specific), query);
+      }
+
+      function readViewerConfig(value) {
+        return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+      }
+
+      function applyQueryOverrides(config, query) {
+        const result = Object.assign({}, config);
+        const mappings = {
+          normalMode: ["normalMode", "normal-mode", "normal"],
+          basemap: ["basemap", "baseMap", "base-map"],
+          renderScale: ["renderScale", "render-scale", "scale"],
+          autoRenderScale: ["autoRenderScale", "auto-render-scale", "autoScale", "auto-scale"],
+          focus: ["focus"],
+          underground: ["underground"],
+          explode: ["explode"],
+          moveOut: ["moveOut", "move-out"],
+          moveDirection: ["moveDirection", "move-direction"],
+          materialMode: ["materialMode", "material-mode", "material"],
+          atmosphere: ["atmosphere"],
+          sun: ["sun"],
+          shadow: ["shadow"],
+          water: ["water"],
+          time: ["time", "timeOfDay", "time-of-day"],
+          closeViewDepthGuard: ["closeViewDepthGuard", "close-view-depth-guard", "depthGuard", "depth-guard"],
+          backgroundColor: ["backgroundColor", "background-color", "bg", "bgColor", "bg-color"],
+          globeBaseColor: ["globeBaseColor", "globe-base-color", "globeColor", "globe-color"],
+          visualPreset: ["visualPreset", "visual-preset", "preset"],
+          toneMapping: ["toneMapping", "tone-mapping", "tonemap"],
+          lightIntensity: ["lightIntensity", "light-intensity", "light"],
+          imageBasedLighting: ["imageBasedLighting", "image-based-lighting", "ibl"],
+          modelLightBoost: ["modelLightBoost", "model-light-boost", "lightBoost", "light-boost"],
+          reflectionBoost: ["reflectionBoost", "reflection-boost", "reflect", "reflection"],
+          reflectionRoughness: ["reflectionRoughness", "reflection-roughness", "roughness"],
+          cameraFillLight: ["cameraFillLight", "camera-fill-light", "cameraLight", "camera-light"],
+          cameraFillLightIntensity: ["cameraFillLightIntensity", "camera-fill-light-intensity", "cameraLightIntensity", "camera-light-intensity"],
+          ambientFill: ["ambientFill", "ambient-fill", "fillLight", "fill-light"],
+          displayBrightness: ["displayBrightness", "display-brightness", "brightness"],
+          displayContrast: ["displayContrast", "display-contrast", "contrast"],
+          shadowDarkness: ["shadowDarkness", "shadow-darkness"],
+          shadowLift: ["shadowLift", "shadow-lift"]
+        };
+
+        Object.keys(mappings).forEach(function (key) {
+          const names = mappings[key];
+          for (let i = 0; i < names.length; i += 1) {
+            if (query.has(names[i])) {
+              result[key] = query.get(names[i]);
+              return;
+            }
+          }
+        });
+        return result;
+      }
+
+      function normalizeNormalMode(value, fallback) {
+        const byIndex = ["flat", "smooth90", "smooth"];
+        if (typeof value === "number" && byIndex[value]) {
+          return byIndex[value];
+        }
+        const normalized = String(value || "")
+          .trim()
+          .toLowerCase()
+          .replace(/[\s_-]/g, "");
+        if (normalized === "0" || normalized === "flat" || normalized === "plane") {
+          return "flat";
+        }
+        if (normalized === "1" || normalized === "90" || normalized === "smooth90") {
+          return "smooth90";
+        }
+        if (normalized === "2" || normalized === "smooth" || normalized === "fullsmooth") {
+          return "smooth";
+        }
+        return fallback;
+      }
+
+      function normalizeMaterialMode(value, fallback) {
+        const normalized = String(value || "").trim().toLowerCase();
+        return materialModes[normalized] ? normalized : fallback;
+      }
+
+      function normalizeBasemap(value, fallback) {
+        const normalized = String(value || "")
+          .trim()
+          .toLowerCase()
+          .replace(/[\s_-]/g, "");
+        const aliases = {
+          emap5: "emap5",
+          nlsc: "emap5",
+          google: "googleRoadmap",
+          googleroad: "googleRoadmap",
+          googleroadmap: "googleRoadmap",
+          roadmap: "googleRoadmap",
+          street: "googleRoadmap",
+          googlesatellite: "googleSatellite",
+          satellites: "googleSatellite",
+          satellite: "googleSatellite",
+          googleaerial: "googleSatellite",
+          aerial: "googleSatellite",
+          osm: "osm",
+          openstreetmap: "osm"
+        };
+        return aliases[normalized] || fallback;
+      }
+
+      function normalizeMoveDirection(value, fallback) {
+        const normalized = String(value || "").trim().toLowerCase();
+        return moveDirections[normalized] ? normalized : fallback;
+      }
+
+      function normalizeAutoBoolean(value) {
+        if (value == null || value === "") {
+          return "auto";
+        }
+        if (String(value).trim().toLowerCase() === "auto") {
+          return "auto";
+        }
+        return toBool(value, false);
+      }
+
+      function normalizeVisualPreset(value, fallback) {
+        const normalized = String(value || "").trim().toLowerCase().replace(/[\s_-]/g, "");
+        if (normalized === "sketchfab" || normalized === "sf") {
+          return "sketchfab";
+        }
+        if (normalized === "default" || normalized === "standard") {
+          return "default";
+        }
+        return fallback;
+      }
+
+      function normalizeToneMapping(value, fallback) {
+        const normalized = String(value || "").trim().toLowerCase().replace(/[\s_-]/g, "");
+        if (["filmic", "aces", "pbrneutral", "reinhard", "modifiedreinhard", "none"].includes(normalized)) {
+          return normalized;
+        }
+        return fallback;
+      }
+
+      function getCesiumTonemapper(value) {
+        if (!Cesium.Tonemapper) {
+          return null;
+        }
+        switch (normalizeToneMapping(value, "pbrneutral")) {
+          case "filmic":
+            return Cesium.Tonemapper.FILMIC ?? Cesium.Tonemapper.ACES ?? Cesium.Tonemapper.PBR_NEUTRAL;
+          case "aces":
+            return Cesium.Tonemapper.ACES ?? Cesium.Tonemapper.PBR_NEUTRAL;
+          case "reinhard":
+            return Cesium.Tonemapper.REINHARD ?? Cesium.Tonemapper.PBR_NEUTRAL;
+          case "modifiedreinhard":
+            return Cesium.Tonemapper.MODIFIED_REINHARD ?? Cesium.Tonemapper.PBR_NEUTRAL;
+          case "none":
+            return null;
+          default:
+            return Cesium.Tonemapper.PBR_NEUTRAL;
+        }
+      }
+
+      function toBool(value, fallback) {
+        if (typeof value === "boolean") {
+          return value;
+        }
+        if (typeof value === "number") {
+          return value !== 0;
+        }
+        const normalized = String(value || "").trim().toLowerCase();
+        if (["1", "true", "yes", "y", "on"].includes(normalized)) {
+          return true;
+        }
+        if (["0", "false", "no", "n", "off"].includes(normalized)) {
+          return false;
+        }
+        return fallback;
+      }
+
+      function clampNumber(value, min, max, fallback) {
+        const number = Number(value);
+        if (!Number.isFinite(number)) {
+          return fallback;
+        }
+        return Math.min(max, Math.max(min, number));
+      }
+
+      function normalizeCssColor(value, fallback) {
+        const text = String(value || "").trim();
+        if (/^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(text)) {
+          return text;
+        }
+        return fallback;
+      }
+
+      async function readGlbTilesReportOptions() {
+        try {
+          const response = await fetch("./glb_3dtiles_report.json", { cache: "no-store" });
+          if (!response.ok) {
+            return { isGlbOutput: false };
+          }
+          await response.json().catch(function () { return {}; });
+          return { isGlbOutput: true };
+        } catch (error) {
+          return { isGlbOutput: false };
+        }
       }
 
       function describeError(error) {

@@ -1,14 +1,15 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import { TilesRenderer } from "3d-tiles-renderer";
 
 const AUTO_RENDER_SCALE_MOVING = 0.5;
 const AUTO_RENDER_SCALE_RESTORED = 1.0;
 const RESTORE_RENDER_SCALE_DELAY_MS = 260;
 const TILESET_OPTIONS = [
-  { label: "平面", url: "./tileset.json" },
-  { label: "90", url: "./tileset_smooth_90.json" },
-  { label: "平滑", url: "./tileset_smooth.json" }
+  { mode: "flat", label: "平面", url: "./tileset.json" },
+  { mode: "smooth90", label: "90", url: "./tileset_smooth_90.json" },
+  { mode: "smooth", label: "平滑", url: "./tileset_smooth.json" }
 ];
 const MOVE_DIRECTIONS = {
   n: new THREE.Vector3(0, 1, 0),
@@ -57,19 +58,239 @@ const BASEMAPS = {
     attribution: "OpenStreetMap"
   }
 };
+const DEFAULT_VIEWER_CONFIG = {
+  basemap: "emap5",
+  normalMode: "flat",
+  renderScale: AUTO_RENDER_SCALE_RESTORED,
+  autoRenderScale: true,
+  visualPreset: "sketchfab",
+  focus: false,
+  explode: 0,
+  moveOut: 0,
+  moveDirection: "sw",
+  ground: true,
+  backgroundColor: "#dddddd",
+  toneMapping: "filmic",
+  toneMappingExposure: 1.2,
+  ambientIntensity: 2.35,
+  directionLightIntensity: 1.0,
+  fillLightIntensity: 0.35,
+  cameraFillLightIntensity: 0.9,
+  reflectionBoost: 0.5,
+  reflectionRoughness: 0.24,
+  contentUpAxis: "auto",
+  doubleSided: "auto"
+};
 
 const textDecoder = new TextDecoder("utf-8");
 const batchTableCache = new Map();
+const SELECTION_POSITION_KEY_SCALE = 100000;
+
+function getThreeViewerConfig(mode, query) {
+  const config = window.IFC_VIEWER_CONFIG || {};
+  const modeKey = mode === "maplibre" ? "maplibreThree" : "three";
+  const merged = Object.assign(
+    {},
+    DEFAULT_VIEWER_CONFIG,
+    readViewerConfig(config.common),
+    readViewerConfig(config[modeKey])
+  );
+  return applyQueryOverrides(merged, query);
+}
+
+function readViewerConfig(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function applyQueryOverrides(config, query) {
+  const result = Object.assign({}, config);
+  const mappings = {
+    normalMode: ["normalMode", "normal-mode", "normal"],
+    basemap: ["basemap", "baseMap", "base-map"],
+    renderScale: ["renderScale", "render-scale", "scale"],
+    autoRenderScale: ["autoRenderScale", "auto-render-scale", "autoScale", "auto-scale"],
+    visualPreset: ["visualPreset", "visual-preset", "preset"],
+    focus: ["focus"],
+    explode: ["explode"],
+    moveOut: ["moveOut", "move-out"],
+    moveDirection: ["moveDirection", "move-direction"],
+    ground: ["ground"],
+    backgroundColor: ["backgroundColor", "background-color", "bg", "bgColor", "bg-color"],
+    toneMapping: ["toneMapping", "tone-mapping", "tonemap"],
+    toneMappingExposure: ["toneMappingExposure", "tone-mapping-exposure", "exposure"],
+    ambientIntensity: ["ambientIntensity", "ambient-intensity", "ambient"],
+    directionLightIntensity: ["directionLightIntensity", "direction-light-intensity", "directionalLight", "directional-light"],
+    fillLightIntensity: ["fillLightIntensity", "fill-light-intensity", "fillLight", "fill-light"],
+    cameraFillLightIntensity: ["cameraFillLightIntensity", "camera-fill-light-intensity", "cameraLightIntensity", "camera-light-intensity"],
+    reflectionBoost: ["reflectionBoost", "reflection-boost", "reflect", "reflection"],
+    reflectionRoughness: ["reflectionRoughness", "reflection-roughness", "roughness"],
+    contentUpAxis: ["contentUpAxis", "content-up-axis", "upAxis", "up-axis"],
+    doubleSided: ["doubleSided", "double-sided", "doubleSide", "double-side"]
+  };
+  Object.keys(mappings).forEach(key => {
+    for (const name of mappings[key]) {
+      if (query.has(name)) {
+        result[key] = query.get(name);
+        return;
+      }
+    }
+  });
+  return result;
+}
+
+function normalizeBasemap(value, fallback) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]/g, "");
+  const aliases = {
+    emap5: "emap5",
+    nlsc: "emap5",
+    google: "googleRoadmap",
+    googleroad: "googleRoadmap",
+    googleroadmap: "googleRoadmap",
+    roadmap: "googleRoadmap",
+    street: "googleRoadmap",
+    googlesatellite: "googleSatellite",
+    satellite: "googleSatellite",
+    googleaerial: "googleSatellite",
+    aerial: "googleSatellite",
+    osm: "osm",
+    openstreetmap: "osm"
+  };
+  return aliases[normalized] || fallback;
+}
+
+function normalizeMoveDirection(value, fallback) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return MOVE_DIRECTIONS[normalized] ? normalized : fallback;
+}
+
+function normalizeContentUpAxis(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "y" || normalized === "yup" || normalized === "y-up") {
+    return "y";
+  }
+  if (normalized === "z" || normalized === "zup" || normalized === "z-up") {
+    return "z";
+  }
+  return "auto";
+}
+
+function normalizeAutoBoolean(value) {
+  if (String(value).trim().toLowerCase() === "auto") {
+    return "auto";
+  }
+  if (value == null || value === "") {
+    return "auto";
+  }
+  return toBool(value, false);
+}
+
+function normalizeVisualPreset(value, fallback) {
+  const normalized = String(value || "").trim().toLowerCase().replace(/[\s_-]/g, "");
+  if (normalized === "sketchfab" || normalized === "sf") {
+    return "sketchfab";
+  }
+  if (normalized === "default" || normalized === "standard") {
+    return "default";
+  }
+  return fallback;
+}
+
+function normalizeCssColor(value, fallback) {
+  const text = String(value || "").trim();
+  if (/^#[0-9a-f]{6}$/i.test(text) || /^#[0-9a-f]{3}$/i.test(text)) {
+    return text;
+  }
+  return fallback;
+}
+
+function normalModeToIndex(value) {
+  if (typeof value === "number" && TILESET_OPTIONS[value]) {
+    return value;
+  }
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]/g, "");
+  if (normalized === "1" || normalized === "90" || normalized === "smooth90") {
+    return 1;
+  }
+  if (normalized === "2" || normalized === "smooth" || normalized === "fullsmooth") {
+    return 2;
+  }
+  return 0;
+}
+
+function toBool(value, fallback) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return value !== 0;
+  }
+  const normalized = String(value || "").trim().toLowerCase();
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "n", "off"].includes(normalized)) {
+    return false;
+  }
+  return fallback;
+}
+
+function clampNumber(value, min, max, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, number));
+}
+
+function getToneMappingMode(value) {
+  const normalized = String(value || "").trim().toLowerCase().replace(/[\s_-]/g, "");
+  if (normalized === "filmic" || normalized === "aces" || normalized === "acesfilmic") {
+    return THREE.ACESFilmicToneMapping;
+  }
+  if (normalized === "cineon") {
+    return THREE.CineonToneMapping;
+  }
+  if (normalized === "reinhard") {
+    return THREE.ReinhardToneMapping;
+  }
+  if (normalized === "none" || normalized === "linear") {
+    return THREE.NoToneMapping;
+  }
+  return THREE.ACESFilmicToneMapping;
+}
 
 export async function bootIfcThreeViewer(options = {}) {
   const mode = options.mode || "three";
+  const query = new URLSearchParams(location.search);
+  const viewerConfig = getThreeViewerConfig(mode, query);
+  const initialRenderScale = clampNumber(viewerConfig.renderScale, 0.5, 1.0, AUTO_RENDER_SCALE_RESTORED);
+  const initialAutoRenderScale = toBool(viewerConfig.autoRenderScale, true);
+  const visualPreset = normalizeVisualPreset(viewerConfig.visualPreset, "sketchfab");
+  const presetBackground = visualPreset === "sketchfab" ? "#dddddd" : "#bfdde7";
   const root = document.getElementById("viewerRoot");
   const status = document.getElementById("measureResult");
   const state = {
     mode,
     root,
     status,
-    debugScale: new URLSearchParams(location.search).get("debugScale") === "1",
+    viewerConfig,
+    visualPreset,
+    backgroundColor: normalizeCssColor(viewerConfig.backgroundColor, presetBackground),
+    toneMapping: viewerConfig.toneMapping || (visualPreset === "sketchfab" ? "filmic" : "filmic"),
+    toneMappingExposure: clampNumber(viewerConfig.toneMappingExposure, 0.4, 2.5, visualPreset === "sketchfab" ? 1.2 : 1.0),
+    ambientIntensity: clampNumber(viewerConfig.ambientIntensity, 0, 6, visualPreset === "sketchfab" ? 2.35 : 1.8),
+    directionLightIntensity: clampNumber(viewerConfig.directionLightIntensity, 0, 6, visualPreset === "sketchfab" ? 1.0 : 2.8),
+    fillLightIntensity: clampNumber(viewerConfig.fillLightIntensity, 0, 3, visualPreset === "sketchfab" ? 0.35 : 0),
+    cameraFillLightIntensity: clampNumber(viewerConfig.cameraFillLightIntensity, 0, 4, visualPreset === "sketchfab" ? 0.9 : 0),
+    reflectionBoost: clampNumber(viewerConfig.reflectionBoost, 0, 1, visualPreset === "sketchfab" ? 0.5 : 0),
+    reflectionRoughness: clampNumber(viewerConfig.reflectionRoughness, 0.02, 1, visualPreset === "sketchfab" ? 0.24 : 0.65),
+    debugScale: query.get("debugScale") === "1",
     scene: null,
     camera: null,
     tilesCamera: null,
@@ -85,27 +306,37 @@ export async function bootIfcThreeViewer(options = {}) {
     rootOriginLngLatAlt: null,
     modelCenter: new THREE.Vector3(),
     groundLayer: null,
+    cameraFillLight: null,
+    environmentConfigured: false,
     selected: null,
     selectedOverlayGroup: new THREE.Group(),
     selectedBaseMesh: null,
     selectedBaseWasVisible: true,
     selectedKey: "",
-    focusEnabled: false,
-    moveDirectionKey: "sw",
-    moveOut: 0,
-    explode: 0,
+    focusEnabled: toBool(viewerConfig.focus, false),
+    moveDirectionKey: normalizeMoveDirection(viewerConfig.moveDirection, "sw"),
+    moveOut: clampNumber(viewerConfig.moveOut, 0, 180, 0),
+    explode: clampNumber(viewerConfig.explode, 0, 160, 0),
     measureMode: "",
     measurePoints: [],
     measureLayer: new THREE.Group(),
-    renderScaleTarget: AUTO_RENDER_SCALE_RESTORED,
-    activeRenderScale: AUTO_RENDER_SCALE_RESTORED,
-    autoRenderScale: true,
+    renderScaleTarget: initialRenderScale,
+    activeRenderScale: initialAutoRenderScale ? AUTO_RENDER_SCALE_RESTORED : initialRenderScale,
+    autoRenderScale: initialAutoRenderScale,
     restoreTimer: null,
-    normalModeIndex: 0,
+    normalModeIndex: normalModeToIndex(viewerConfig.normalMode),
+    basemap: normalizeBasemap(viewerConfig.basemap, "emap5"),
+    groundVisible: toBool(viewerConfig.ground, true),
     baseMaterialState: new WeakMap(),
     loadedTileBytes: 0,
     loadedTileUrls: new Set(),
     restoreSelectionPending: null,
+    contentUpAxis: "z",
+    contentUpAxisMode: "auto",
+    doubleSided: false,
+    doubleSidedMode: "auto",
+    isGlbTilesOutput: false,
+    glbTileScenes: new Set(),
     frame: {
       lastTime: performance.now(),
       lastPanelTime: 0,
@@ -126,6 +357,7 @@ export async function bootIfcThreeViewer(options = {}) {
     setupPureThreeViewer(state);
   }
 
+  await resolveContentOptions(state);
   await loadTileset(state, TILESET_OPTIONS[state.normalModeIndex].url);
   if (mode === "three") {
     animatePureThree(state);
@@ -134,22 +366,62 @@ export async function bootIfcThreeViewer(options = {}) {
 
 function setupCommonScene(state) {
   state.scene = new THREE.Scene();
-  state.scene.background = new THREE.Color(0xbfdde7);
-  state.scene.add(new THREE.AmbientLight(0xffffff, 1.8));
-  const sun = new THREE.DirectionalLight(0xffffff, 2.8);
-  sun.position.set(200, -260, 420);
-  state.scene.add(sun);
+  const background = new THREE.Color(state.backgroundColor);
+  state.scene.background = background;
+
+  if (state.visualPreset === "sketchfab") {
+    state.scene.add(new THREE.HemisphereLight(0xffffff, 0x4d3833, state.ambientIntensity));
+    const warm = new THREE.DirectionalLight(0xffe0b5, state.directionLightIntensity);
+    warm.position.set(-92, 54, 168);
+    state.scene.add(warm);
+    const cool = new THREE.DirectionalLight(0xc7ccff, state.directionLightIntensity * 0.72);
+    cool.position.set(16, 104, -57);
+    state.scene.add(cool);
+    const blueFill = new THREE.DirectionalLight(0x6cbbff, state.fillLightIntensity);
+    blueFill.position.set(106, 104, 74);
+    state.scene.add(blueFill);
+    if (state.cameraFillLightIntensity > 0) {
+      state.cameraFillLight = new THREE.DirectionalLight(0xffffff, state.cameraFillLightIntensity);
+      state.cameraFillLight.position.set(0, -1, 1);
+      state.scene.add(state.cameraFillLight);
+    }
+  } else {
+    state.scene.add(new THREE.AmbientLight(0xffffff, state.ambientIntensity));
+    const sun = new THREE.DirectionalLight(0xffffff, state.directionLightIntensity);
+    sun.position.set(200, -260, 420);
+    state.scene.add(sun);
+  }
+
   state.selectedOverlayGroup.name = "selected-overlay";
   state.scene.add(state.selectedOverlayGroup);
   state.measureLayer.name = "measure-layer";
   state.scene.add(state.measureLayer);
 }
 
+function configureThreeRenderer(state) {
+  if (!state.renderer) {
+    return;
+  }
+  state.renderer.outputColorSpace = THREE.SRGBColorSpace;
+  state.renderer.toneMapping = getToneMappingMode(state.toneMapping);
+  state.renderer.toneMappingExposure = state.toneMappingExposure;
+  configureThreeEnvironment(state);
+}
+
+function configureThreeEnvironment(state) {
+  if (!state.renderer || !state.scene || state.environmentConfigured || state.reflectionBoost <= 0) {
+    return;
+  }
+  const pmremGenerator = new THREE.PMREMGenerator(state.renderer);
+  state.scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
+  state.environmentConfigured = true;
+}
+
 function setupPureThreeViewer(state) {
   const canvas = document.getElementById("threeCanvas");
   state.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
-  state.renderer.outputColorSpace = THREE.SRGBColorSpace;
-  state.renderer.setClearColor(0xbfdde7, 1);
+  configureThreeRenderer(state);
+  state.renderer.setClearColor(new THREE.Color(state.backgroundColor), 1);
   state.renderer.setPixelRatio(window.devicePixelRatio * state.activeRenderScale);
   state.renderer.setSize(rootWidth(state), rootHeight(state), false);
 
@@ -176,6 +448,7 @@ function setupPureThreeViewer(state) {
   state.controls.addEventListener("end", () => endRenderInteraction(state));
 
   state.groundLayer = createGroundLayer();
+  state.groundLayer.visible = state.groundVisible;
   state.scene.add(state.groundLayer);
 
   window.addEventListener("resize", () => resizePureThree(state));
@@ -203,7 +476,7 @@ function setupPureThreeViewer(state) {
 async function setupMapLibreViewer(state) {
   const map = new maplibregl.Map({
     container: "map",
-    style: buildMapLibreStyle("emap5"),
+    style: buildMapLibreStyle(state.basemap),
     center: [121.0, 24.0],
     zoom: 18,
     pitch: 58,
@@ -252,7 +525,7 @@ function addThreeCustomLayer(state) {
         antialias: true
       });
       state.renderer.autoClear = false;
-      state.renderer.outputColorSpace = THREE.SRGBColorSpace;
+      configureThreeRenderer(state);
       state.customLayerReady = true;
       if (state.tiles) {
         state.tiles.setCamera(state.tilesCamera);
@@ -262,12 +535,16 @@ function addThreeCustomLayer(state) {
     render(gl, args) {
       if (state.tiles && state.tilesCamera) {
         state.tiles.setResolutionFromRenderer(state.tilesCamera, state.renderer);
+        forceLoadGlbMaterialSliceTiles(state);
         state.tiles.update();
+        forceLoadGlbMaterialSliceTiles(state);
+        keepGlbMaterialSliceScenesVisible(state);
       }
       if (!state.camera || !state.renderer || !state.localTransform || !state.tilesCamera) {
         return;
       }
       syncMaplibreCamera(state, args);
+      updateThreeCameraFillLight(state);
       state.renderer.resetState();
       state.renderer.render(state.scene, state.camera);
       updatePerformancePanel(state, performance.now());
@@ -305,6 +582,9 @@ async function loadTileset(state, url) {
   }
   tiles.errorTarget = 12;
   tiles.autoDisableRendererCulling = true;
+  if (state.isGlbTilesOutput) {
+    configureGlbMaterialSliceTiles(tiles);
+  }
   tiles.fetchOptions.mode = "cors";
   state.tiles = tiles;
   state.scene.add(tiles.group);
@@ -357,6 +637,38 @@ function handleTilesetReady(state) {
   if (state.status) {
     state.status.textContent = "已載入：" + TILESET_OPTIONS[state.normalModeIndex].label;
   }
+  forceLoadGlbMaterialSliceTiles(state);
+}
+
+function configureGlbMaterialSliceTiles(tiles) {
+  tiles.displayActiveTiles = true;
+  tiles.errorTarget = 0;
+  if (tiles.lruCache) {
+    tiles.lruCache.maxSize = Math.max(tiles.lruCache.maxSize || 0, 10000);
+    tiles.lruCache.minSize = Math.max(tiles.lruCache.minSize || 0, 9000);
+    tiles.lruCache.maxBytesSize = Infinity;
+  }
+}
+
+function forceLoadGlbMaterialSliceTiles(state) {
+  if (!state.isGlbTilesOutput || !state.tiles?.root?.children?.length) {
+    return;
+  }
+  const tiles = state.tiles;
+  if (typeof tiles.ensureChildrenArePreprocessed === "function") {
+    tiles.ensureChildrenArePreprocessed(tiles.root, true);
+  }
+  for (const child of tiles.root.children) {
+    if (!child.internal) {
+      continue;
+    }
+    if (typeof tiles.markTileUsed === "function") {
+      tiles.markTileUsed(child);
+    }
+    if (typeof tiles.queueTileForDownload === "function") {
+      tiles.queueTileForDownload(child);
+    }
+  }
 }
 
 function configurePureThreeTilesTransform(state) {
@@ -366,7 +678,8 @@ function configurePureThreeTilesTransform(state) {
     -state.rootOriginEcef.y,
     -state.rootOriginEcef.z
   );
-  state.tiles.group.matrix.multiplyMatrices(enuFromEcef, moveToOrigin);
+  const ecefToLocal = new THREE.Matrix4().multiplyMatrices(enuFromEcef, moveToOrigin);
+  state.tiles.group.matrix.multiplyMatrices(getContentAxisMatrix(state), ecefToLocal);
   state.tiles.group.matrixAutoUpdate = false;
   state.tiles.group.updateMatrixWorld(true);
 }
@@ -384,9 +697,17 @@ function configureMapLibreTilesTransform(state) {
     -state.rootOriginEcef.y,
     -state.rootOriginEcef.z
   );
-  state.tiles.group.matrix.multiplyMatrices(enuFromEcef, moveToOrigin);
+  const ecefToLocal = new THREE.Matrix4().multiplyMatrices(enuFromEcef, moveToOrigin);
+  state.tiles.group.matrix.multiplyMatrices(getContentAxisMatrix(state), ecefToLocal);
   state.tiles.group.matrixAutoUpdate = false;
   state.tiles.group.updateMatrixWorld(true);
+}
+
+function getContentAxisMatrix(state) {
+  if (state.contentUpAxis === "y") {
+    return new THREE.Matrix4().makeRotationX(-Math.PI / 2);
+  }
+  return new THREE.Matrix4().identity();
 }
 
 function buildMaplibreLocalTransform(coord) {
@@ -413,18 +734,110 @@ function handleTileModelLoaded(state, event) {
       batchTable: event.scene.batchTable.header || {}
     });
   }
+  if (state.isGlbTilesOutput) {
+    state.glbTileScenes.add(event.scene);
+  }
+  applyTileContentOrientation(state, event.scene);
   event.scene.userData.tileUrl = tileUrl;
   event.scene.userData.tile = event.tile;
   event.scene.traverse(child => {
     if (child.isMesh) {
       child.userData.tileUrl = tileUrl;
       child.userData.tile = event.tile;
+      child.frustumCulled = false;
+      applyGlbTileMaterialDisplay(state, child);
       rememberOriginalMaterial(state, child);
     }
   });
   applyFocusDisplay(state);
+  keepGlbMaterialSliceScenesVisible(state);
   if (state.restoreSelectionPending) {
     restoreSelectionFromTile(state, event.scene, tileUrl);
+  }
+}
+
+function keepGlbMaterialSliceScenesVisible(state) {
+  if (!state.isGlbTilesOutput || !state.glbTileScenes.size) {
+    return;
+  }
+  for (const scene of Array.from(state.glbTileScenes)) {
+    if (!scene.parent) {
+      state.glbTileScenes.delete(scene);
+      continue;
+    }
+    scene.visible = true;
+    scene.traverse(child => {
+      if (child.isMesh) {
+        child.frustumCulled = false;
+      }
+    });
+  }
+  updateSelectedBaseVisibility(state);
+}
+
+async function resolveContentOptions(state) {
+  state.contentUpAxisMode = normalizeContentUpAxis(state.viewerConfig.contentUpAxis);
+  state.doubleSidedMode = normalizeAutoBoolean(state.viewerConfig.doubleSided);
+  const needsAuto = state.contentUpAxisMode === "auto" || state.doubleSidedMode === "auto";
+  const glbReport = needsAuto ? await readGlbTilesReportOptions() : { isGlbOutput: false };
+  state.isGlbTilesOutput = glbReport.isGlbOutput;
+  const reportAxis = normalizeContentUpAxis(glbReport.viewerContentUpAxis);
+  state.contentUpAxis = state.contentUpAxisMode === "auto"
+    ? (reportAxis !== "auto" ? reportAxis : (glbReport.isGlbOutput ? "y" : "z"))
+    : state.contentUpAxisMode;
+  state.doubleSided = state.doubleSidedMode === "auto" ? glbReport.isGlbOutput : state.doubleSidedMode === true;
+}
+
+async function readGlbTilesReportOptions() {
+  try {
+    const response = await fetch("./glb_3dtiles_report.json", { cache: "no-store" });
+    if (!response.ok) {
+      return { isGlbOutput: false };
+    }
+    const report = await response.json().catch(() => ({}));
+    return {
+      isGlbOutput: true,
+      viewerContentUpAxis: report.viewer_content_up_axis || report.viewerContentUpAxis || report.content_up_axis || report.contentUpAxis
+    };
+  } catch {
+    return { isGlbOutput: false };
+  }
+}
+
+function applyTileContentOrientation(state, scene) {
+  if (state.contentUpAxis !== "y" || !scene || scene.userData.yUpToZUpApplied) {
+    return;
+  }
+  scene.userData.yUpToZUpApplied = true;
+  scene.updateMatrixWorld(true);
+}
+
+function applyGlbTileMaterialDisplay(state, mesh) {
+  const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  for (const material of materials) {
+    if (!material) {
+      continue;
+    }
+    if (state.doubleSided) {
+      material.side = THREE.DoubleSide;
+    }
+    applyThreeReflectionMaterial(state, material);
+    material.needsUpdate = true;
+  }
+}
+
+function applyThreeReflectionMaterial(state, material) {
+  if (state.reflectionBoost <= 0) {
+    return;
+  }
+  if ("envMapIntensity" in material) {
+    material.envMapIntensity = Math.max(material.envMapIntensity || 1, 1 + state.reflectionBoost * 2.2);
+  }
+  if ("roughness" in material) {
+    material.roughness = Math.min(material.roughness == null ? 1 : material.roughness, state.reflectionRoughness);
+  }
+  if ("metalness" in material) {
+    material.metalness = Math.max(material.metalness || 0, state.reflectionBoost * 0.08);
   }
 }
 
@@ -477,7 +890,7 @@ function bindToolbar(state) {
   });
   clearSelectionButton?.addEventListener("click", () => clearSelection(state, true));
   normalModeSlider?.addEventListener("input", () => {
-    const index = Number(normalModeSlider.value);
+    const index = Math.max(0, Math.min(TILESET_OPTIONS.length - 1, Number(normalModeSlider.value) || 0));
     state.normalModeIndex = index;
     normalModeValue.textContent = TILESET_OPTIONS[index].label;
     loadTileset(state, TILESET_OPTIONS[index].url);
@@ -524,8 +937,9 @@ function bindToolbar(state) {
   });
   basemapSelect?.addEventListener("change", () => setBasemap(state, basemapSelect.value));
   groundToggle?.addEventListener("change", () => {
+    state.groundVisible = groundToggle.checked;
     if (state.groundLayer) {
-      state.groundLayer.visible = groundToggle.checked;
+      state.groundLayer.visible = state.groundVisible;
     }
   });
   document.querySelectorAll("[data-measure-mode]").forEach(button => {
@@ -533,12 +947,62 @@ function bindToolbar(state) {
   });
   clearMeasureButton?.addEventListener("click", () => clearMeasurements(state));
 
+  applyInitialToolbarConfig(state);
+}
+
+function applyInitialToolbarConfig(state) {
+  const focusToggle = document.getElementById("focusToggle");
+  const normalModeSlider = document.getElementById("normalModeSlider");
+  const normalModeValue = document.getElementById("normalModeValue");
+  const renderScaleSlider = document.getElementById("renderScaleSlider");
+  const autoRenderScaleToggle = document.getElementById("autoRenderScaleToggle");
+  const explodeSlider = document.getElementById("explodeSlider");
+  const explodeValue = document.getElementById("explodeValue");
+  const moveOutSlider = document.getElementById("moveOutSlider");
+  const moveOutValue = document.getElementById("moveOutValue");
+  const basemapSelect = document.getElementById("basemapSelect");
+  const groundToggle = document.getElementById("groundToggle");
+
+  if (focusToggle) {
+    focusToggle.textContent = state.focusEnabled ? "焦點 ON" : "焦點 OFF";
+    focusToggle.setAttribute("aria-pressed", state.focusEnabled ? "true" : "false");
+  }
+  if (normalModeSlider) {
+    normalModeSlider.value = String(state.normalModeIndex);
+  }
+  if (normalModeValue) {
+    normalModeValue.textContent = TILESET_OPTIONS[state.normalModeIndex].label;
+  }
+  if (renderScaleSlider) {
+    renderScaleSlider.value = state.renderScaleTarget.toFixed(2);
+  }
+  if (autoRenderScaleToggle) {
+    autoRenderScaleToggle.checked = state.autoRenderScale;
+  }
+  if (explodeSlider) {
+    explodeSlider.value = String(state.explode);
+  }
+  if (explodeValue) {
+    explodeValue.textContent = state.explode.toFixed(0) + " m";
+  }
+  if (moveOutSlider) {
+    moveOutSlider.value = String(state.moveOut);
+  }
+  if (moveOutValue) {
+    moveOutValue.textContent = state.moveOut.toFixed(0) + " m";
+  }
+  if (basemapSelect) {
+    basemapSelect.value = state.basemap;
+  }
+  if (groundToggle) {
+    groundToggle.checked = state.groundVisible;
+  }
+  setMoveDirection(state, state.moveDirectionKey);
   updateRenderScaleUi(state);
-  setMoveDirection(state, "sw");
 }
 
 function setMoveDirection(state, key) {
-  state.moveDirectionKey = key || "sw";
+  state.moveDirectionKey = normalizeMoveDirection(key, "sw");
   const movePad = document.getElementById("movePad");
   movePad?.querySelectorAll("[data-move-direction]").forEach(button => {
     button.classList.toggle("is-active", button.dataset.moveDirection === state.moveDirectionKey);
@@ -546,16 +1010,19 @@ function setMoveDirection(state, key) {
 }
 
 function setBasemap(state, key) {
+  state.basemap = normalizeBasemap(key, state.basemap || "emap5");
   if (state.mode !== "maplibre" || !state.map) {
-    state.status.textContent = "純 Three 版不載 WMTS，用地面/水面/格網排除底圖變因";
+    state.status.textContent = state.mode === "maplibre"
+      ? "底圖設定已記錄，地圖載入後套用"
+      : "純 Three 版不載 WMTS，用地面/水面/格網排除底圖變因";
     return;
   }
   for (const id of Object.keys(BASEMAPS)) {
     if (state.map.getLayer("basemap-" + id)) {
-      state.map.setLayoutProperty("basemap-" + id, "visibility", id === key ? "visible" : "none");
+      state.map.setLayoutProperty("basemap-" + id, "visibility", id === state.basemap ? "visible" : "none");
     }
   }
-  state.status.textContent = "底圖：" + (BASEMAPS[key]?.label || key);
+  state.status.textContent = "底圖：" + (BASEMAPS[state.basemap]?.label || state.basemap);
 }
 
 function setMeasureMode(state, mode) {
@@ -589,7 +1056,7 @@ async function selectAtClientPoint(state, clientX, clientY, mapPoint = false) {
 
 async function setSelectedFeature(state, intersection, metadata, batchId, tileUrl) {
   clearSelection(state, false);
-  const overlay = buildSelectedOverlay(intersection, batchId);
+  const overlay = buildSelectedOverlay(state, intersection, batchId);
   if (!overlay) {
     state.status.textContent = "有點到，但無法建立選取 overlay";
     return;
@@ -615,46 +1082,144 @@ async function setSelectedFeature(state, intersection, metadata, batchId, tileUr
   state.status.textContent = "已選取：" + formatFeatureName(metadata, batchId);
 }
 
-function buildSelectedOverlay(intersection, batchId) {
+function buildSelectedOverlay(state, intersection, batchId) {
   const source = intersection.object;
   if (!source?.geometry) {
     return null;
   }
-  const geometry = extractFeatureGeometry(source.geometry, batchId);
+  const geometry = extractSelectionGeometry(source.geometry, batchId, intersection, state?.isGlbTilesOutput);
   if (!geometry) {
     return null;
   }
   geometry.applyMatrix4(source.matrixWorld);
   geometry.computeBoundingBox();
   geometry.computeBoundingSphere();
-  if (!geometry.getAttribute("normal")) {
-    geometry.computeVertexNormals();
-  }
-  const material = new THREE.MeshStandardMaterial({
-    color: 0xffd21a,
-    emissive: 0x6b5200,
-    emissiveIntensity: 0.35,
-    roughness: 0.55,
-    metalness: 0.0,
-    transparent: true,
-    opacity: 0.96,
-    depthWrite: true,
-    polygonOffset: true,
-    polygonOffsetFactor: -1,
-    polygonOffsetUnits: -1
-  });
-  const mesh = new THREE.Mesh(geometry, material);
-  mesh.name = "selected-feature-overlay";
-  const edges = new THREE.LineSegments(
-    new THREE.EdgesGeometry(geometry, 25),
-    new THREE.LineBasicMaterial({ color: 0x4f3900, transparent: true, opacity: 0.45 })
-  );
-  edges.name = "selected-feature-edges";
+  const selectionBox = expandGlbSelectionBox(state, source, geometry.boundingBox.clone());
   const group = new THREE.Group();
-  group.add(mesh);
-  group.add(edges);
+  const border = buildSelectionBorder(selectionBox);
+  border.name = "selected-feature-border";
+  group.add(border);
   group.userData.sourceObject = source;
   return group;
+}
+
+function buildSelectionBorder(selectionBox) {
+  const box = selectionBox.clone();
+  const size = box.getSize(new THREE.Vector3());
+  const padding = Math.max(0.04, size.length() * 0.003);
+  box.expandByScalar(padding);
+  const min = box.min;
+  const max = box.max;
+  const corners = [
+    [min.x, min.y, min.z], [max.x, min.y, min.z], [max.x, max.y, min.z], [min.x, max.y, min.z],
+    [min.x, min.y, max.z], [max.x, min.y, max.z], [max.x, max.y, max.z], [min.x, max.y, max.z]
+  ];
+  const edgePairs = [
+    [0, 1], [1, 2], [2, 3], [3, 0],
+    [4, 5], [5, 6], [6, 7], [7, 4],
+    [0, 4], [1, 5], [2, 6], [3, 7]
+  ];
+  const positions = [];
+  for (const [start, end] of edgePairs) {
+    positions.push(...corners[start], ...corners[end]);
+  }
+  const borderGeometry = new THREE.BufferGeometry();
+  borderGeometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  const material = new THREE.LineBasicMaterial({
+    color: 0xffd21a,
+    transparent: true,
+    opacity: 0.98,
+    depthTest: false,
+    depthWrite: false
+  });
+  return new THREE.LineSegments(borderGeometry, material);
+}
+
+function expandGlbSelectionBox(state, source, seedBox) {
+  if (!state?.isGlbTilesOutput || !source?.geometry) {
+    return seedBox;
+  }
+  const box = seedBox.clone();
+  const seedSize = seedBox.getSize(new THREE.Vector3());
+  const longAxis = Math.max(seedSize.x, seedSize.y);
+  const shortAxis = Math.min(seedSize.x, seedSize.y);
+  if (seedSize.z < 1.0) {
+    const padding = Math.min(8.0, Math.max(2.0, longAxis * 0.18));
+    box.min.x -= padding;
+    box.max.x += padding;
+    box.min.y -= padding;
+    box.max.y += padding;
+    box.min.z = Math.min(box.min.z, 0);
+    return box;
+  }
+  if (seedSize.z > 2.0 && longAxis > 1.0) {
+    const padding = Math.min(5.0, Math.max(1.0, longAxis * 0.12));
+    if (shortAxis < Math.max(1.0, longAxis * 0.18)) {
+      if (seedSize.x < seedSize.y) {
+        box.min.x -= padding;
+        box.max.x += padding;
+      } else {
+        box.min.y -= padding;
+        box.max.y += padding;
+      }
+    }
+    box.min.z = Math.min(box.min.z, 0);
+  }
+  return box;
+}
+
+function extractSelectionGeometry(geometry, batchId, intersection, forceConnected = false) {
+  if ((forceConnected || !getBatchAttribute(geometry)) && intersection?.faceIndex != null) {
+    const connected = extractConnectedComponentGeometry(geometry, intersection.faceIndex);
+    if (connected) {
+      return connected;
+    }
+  }
+  return extractFeatureGeometry(geometry, batchId);
+}
+
+function extractConnectedComponentGeometry(geometry, seedFaceIndex) {
+  const position = geometry.getAttribute("position");
+  if (!position) {
+    return null;
+  }
+  const triangleCount = getTriangleCount(geometry);
+  const seedFace = Math.floor(Number(seedFaceIndex));
+  if (!Number.isFinite(seedFace) || seedFace < 0 || seedFace >= triangleCount) {
+    return null;
+  }
+
+  const faceKeys = new Array(triangleCount);
+  const facesByPosition = new Map();
+  for (let face = 0; face < triangleCount; face++) {
+    const keys = getTriangleVertexIds(geometry, face).map(vertexId => positionKey(position, vertexId));
+    faceKeys[face] = keys;
+    for (const key of new Set(keys)) {
+      let faces = facesByPosition.get(key);
+      if (!faces) {
+        faces = [];
+        facesByPosition.set(key, faces);
+      }
+      faces.push(face);
+    }
+  }
+
+  const selectedFaces = new Set([seedFace]);
+  const queue = [seedFace];
+  for (let cursor = 0; cursor < queue.length; cursor++) {
+    const face = queue[cursor];
+    for (const key of faceKeys[face]) {
+      const neighbours = facesByPosition.get(key) || [];
+      for (const nextFace of neighbours) {
+        if (!selectedFaces.has(nextFace)) {
+          selectedFaces.add(nextFace);
+          queue.push(nextFace);
+        }
+      }
+    }
+  }
+
+  return extractGeometryFaces(geometry, selectedFaces);
 }
 
 function extractFeatureGeometry(geometry, batchId) {
@@ -705,6 +1270,67 @@ function extractFeatureGeometry(geometry, batchId) {
     result.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
   }
   return result;
+}
+
+function extractGeometryFaces(geometry, faceSet) {
+  const position = geometry.getAttribute("position");
+  if (!position || !faceSet?.size) {
+    return null;
+  }
+  const normal = geometry.getAttribute("normal");
+  const color = geometry.getAttribute("color") || geometry.getAttribute("COLOR_0");
+  const positions = [];
+  const normals = [];
+  const colors = [];
+  for (const face of faceSet) {
+    for (const vertexId of getTriangleVertexIds(geometry, face)) {
+      positions.push(position.getX(vertexId), position.getY(vertexId), position.getZ(vertexId));
+      if (normal) {
+        normals.push(normal.getX(vertexId), normal.getY(vertexId), normal.getZ(vertexId));
+      }
+      if (color) {
+        colors.push(color.getX(vertexId), color.getY(vertexId), color.getZ(vertexId));
+      }
+    }
+  }
+  if (!positions.length) {
+    return null;
+  }
+  const result = new THREE.BufferGeometry();
+  result.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  if (normals.length) {
+    result.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
+  }
+  if (colors.length) {
+    result.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  }
+  return result;
+}
+
+function getTriangleCount(geometry) {
+  const position = geometry.getAttribute("position");
+  return Math.floor((geometry.index ? geometry.index.count : (position?.count || 0)) / 3);
+}
+
+function getTriangleVertexIds(geometry, face) {
+  const start = face * 3;
+  if (geometry.index) {
+    return [
+      geometry.index.getX(start),
+      geometry.index.getX(start + 1),
+      geometry.index.getX(start + 2)
+    ];
+  }
+  return [start, start + 1, start + 2];
+}
+
+function positionKey(position, vertexId) {
+  const scale = SELECTION_POSITION_KEY_SCALE;
+  return [
+    Math.round(position.getX(vertexId) * scale),
+    Math.round(position.getY(vertexId) * scale),
+    Math.round(position.getZ(vertexId) * scale)
+  ].join(",");
 }
 
 function inferBatchId(intersection) {
@@ -1046,7 +1672,7 @@ function updatePerformancePanel(state, now) {
   panel.innerHTML = [
     ["FPS", state.frame.fps.toFixed(0)],
     ["frame", state.frame.frameMs.toFixed(1) + " ms"],
-    ["visible tiles", stats.visible ?? "-"],
+    ["visible tiles", glbVisibleTileLabel(state, stats)],
     ["loaded tiles", stats.loaded ?? "-"],
     ["active tiles", stats.active ?? "-"],
     ["triangles", formatNumber(render.triangles || 0)],
@@ -1054,9 +1680,23 @@ function updatePerformancePanel(state, now) {
     ["textures", memory.textures ?? "-"],
     ["loaded bytes", loadedBytes ? formatBytes(loadedBytes) : "-"],
     ["pixel ratio", state.activeRenderScale.toFixed(2)],
+    ["up axis", state.contentUpAxis + (state.contentUpAxisMode === "auto" ? " (auto)" : "")],
+    ["double side", state.doubleSided ? "on" : "off"],
     ["selected", state.selectedKey || "-"],
     ["tile url", state.selected?.tileUrl ? trimTileUrl(state.selected.tileUrl) : "-"]
   ].map(([key, value]) => `<div class="perf-row"><span>${key}</span><strong>${escapeHtml(String(value))}</strong></div>`).join("");
+}
+
+function glbVisibleTileLabel(state, stats) {
+  const visible = stats.visible ?? "-";
+  if (!state.isGlbTilesOutput || !state.glbTileScenes.size) {
+    return visible;
+  }
+  const guarded = Array.from(state.glbTileScenes).filter(scene => scene.parent).length;
+  if (!guarded || guarded === visible) {
+    return visible;
+  }
+  return `${visible} + ${guarded} guarded`;
 }
 
 function getLoadedBytesEstimate(state) {
@@ -1089,10 +1729,21 @@ function animatePureThree(state) {
   state.controls?.update();
   if (state.tiles) {
     state.tiles.setResolutionFromRenderer(state.camera, state.renderer);
+    forceLoadGlbMaterialSliceTiles(state);
     state.tiles.update();
+    forceLoadGlbMaterialSliceTiles(state);
+    keepGlbMaterialSliceScenesVisible(state);
   }
+  updateThreeCameraFillLight(state);
   state.renderer.render(state.scene, state.camera);
   updatePerformancePanel(state, now);
+}
+
+function updateThreeCameraFillLight(state) {
+  if (!state.cameraFillLight || !state.camera) {
+    return;
+  }
+  state.cameraFillLight.position.copy(state.camera.position);
 }
 
 function markInteraction(state) {

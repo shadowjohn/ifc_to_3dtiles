@@ -280,6 +280,7 @@
       if (status) status.textContent = "Three viewer error: " + (reason || "promise rejected");
     });
   </script>
+  <script src="./config.js"></script>
   <script type="importmap">
     {
       "imports": {
@@ -291,7 +292,7 @@
     }
   </script>
   <script type="module">
-    import { bootIfcThreeViewer } from "../three_viewer_common.js";
+    import { bootIfcThreeViewer } from "./three_viewer_common.js";
     bootIfcThreeViewer({ mode: "three" });
   </script>
 </body>
